@@ -1,0 +1,18 @@
+# Bang RL GUI lock file
+#
+# This is the opt-in GUI environment. The base lock contains all learning and
+# test pins; this file adds only the GUI direct and transitive dependencies.
+# Install with:
+#   python -m pip install -r requirements-gui.lock
+# or use the project extra:
+#   python -m pip install -e ".[gui]"
+
+-r requirements.lock
+
+# Direct GUI dependencies
+PyQt6==6.8.1
+pyqtgraph==0.13.7
+
+# Resolved GUI transitive dependencies
+PyQt6-Qt6==6.8.2
+PyQt6-sip==13.12.0

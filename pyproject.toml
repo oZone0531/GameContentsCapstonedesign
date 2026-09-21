@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools==75.8.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bang-rl"
+version = "0.1.0"
+description = "Bang! reinforcement-learning training system"
+requires-python = ">=3.10"
+dependencies = [
+    "pettingzoo==1.24.3",
+    "gymnasium==1.0.0",
+    "numpy==1.26.4",
+    "pydantic==2.10.6",
+    "PyYAML==6.0.2",
+    "torch==2.6.0",
+    "pyarrow==19.0.1",
+    "safetensors==0.5.3",
+]
+
+[project.optional-dependencies]
+# Test tooling is deliberately separate from the GUI extra. This is the
+# dependency set used by CI and by the non-GUI development environment.
+test = [
+    "pytest==8.3.4",
+]
+# GUI packages are opt-in and are not installed by the learning/test path.
+gui = [
+    "PyQt6==6.8.1",
+    "pyqtgraph==0.13.7",
+]
+
+[tool.setuptools.packages.find]
+include = ["bang_rl*"]

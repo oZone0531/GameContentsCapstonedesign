@@ -1,0 +1,53 @@
+# Bang RL non-GUI lock file
+#
+# Purpose: reproducible learning and test installation. This file intentionally
+# excludes the optional GUI extra so headless CI and training do not install
+# PyQt6 or pyqtgraph.
+#
+# Policy:
+#   1. Direct pins must match pyproject.toml exactly.
+#   2. Every resolved transitive Python dependency is version-pinned here.
+#   3. Regenerate with a lock resolver (for example pip-tools) after changing
+#      pyproject.toml, review the diff, and commit this file with the change.
+#   4. Install the non-GUI environment with:
+#        python -m pip install -r requirements.lock
+#      or, for an editable project install with test extras:
+#        python -m pip install -e ".[test]"
+#   5. GUI development uses requirements-gui.lock, never this file alone.
+
+# Build-system dependencies
+setuptools==75.8.0
+wheel==0.45.1
+
+# Direct runtime dependencies
+pettingzoo==1.24.3
+gymnasium==1.0.0
+numpy==1.26.4
+pydantic==2.10.6
+PyYAML==6.0.2
+torch==2.6.0
+pyarrow==19.0.1
+safetensors==0.5.3
+
+# Direct test dependency
+pytest==8.3.4
+
+# Resolved transitive dependencies
+annotated-types==0.7.0
+cloudpickle==3.1.1
+colorama==0.4.6
+farama-notifications==0.0.4
+filelock==3.16.1
+fsspec==2024.12.0
+iniconfig==2.0.0
+Jinja2==3.1.5
+MarkupSafe==3.0.2
+mpmath==1.3.0
+networkx==3.4.2
+packaging==24.2
+pluggy==1.5.0
+pydantic-core==2.27.2
+Pygments==2.19.1
+sympy==1.13.1
+typing-extensions==4.12.2
+typing-inspection==0.4.1
