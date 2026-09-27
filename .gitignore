@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Test and tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Generated Bang RL artifacts and runtime data
+bang_rl/models/*
+!bang_rl/models/.gitkeep
+bang_rl/logs/*
+!bang_rl/logs/.gitkeep
+bang_rl/datasets/canonical/*
+!bang_rl/datasets/canonical/.gitkeep
+bang_rl/datasets/cache/*
+!bang_rl/datasets/cache/.gitkeep

@@ -1,0 +1,439 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1. TASK-0-1. Python 패키지 및 디렉터리 초기화 (no dependencies)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020038108
+      },
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020053162
+      },
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020215382
+      }
+    ],
+    "2. TASK-0-2. 의존성 및 개발 환경 정의 (depends on TASK-0-1)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020040020
+      },
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020222824
+      },
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790021264881
+      }
+    ],
+    "3. TASK-0-3. Config Schema 구현 (depends on TASK-0-2)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020040338
+      },
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790021272843
+      },
+      {
+        "executionId": "20e51c34-62c7-46ca-a1f5-23ab99b70544",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790043256749
+      }
+    ],
+    "4. TASK-0-4. Config Loader 및 Job Snapshot 구현 (depends on TASK-0-3)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020040425
+      },
+      {
+        "executionId": "20e51c34-62c7-46ca-a1f5-23ab99b70544",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790043264598
+      },
+      {
+        "executionId": "20e51c34-62c7-46ca-a1f5-23ab99b70544",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790043477485
+      }
+    ],
+    "5. TASK-0-5. Seed 및 Logging 기반 구현 (depends on TASK-0-4)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020040545
+      },
+      {
+        "executionId": "20e51c34-62c7-46ca-a1f5-23ab99b70544",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790043484980
+      },
+      {
+        "executionId": "20e51c34-62c7-46ca-a1f5-23ab99b70544",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790045857710
+      }
+    ],
+    "6. TASK-0-6. 예외 계층 구현 (depends on TASK-0-5)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020040640
+      },
+      {
+        "executionId": "20e51c34-62c7-46ca-a1f5-23ab99b70544",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790045864159
+      },
+      {
+        "executionId": "20e51c34-62c7-46ca-a1f5-23ab99b70544",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790046125324
+      }
+    ],
+    "7. TASK-1-1. Environment 도메인 타입 구현 (depends on TASK-0-6)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020040748
+      },
+      {
+        "executionId": "20e51c34-62c7-46ca-a1f5-23ab99b70544",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790046132196
+      },
+      {
+        "executionId": "20e51c34-62c7-46ca-a1f5-23ab99b70544",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790046445505
+      }
+    ],
+    "8. TASK-1-2. Action Space와 Action Mask 구현 (depends on TASK-1-1)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020040863
+      },
+      {
+        "executionId": "20e51c34-62c7-46ca-a1f5-23ab99b70544",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790046452152
+      },
+      {
+        "executionId": "20e51c34-62c7-46ca-a1f5-23ab99b70544",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790046652117
+      }
+    ],
+    "9. TASK-1-3. Invalid Action 최종 검증 구현 (depends on TASK-1-2)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020040954
+      },
+      {
+        "executionId": "20e51c34-62c7-46ca-a1f5-23ab99b70544",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790046659127
+      },
+      {
+        "executionId": "20e51c34-62c7-46ca-a1f5-23ab99b70544",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790046932640
+      }
+    ],
+    "10. TASK-1-4. BANG/PASS 실행 및 Environment Step 구현 (depends on TASK-1-3)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020041039
+      },
+      {
+        "executionId": "20e51c34-62c7-46ca-a1f5-23ab99b70544",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790046941811
+      },
+      {
+        "executionId": "20e51c34-62c7-46ca-a1f5-23ab99b70544",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790050685592
+      }
+    ],
+    "11. TASK-1-5. 역할 공개 및 Observation 구현 (depends on TASK-1-4)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020041121
+      },
+      {
+        "executionId": "20e51c34-62c7-46ca-a1f5-23ab99b70544",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790050696852
+      }
+    ],
+    "12. TASK-1-6. Terminal Condition과 종료 유형 구현 (depends on TASK-1-5)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020041205
+      }
+    ],
+    "13. TASK-1-7. Long-game Diagnostic 로그 구현 (depends on TASK-1-6)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020041295
+      }
+    ],
+    "14. TASK-1-8. PettingZoo AEC 검증 (depends on TASK-1-7)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020041381
+      }
+    ],
+    "15. TASK-2-1. BaseAgent·HumanAgent·RandomAgent 구현 (depends on TASK-1-8)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020041478
+      }
+    ],
+    "16. TASK-2-2. DummyAgent RoleBeliefEstimator 구현 (depends on TASK-2-1)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020041555
+      }
+    ],
+    "17. TASK-2-3. DummyAgent faction strength와 Intent 정책 구현 (depends on TASK-2-2)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020041643
+      }
+    ],
+    "18. TASK-2-4. Dummy EmotionModule 구현 (depends on TASK-2-3)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020041721
+      }
+    ],
+    "19. TASK-2-5. Dummy ActionSelector와 통합 (depends on TASK-2-4)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020041798
+      }
+    ],
+    "20. TASK-3-1. Observation Preprocessor 구현 (depends on TASK-2-5)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020041876
+      }
+    ],
+    "21. TASK-3-2. SequenceEncoder와 GRUEncoder 구현 (depends on TASK-3-1)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020041956
+      }
+    ],
+    "22. TASK-3-3. IntentInferenceModule 구현 (depends on TASK-3-2)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020042036
+      }
+    ],
+    "23. TASK-3-4. RoleFusion Hard Override 구현 (depends on TASK-3-3)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020042104
+      }
+    ],
+    "24. TASK-3-5. EmotionInferenceModule 구현 (depends on TASK-3-4)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020042173
+      }
+    ],
+    "25. TASK-3-6. PPOModule 구현 (depends on TASK-3-5)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020042255
+      }
+    ],
+    "26. TASK-4-1. EmotionRuntime 구현 (depends on TASK-3-6)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020042326
+      }
+    ],
+    "27. TASK-4-2. Reward DSL 및 RewardCalculator 구현 (depends on TASK-4-1)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020042396
+      }
+    ],
+    "28. TASK-5-1. EpisodeCollector 구현 (depends on TASK-4-2)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020042484
+      }
+    ],
+    "29. TASK-5-2. Parquet Canonical Shard Writer 구현 (depends on TASK-5-1)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020042555
+      }
+    ],
+    "30. TASK-5-3. Episode Splitter 구현 (depends on TASK-5-2)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020042667
+      }
+    ],
+    "31. TASK-5-4. NPZ Tensor Cache Writer/Loader 구현 (depends on TASK-5-3)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020042976
+      }
+    ],
+    "32. TASK-6-1. IntentInference SL Trainer 구현 (depends on TASK-5-4)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020043085
+      }
+    ],
+    "33. TASK-6-2. EmotionInference SL Trainer 구현 (depends on TASK-6-1)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020043175
+      }
+    ],
+    "34. TASK-6-3. ML Phase 2 Inference Module Artifact 저장 (depends on TASK-6-2)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020043252
+      }
+    ],
+    "35. TASK-7-1. Vectorized Environment 및 Worker Runtime 구현 (depends on TASK-6-3)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020043326
+      }
+    ],
+    "36. TASK-7-2. Pending Transition Ledger 구현 (depends on TASK-7-1)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020043407
+      }
+    ],
+    "37. TASK-7-3. PPO Rollout/Update 구현 (depends on TASK-7-2)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020043479
+      }
+    ],
+    "38. TASK-7-4. PPO Module Freeze 및 Artifact 저장 (depends on TASK-7-3)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020043558
+      }
+    ],
+    "39. TASK-8-1. Primary Evaluation Protocol 구현 (depends on TASK-7-4)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020043641
+      }
+    ],
+    "40. TASK-8-2. Custom/Stochastic Evaluation 구현 (depends on TASK-8-1)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020043729
+      }
+    ],
+    "41. TASK-9-1. Application Service 구현 (depends on TASK-7-4)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020043803
+      }
+    ],
+    "42. TASK-9-2. Game Mode GUI 구현 (depends on TASK-9-1)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020043878
+      }
+    ],
+    "43. TASK-9-3. Training Monitor 및 Settings GUI 구현 (depends on TASK-9-2)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020043949
+      }
+    ],
+    "44. TASK-10-1. Inference Artifact Compatibility 구현 (depends on TASK-7-4)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020044027
+      }
+    ],
+    "45. TASK-10-2. Logging 및 Metadata 통합 (depends on TASK-10-1)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020044107
+      }
+    ],
+    "46. TASK-10-3. 전체 파이프라인 통합 테스트 (depends on TASK-8-2, TASK-9-3, TASK-10-2)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020044185
+      }
+    ],
+    "47. TASK-10-4. 문서·설정·README 정합성 검증 (depends on TASK-10-3)": [
+      {
+        "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
+        "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
+        "timestamp": 1790020044261
+      }
+    ]
+  }
+}

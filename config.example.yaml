@@ -1,0 +1,133 @@
+# Bang RL example configuration. All paths are relative to the process cwd.
+# When run from the repository root, these paths use the checked-in placeholders.
+config_version: "1.0"
+seed: 0
+
+env:
+  max_episode_steps: 2000
+  warn_turn_threshold: 200
+  critical_turn_threshold: 500
+  event_history:
+    max_events: null
+  action_space_size: 6
+
+reward_config:
+  version: "reward-example-v1"
+  terminal:
+    components:
+      - id: terminal_win
+        enabled: true
+        condition:
+          type: terminal_result
+          result: win
+        value: 1.0
+      - id: terminal_loss
+        enabled: true
+        condition:
+          type: terminal_result
+          result: loss
+        value: -1.0
+  shaping:
+    components:
+      - id: bang_hit
+        enabled: true
+        condition:
+          type: event
+          event: bang_hit
+        value: 0.1
+      - id: kill_enemy
+        enabled: true
+        condition:
+          type: event
+          event: kill_enemy
+        value: 0.5
+      - id: attack_sheriff_outlaw
+        enabled: true
+        condition:
+          type: role_attack
+          actor_role: outlaw_a
+          target_role: sheriff
+        value: 0.2
+      - id: attack_sheriff_deputy
+        enabled: true
+        condition:
+          type: role_attack
+          actor_role: deputy
+          target_role: sheriff
+        value: -0.1
+      - id: role_or_faction_attack_terms
+        enabled: false
+        condition:
+          type: faction_attack
+          actor_faction: outlaw_team
+          target_faction: sheriff_team
+        value: 0.0
+      - id: pass_penalty
+        enabled: false
+        condition:
+          type: pass
+        value: 0.0
+
+emotion:
+  schema_version: "1.0"
+  emotion_count: 1
+  initial_baseline: 0.0
+  emotions:
+    - name: calm
+      initial_value: 0.0
+      change_rate: 0.0
+      decay_rate: 0.0
+
+rl_training:
+  ppo:
+    rollout_transitions_per_worker: 256
+    gamma: 0.99
+    gae_lambda: 0.95
+    ppo_epochs: 4
+    minibatch_size: 64
+    clip_epsilon: 0.2
+  emotion_inference:
+    schema_version: "1.0"
+    emotion_count: 1
+    initial_baseline: 0.0
+    emotions:
+      - name: calm
+        initial_value: 0.0
+
+hardware:
+  cpu_cores: 1
+  ram_gb: 1.0
+  use_gpu: false
+  workers: 1
+  batch_size: 64
+  buffer_size: 256
+
+pause:
+  ack_timeout_seconds: 30.0
+
+evaluation:
+  protocol_id: deterministic_v1
+  opponent: default
+  opponent_preset: default
+  games: 500
+  games_per_seat: 100
+  base_seed: 0
+  seed_formula: base_seed_plus_evaluation_index
+  deterministic: true
+  action_mode: deterministic
+  seat_policy: balanced
+
+artifact:
+  artifact_type: inference
+  inference_model_artifact_format_version: "1.0"
+  output_directory: bang_rl/models
+  extension: .bangmodel
+  manifest_file: manifest.json
+  metadata_file: metadata.json
+  weights_file: model.safetensors
+
+dataset:
+  canonical_path: bang_rl/datasets/canonical
+  cache_path: bang_rl/datasets/cache
+  canonical_shard_max_episodes: 10000
+  canonical_shard_max_bytes: 256000000
