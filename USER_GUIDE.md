@@ -185,9 +185,10 @@ python -m pip install -e ".[gui]"
 | **에피소드 (Episodes)** | 실행할 게임 에피소드 수 | 1 |
 | **목표 MainAgent 전이 수 (Target MainAgent transitions)** | 메인 AI 학습 전이(transition) 목표치. 0이면 에피소드 수 기준으로 진행(*Use episodes* 표시) | 0 |
 | **시드 (Seed)** | 재현 가능한 학습을 위한 난수 시드 | — |
-| **리포트 경로 (Report path)** | 학습 리포트 저장 경로 (비우면 미저장) | 빈 값 |
-| **출력 경로 (Output path)** | 학습 산출물 저장 경로 (비우면 미저장) | 빈 값 |
-| **아티팩트 경로 (Artifact path)** | 학습된 모델 아티팩트 저장 경로 (비우면 미저장) | 빈 값 |
+| **리포트 경로 (Report path)** | 학습 리포트 저장 위치. 기본값은 프로젝트 루트의 `reports/`이며 작업별 JSON 파일로 저장 | `reports/` |
+| **출력 경로 (Output path)** | 학습 산출물 저장 폴더. 기본값은 프로젝트 루트의 `outputs/` | `outputs/` |
+| **아티팩트 출력 경로 (Artifact output path)** | 학습된 모델 아티팩트 저장 위치. 기본값은 프로젝트 루트의 `artifacts/`이며 작업별 `.bangmodel` 파일로 저장 | `artifacts/` |
+| **이어 학습할 아티팩트 (Continue from artifact)** | 기존 `.bangmodel`을 이어 학습의 시작 가중치로 사용. 파일을 직접 지정하거나 `artifacts/` 폴더를 지정하면 가장 최근 모델을 자동 선택 | `artifacts/` |
 
 ### ② 제어 버튼
 
@@ -209,12 +210,14 @@ python -m pip install -e ".[gui]"
 | **Metrics** | 현재 학습 지표(JSON) |
 | **Status / PPO updates** | 작업 상태 및 PPO 업데이트 횟수 |
 | **Snapshot** | 작업 ID · config 버전 · 시드 (시작 전엔 "스냅샷: 시작 안 됨") |
-| **Report / Artifact 경로** | 리포트·아티팩트 저장 경로 |
+| **Report / Output / Artifact 경로** | 리포트·출력·아티팩트 저장 경로 |
 | **승률 그래프 (Win-rate)** | 샘플별 승률 곡선. `pyqtgraph` 설치 시에만 표시(미설치 시 안내 문구) |
 | **로그 영역** | 학습 공개 로그 실시간 출력 |
 | **하단 메시지 줄** | 상태 메시지 표시 |
 
-> 용어 정리: **Environment step(환경 스텝)**, **MainAgent transition(메인 AI 학습 전이)**, **PPO update(PPO 업데이트)** 는 서로 다른 단위로 각각 집계됩니다. 진행 바는 MainAgent 전이 기준입니다.
+> 경로 기본값은 현재 작업 디렉터리가 아니라 이 프로젝트 폴더를 기준으로 계산됩니다. `reports/`, `outputs/`, `artifacts/` 폴더는 실행 시 자동으로 만들어집니다. 리포트와 아티팩트 경로에 폴더를 입력하면 작업 ID를 이용한 파일명이 자동으로 붙습니다.
+>
+> **이어 학습**: `이어 학습할 아티팩트`에 `.bangmodel` 파일을 지정하거나 `artifacts/` 폴더를 지정하면 해당 모델의 PPO 가중치에서 학습을 이어갑니다. Intent/Emotion 모듈은 고정되고 PPO optimizer는 새로 생성됩니다. 따라서 정확한 optimizer·rollout·난수·환경 상태 복원이 아니라 **기존 모델 가중치에서 다시 학습하는 방식**입니다. 빈 값으로 두면 새 모델로 시작합니다.
 
 ---
 
@@ -239,7 +242,9 @@ GameContentsCapstonedesign/
 ├─ requirements.lock        # 헤드리스(학습/테스트) 잠금 파일
 ├─ requirements-gui.lock    # GUI 포함 잠금 파일
 ├─ README.md                # 개발/공개 API 중심 문서
-├─ USER_GUIDE.md            # (이 문서) 사용자 가이드
+├─ reports/                  # 학습 리포트 기본 저장 위치
+├─ outputs/                  # 학습 일반 산출물 기본 저장 위치
+├─ artifacts/                # .bangmodel 기본 저장/이어 학습 위치
 └─ bang_rl/                 # 메인 패키지
    ├─ __init__.py
    ├─ exceptions.py         # 공용 예외 계층

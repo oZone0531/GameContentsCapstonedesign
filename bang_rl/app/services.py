@@ -35,12 +35,21 @@ from bang_rl.runtime.logging import LogChannel, StructuredLogger, get_component_
 from bang_rl.runtime.metadata import build_run_metadata
 from bang_rl.runtime.pause_coordinator import PauseState, WorkerCancelled
 from bang_rl.runtime.seed import SeedManager
+from bang_rl.paths import (
+    ARTIFACTS_DIR,
+    OUTPUTS_DIR,
+    REPORTS_DIR,
+    ensure_training_directories,
+    latest_artifact,
+    resolve_training_file,
+)
 from bang_rl.training import (
     DummyVecEnv,
     EpisodeRecord,
     ResourceGuard,
     WorkerFault,
     load_final_inference_artifact,
+    load_final_artifact_for_training,
 )
 
 
@@ -194,9 +203,10 @@ class TrainingConfig:
     agents: Sequence[Any] | None = None
     action_provider: Any = None
     runner: Callable[..., Any] | None = None
-    report_path: str | Path | None = None
-    output_path: str | Path | None = None
-    artifact_path: str | Path | None = None
+    report_path: str | Path | None = REPORTS_DIR
+    output_path: str | Path | None = OUTPUTS_DIR
+    artifact_path: str | Path | None = ARTIFACTS_DIR
+    resume_artifact_path: str | Path | None = ARTIFACTS_DIR
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +234,7 @@ class TrainingProgress:
     truncated_rate: float | None = None
     metrics: Mapping[str, Any] = field(default_factory=dict)
     logs: tuple[Mapping[str, Any], ...] = ()
+    output_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,7 +265,7 @@ class TrainingReport:
                 "active_training_seconds": self.progress.active_training_seconds,
                 "artifact_path": self.progress.artifact_path,
                 "report_path": self.progress.report_path,
-                "truncated_episodes": self.progress.truncated_episodes,
+                "output_path": self.progress.output_path,
                 "normal_episodes": self.progress.normal_episodes,
                 "win_rate": self.progress.win_rate,
                 "truncated_rate": self.progress.truncated_rate,
@@ -350,6 +361,9 @@ class _TrainingRun:
     pause_started_at: datetime | None = None
     artifact_path: str | None = None
     report_path: str | None = None
+    output_path: str | None = None
+    resume_artifact_path: str | None = None
+    resume_artifact: Any = None
     error: Mapping[str, Any] | None = None
     truncated_episodes: int = 0
     normal_episodes: int = 0
@@ -614,7 +628,15 @@ class TrainingService:
                 "provide an explicit runner or use a pipeline orchestrator"
             )
         seed = config.seed if options.seed is None else int(options.seed)
+        ensure_training_directories()
         job = TrainingJob.start(config, mode=options.mode, seed=seed, split_seed=options.split_seed)
+        resume_source = latest_artifact(options.resume_artifact_path)
+        resume_artifact = None
+        if resume_source is not None:
+            # This is a weights-only continuation.  The loader verifies the
+            # bundle and leaves PPO trainable with a fresh optimizer created by
+            # the caller's PPOTrainer.
+            resume_artifact = load_final_artifact_for_training(resume_source)
         guard = ResourceGuard(job.snapshot)
         agents = tuple(options.agents) if options.agents is not None else tuple(
             DummyAgent(f"player_{index}", seed=SeedManager(seed, snapshot=job.snapshot).agent_seed(f"player_{index}"), player_idx=index, policy_config=config.preset.intent_policy, emotion_config=config.preset.emotion)
@@ -639,10 +661,21 @@ class TrainingService:
             )
             guard.validate_workers(vector.num_workers)
         handle = TrainingHandle(job.job_id, job.snapshot)
-        run = _TrainingRun(handle, options, config, vector, logger)
+        output_root = OUTPUTS_DIR if options.output_path is None else Path(options.output_path).expanduser()
+        output_root.mkdir(parents=True, exist_ok=True)
+        run = _TrainingRun(
+            handle,
+            options,
+            config,
+            vector,
+            logger,
+            output_path=str(output_root),
+            resume_artifact_path=None if resume_source is None else str(resume_source),
+            resume_artifact=resume_artifact,
+        )
         # Paths are public job metadata and should be visible before completion.
-        run.report_path = _path_string(options.report_path)
-        run.artifact_path = _path_string(options.artifact_path)
+        run.report_path = str(resolve_training_file(options.report_path, root=REPORTS_DIR, filename=f"{job.job_id}.json", suffix=".json"))
+        run.artifact_path = str(resolve_training_file(options.artifact_path, root=ARTIFACTS_DIR, filename=f"{job.job_id}.bangmodel", suffix=".bangmodel"))
         with self._lock:
             self._runs[handle.job_id] = run
         run.thread = Thread(target=self._execute, args=(run,), name=f"bang-rl-{handle.job_id}", daemon=True)
@@ -736,13 +769,12 @@ class TrainingService:
             )
             report = TrainingReport(
                 run.handle.job_id, run.status, run.handle.snapshot, progress,
-                _path_string(run.config.output_path), _path_string(run.config.report_path),
+                run.output_path, run.report_path,
                 tuple(run.records), report_metadata,
             )
-            report_path = _path_string(run.config.report_path)
+            report_path = run.report_path
             if report_path is not None:
                 _write_json(Path(report_path), report.to_dict())
-                run.report_path = report_path
             run.logger.event("training_finished", status=run.status, environment_steps=run.environment_steps, main_agent_transitions=run.transitions)
 
     def pause(self, handle: TrainingHandle | str, timeout: float | None = None) -> None:
@@ -796,30 +828,31 @@ class TrainingService:
             run.thread.join(timeout)
         if run.thread is not None and run.thread.is_alive():
             raise TimeoutError("training job did not finish before timeout")
-        return TrainingReport(run.handle.job_id, run.status, run.handle.snapshot, self._progress(run), _path_string(run.config.output_path), _path_string(run.config.report_path), tuple(run.records))
+        return TrainingReport(run.handle.job_id, run.status, run.handle.snapshot, self._progress(run), run.output_path, run.report_path, tuple(run.records))
 
     @staticmethod
     def _progress(run: _TrainingRun) -> TrainingProgress:
         completed = run.truncated_episodes + run.normal_episodes
         truncated_rate = None if completed == 0 else run.truncated_episodes / completed
         return TrainingProgress(
-            run.handle.job_id,
-            run.status,
-            run.environment_steps,
-            run.transitions,
-            run.ppo_updates,
-            run.episodes_completed,
-            run.system_config.hardware.workers,
-            run.active_training_seconds,
-            run.artifact_path,
-            run.report_path,
-            run.error,
-            run.truncated_episodes,
-            run.normal_episodes,
-            run.win_rate,
-            truncated_rate,
-            _freeze({"episodes_completed": run.episodes_completed, **run.metrics}),
-            tuple(_freeze(_json_value(item)) for item in run.logs),
+            job_id=run.handle.job_id,
+            status=run.status,
+            environment_steps=run.environment_steps,
+            main_agent_transitions=run.transitions,
+            ppo_updates=run.ppo_updates,
+            episodes_completed=run.episodes_completed,
+            worker_count=run.system_config.hardware.workers,
+            active_training_seconds=run.active_training_seconds,
+            artifact_path=run.artifact_path,
+            report_path=run.report_path,
+            error=run.error,
+            truncated_episodes=run.truncated_episodes,
+            normal_episodes=run.normal_episodes,
+            win_rate=run.win_rate,
+            truncated_rate=truncated_rate,
+            metrics=_freeze({"episodes_completed": run.episodes_completed, **run.metrics}),
+            logs=tuple(_freeze(_json_value(item)) for item in run.logs),
+            output_path=run.output_path,
         )
 
 

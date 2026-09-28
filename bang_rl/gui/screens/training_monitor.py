@@ -56,9 +56,10 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self.target.setSpecialValueText("Use episodes")
             self.seed = QSpinBox(self)
             self.seed.setRange(-2_147_483_648, 2_147_483_647)
-            self.report = QLineEdit(self)
-            self.output = QLineEdit(self)
-            self.artifact = QLineEdit(self)
+            self.report = QLineEdit(str(REPORTS_DIR), self)
+            self.output = QLineEdit(str(OUTPUTS_DIR), self)
+            self.artifact = QLineEdit(str(ARTIFACTS_DIR), self)
+            self.resume_artifact = QLineEdit(str(ARTIFACTS_DIR), self)
             form = QFormLayout(self)
             form.addRow(tr("training.mode"), self.mode)
             form.addRow(tr("training.episodes"), self.episodes)
@@ -67,6 +68,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             form.addRow(tr("training.report_path"), self.report)
             form.addRow(tr("training.output_path"), self.output)
             form.addRow(tr("training.artifact_path"), self.artifact)
+            form.addRow(tr("training.resume_artifact_path"), self.resume_artifact)
 
         def setup(self) -> TrainingSetup:
             target = self.target.value() or None
@@ -79,6 +81,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 report_path=self.report.text().strip() or None,
                 output_path=self.output.text().strip() or None,
                 artifact_path=self.artifact.text().strip() or None,
+                resume_artifact_path=self.resume_artifact.text().strip() or None,
             )
 
 
@@ -106,7 +109,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self.metrics = QLabel("Metrics: —", self)
             self.status = QLabel(tr("training.no_job"), self)
             self.snapshot = QLabel(tr("training.snapshot_not_started"), self)
-            self.paths = QLabel("Report: — · Artifact: —", self)
+            self.paths = QLabel("Report: — · Output: — · Artifact: —", self)
             self.logs = QPlainTextEdit(self)
             self.logs.setReadOnly(True)
             self.message = QLabel(self)
@@ -175,7 +178,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 self.progress_bar.setValue(0)
                 self.status.setText(tr("training.no_job"))
                 self.snapshot.setText(tr("training.snapshot_not_started"))
-                self.paths.setText("Report: — · Artifact: —")
+                self.paths.setText("Report: — · Output: — · Artifact: —")
                 return
             target = getattr(state.handle, "snapshot", None)
             target_config = getattr(target, "config_snapshot", {}) if target is not None else {}
@@ -197,7 +200,8 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                     f"· seed {state.snapshot.seed}"
                 )
             self.paths.setText(
-                f"Report: {progress.report_path or '—'} · Artifact: {progress.artifact_path or '—'}"
+                f"Report: {progress.report_path or '—'} · Output: {getattr(progress, 'output_path', None) or '—'} · "
+                f"Artifact: {progress.artifact_path or '—'}"
             )
             self.logs.setPlainText("\n".join(state.logs))
             self.message.setText(state.message or "")

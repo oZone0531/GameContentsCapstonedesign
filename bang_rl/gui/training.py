@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, TYPE_CHECKING
 
+from bang_rl.paths import ARTIFACTS_DIR, OUTPUTS_DIR, REPORTS_DIR
+
 if TYPE_CHECKING:
     from bang_rl.app import TrainingConfig, TrainingHandle, TrainingProgress
     from bang_rl.config import JobSnapshot, SystemConfig
@@ -123,9 +125,10 @@ class TrainingSetup:
     target_transitions: int | None = None
     seed: int | None = None
     split_seed: int | None = None
-    report_path: str | Path | None = None
-    output_path: str | Path | None = None
-    artifact_path: str | Path | None = None
+    report_path: str | Path | None = REPORTS_DIR
+    output_path: str | Path | None = OUTPUTS_DIR
+    artifact_path: str | Path | None = ARTIFACTS_DIR
+    resume_artifact_path: str | Path | None = ARTIFACTS_DIR
 
     def to_request(self) -> TrainingConfig:
         from bang_rl.app import TrainingConfig as ConcreteTrainingConfig
@@ -140,6 +143,7 @@ class TrainingSetup:
             report_path=self.report_path,
             output_path=self.output_path,
             artifact_path=self.artifact_path,
+            resume_artifact_path=self.resume_artifact_path,
         )
 
 

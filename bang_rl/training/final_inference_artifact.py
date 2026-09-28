@@ -448,7 +448,13 @@ class PPOInferenceArtifact:
 
     @property
     def inference_only(self) -> bool:
-        return True
+        return not any(parameter.requires_grad for parameter in self.ppo.parameters())
+
+    @property
+    def training_ready(self) -> bool:
+        """Whether the PPO policy can be passed to ``PPOTrainer``."""
+
+        return not self.inference_only
 
     def __call__(self, inputs: Any, action_mask: Any | None = None, **kwargs: Any) -> Any:
         return self.ppo(inputs, action_mask, **kwargs)
@@ -632,6 +638,42 @@ def load_final_inference_artifact(
     return PPOInferenceArtifact(intent, emotion, ppo, role_fusion, preprocessor, metadata, source)
 
 
+def load_final_artifact_for_training(
+    path: str | os.PathLike[str],
+    *,
+    expected: Mapping[str, Any] | None = None,
+    expected_snapshot: JobSnapshot | Mapping[str, Any] | None = None,
+    config: Any | None = None,
+    config_snapshot: Mapping[str, Any] | Any | None = None,
+    map_location: str | torch.device = "cpu",
+) -> PPOInferenceArtifact:
+    """Load a final bundle as a new PPO training starting point.
+
+    ``.bangmodel`` intentionally does not contain optimizer, rollout, RNG, or
+    environment state.  This function therefore continues from model weights
+    only: Intent/Emotion remain frozen and PPO receives a fresh optimizer when
+    it is passed to :class:`PPOTrainer`.
+    """
+
+    artifact = load_final_inference_artifact(
+        path,
+        expected=expected,
+        expected_snapshot=expected_snapshot,
+        config=config,
+        config_snapshot=config_snapshot,
+        map_location=map_location,
+    )
+    artifact.ppo.train()
+    for parameter in artifact.ppo.parameters():
+        parameter.requires_grad_(True)
+    artifact.intent.eval()
+    artifact.emotion.eval()
+    for module in (artifact.intent, artifact.emotion):
+        for parameter in module.parameters():
+            parameter.requires_grad_(False)
+    return artifact
+
+
 def migrate_final_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
     """Reject unknown versions; no implicit tensor/schema migration exists."""
 
@@ -667,6 +709,7 @@ __all__ = [
     "freeze_inference_modules",
     "load_bangmodel",
     "load_final_artifact",
+    "load_final_artifact_for_training",
     "load_final_inference_artifact",
     "migrate_final_metadata",
     "read_final_artifact_metadata",
