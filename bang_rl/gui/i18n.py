@@ -314,6 +314,29 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ko": "더미 AI 감정 설정 창을 여는 버튼입니다.",
     },
 
+    # Replay viewer (reuses the graphical board + log + speed slider)
+    "menu.replay": {"en": "Replay", "ko": "리플레이"},
+    "replay.title": {"en": "Bang RL - Replay", "ko": "Bang RL - 리플레이"},
+    "replay.play": {"en": "Play", "ko": "재생"},
+    "replay.pause": {"en": "Pause", "ko": "일시정지"},
+    "replay.next": {"en": "Next turn →", "ko": "다음 턴 →"},
+    "replay.prev": {"en": "← Previous turn", "ko": "← 이전 턴"},
+    "replay.autoplay": {"en": "Auto-play", "ko": "자동 재생"},
+    "replay.speed": {
+        "en": "Playback speed: {seconds:.1f}s per turn",
+        "ko": "재생 속도: 턴당 {seconds:.1f}초",
+    },
+    "replay.status": {"en": "Turn {index}/{total}", "ko": "턴 {index}/{total}"},
+    "replay.no_episode": {
+        "en": "No replay loaded. Open a recorded episode to watch it.",
+        "ko": "불러온 리플레이가 없습니다. 기록된 에피소드를 열어 감상하세요.",
+    },
+    "replay.open_file": {"en": "Open replay file", "ko": "리플레이 파일 열기"},
+    "replay.file_filter": {
+        "en": "Recorded episode (*.json *.jsonl)",
+        "ko": "기록된 에피소드 (*.json *.jsonl)",
+    },
+
     # Model selection dialog
     "model.title": {"en": "Select inference model", "ko": "추론 모델 선택"},
     "model.select_prompt": {"en": "Select a compatible model.", "ko": "호환되는 모델을 선택하세요."},

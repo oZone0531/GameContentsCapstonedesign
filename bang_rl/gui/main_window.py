@@ -1,12 +1,14 @@
 """Main menu and game/training/settings entry point."""
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 from .i18n import tr
 from .qt_compat import (
+    QFileDialog,
     QMainWindow,
     QLabel,
     QPushButton,
@@ -17,8 +19,10 @@ from .qt_compat import (
 )
 from .dialogs.model_select import ModelSelection, ModelSelectionDialog
 from .game import GameGuiError, GameMode, GameSessionController
+from .replay import ReplayModel
 from .screens.game_mode import GameModeSelect
 from .screens.game_screen import GameScreen
+from .screens.replay_screen import ReplayScreen
 from .screens.settings import SettingsScreen
 from .screens.training_monitor import TrainingMonitor
 from .settings import SettingsEditor
@@ -73,7 +77,11 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self._game_screen: GameScreen | None = None
             self._training_monitor: TrainingMonitor | None = None
             self._settings_screen: SettingsScreen | None = None
+            self._replay_screen: ReplayScreen | None = None
             self._selection: ModelSelection | None = None
+            # An in-memory replay episode may be supplied by an embedder; when
+            # set it is used instead of prompting for a file.
+            self.replay_episode: Any = None
             self._show_menu()
 
         def _set_screen(self, widget: QWidget) -> None:
@@ -101,6 +109,9 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             settings_button = QPushButton(tr("menu.settings"), menu)
             settings_button.clicked.connect(self._show_settings)
             layout.addWidget(settings_button)
+            replay_button = QPushButton(tr("menu.replay"), menu)
+            replay_button.clicked.connect(self._show_replay)
+            layout.addWidget(replay_button)
             exit_button = QPushButton(tr("menu.exit"), menu)
             exit_button.clicked.connect(self.close)
             layout.addWidget(exit_button)
@@ -117,6 +128,48 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 self.settings_editor, parent=self, on_back=self._show_menu
             )
             self._set_screen(self._settings_screen)
+
+        def _show_replay(self) -> None:
+            """Open the graphical replay viewer for a recorded episode.
+
+            An in-memory episode (``self.replay_episode``) is used when present;
+            otherwise the user is prompted for a recorded episode file. If no
+            source is available the screen still opens with an empty model, so a
+            missing recorder never blocks reaching the replay UI.
+            """
+
+            episode = self.replay_episode
+            if episode is None:
+                episode = self._prompt_replay_episode()
+            model = None
+            if episode is not None:
+                try:
+                    model = ReplayModel(episode)
+                except (TypeError, ValueError, KeyError) as exc:
+                    self.statusBar().showMessage(str(exc) or tr("replay.no_episode"), 0)
+                    model = None
+            self._replay_screen = ReplayScreen(model, parent=self, on_back=self._show_menu)
+            self._set_screen(self._replay_screen)
+
+        def _prompt_replay_episode(self) -> Any:
+            """Prompt for a recorded episode file and load it as a dict.
+
+            Returns the parsed mapping, or ``None`` when the user cancels or the
+            file cannot be read. Kept tolerant so the replay screen still opens
+            (empty) rather than raising when no valid file is chosen.
+            """
+
+            path, _selected = QFileDialog.getOpenFileName(
+                self, tr("replay.open_file"), "", tr("replay.file_filter")
+            )
+            if not path:
+                return None
+            try:
+                text = Path(path).read_text(encoding="utf-8")
+                return json.loads(text)
+            except (OSError, ValueError) as exc:
+                self.statusBar().showMessage(str(exc) or tr("replay.no_episode"), 0)
+                return None
 
         def _select_mode(self, mode: GameMode) -> None:
             artifact_path: str | None = None
