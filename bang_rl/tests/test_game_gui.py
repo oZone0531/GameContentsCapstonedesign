@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from bang_rl.gui import GameGuiError, GameMode, GameSessionController, GuiDependencyError, QT_AVAILABLE
 from bang_rl.gui.dialogs.model_select import ArtifactOption, ModelSelection
 from bang_rl.gui.widgets import opponent_public_rows
+from bang_rl.gui.widgets import board_layout
 
 
 @dataclass
@@ -222,3 +223,134 @@ def test_error_message_falls_back_to_localized_generic_when_exception_is_empty()
         assert controller.snapshot.message == tr("game.error_generic")
     finally:
         set_language(original)
+
+
+# --- Graphical board layout helpers (pure, Qt-free) ----------------------
+
+def test_human_seat_is_at_the_bottom_and_seats_are_distinct() -> None:
+    width, height = 800.0, 600.0
+    positions = board_layout.seat_positions(width, height, human_player=0)
+    assert set(positions) == {0, 1, 2, 3, 4}
+    human_x, human_y = positions[0]
+    # The human seat is centred horizontally and near the bottom edge.
+    assert human_x == pytest.approx(width / 2)
+    assert human_y > height * 0.75
+    # Every opponent sits above (smaller y) the human seat.
+    for player in (1, 2, 3, 4):
+        assert positions[player][1] < human_y
+
+
+def test_click_on_opponent_maps_to_bang_and_self_maps_to_pass() -> None:
+    width, height = 800.0, 600.0
+    positions = board_layout.seat_positions(width, height, human_player=0)
+    # Clicking the human's own circle -> PASS (action 0).
+    hx, hy = positions[0]
+    seat = board_layout.seat_at_point(hx, hy, width, height, human_player=0)
+    assert seat == 0
+    assert board_layout.action_for_seat(seat, human_player=0) == 0
+    # Clicking opponent player 3 -> BANG action index 4 (player_index + 1).
+    ox, oy = positions[3]
+    opp_seat = board_layout.seat_at_point(ox, oy, width, height, human_player=0)
+    assert opp_seat == 3
+    assert board_layout.action_for_seat(opp_seat, human_player=0) == 4
+
+
+def test_click_outside_any_circle_returns_none() -> None:
+    assert board_layout.seat_at_point(0.0, 0.0, 800.0, 600.0, human_player=0) is None
+
+
+def test_illegal_targets_are_rejected_against_the_mask() -> None:
+    mask = (1, 0, 1, 0, 0, 0)  # PASS legal, BANG player_1 legal, others not.
+    assert board_layout.is_action_legal(0, mask) is True
+    assert board_layout.is_action_legal(2, mask) is True
+    assert board_layout.is_action_legal(1, mask) is False
+    assert board_layout.is_action_legal(5, mask) is False
+    # Out-of-range action indices are rejected safely.
+    assert board_layout.is_action_legal(9, mask) is False
+
+
+def test_seat_fill_color_reflects_health_and_elimination() -> None:
+    healths = (5, 1, 0, 4, 4)
+    alive = (True, True, False, True, True)
+    # Eliminated seat is dark grey regardless of stored health.
+    assert board_layout.seat_fill_color(2, healths, alive) == (70, 70, 70)
+    full = board_layout.seat_fill_color(0, healths, alive)
+    low = board_layout.seat_fill_color(1, healths, alive)
+    # Lower health shifts the fill redder (more red, less blue) than full health.
+    assert low[0] > full[0]
+    assert low[2] < full[2]
+
+
+def test_muzzle_point_and_angle_point_from_shooter_toward_target() -> None:
+    width, height = 800.0, 600.0
+    result = board_layout.muzzle_point_and_angle(1, 3, width, height, human_player=0)
+    assert result is not None
+    (mx, my), angle = result
+    positions = board_layout.seat_positions(width, height, human_player=0)
+    sx, sy = positions[1]
+    radius = board_layout.circle_radius(width, height)
+    # The muzzle sits one radius from the shooter centre.
+    assert ((mx - sx) ** 2 + (my - sy) ** 2) ** 0.5 == pytest.approx(radius, rel=1e-6)
+    # A shooter cannot fire at itself.
+    assert board_layout.muzzle_point_and_angle(1, 1, width, height) is None
+
+
+# --- Controller single-AI-step seam --------------------------------------
+
+def test_single_ai_step_advances_exactly_one_service_step() -> None:
+    # Human at slot 0 acts (advance_ai=False), then an AI seat (player 1) is
+    # active, then control returns to the human. step_single_ai_turn must
+    # advance exactly one service.step at a time and stop at the human seat.
+    service = FakeService([
+        state(current=0, mask=(1, 1, 0, 0, 0, 0)),
+        state(current=1, mask=(1, 0, 0, 0, 0, 0), step=1),
+        state(current=0, mask=(1, 1, 0, 0, 0, 0), step=2),
+    ])
+    controller = GameSessionController(service)
+    controller.start(GameMode.HUMAN_RANDOM)
+    controller.submit_human_action(1, advance_ai=False)
+    assert service.steps == [1]
+    assert controller.is_ai_turn() is True
+    controller.step_single_ai_turn()
+    # Exactly one AI step ran and control returned to the human seat.
+    assert service.steps == [1, None]
+    assert controller.is_ai_turn() is False
+    # Polling again at the human seat is a safe no-op (no extra step).
+    controller.step_single_ai_turn()
+    assert service.steps == [1, None]
+
+
+def test_submit_human_action_can_defer_ai_advancement() -> None:
+    # With advance_ai=False the controller must not fast-forward AI turns;
+    # the caller (graphical screen) drives them one at a time instead.
+    service = FakeService([
+        state(current=0, mask=(1, 1, 0, 0, 0, 0)),
+        state(current=1, mask=(1, 0, 0, 0, 0, 0), step=1),
+        state(current=0, mask=(1, 1, 0, 0, 0, 0), step=2),
+    ])
+    controller = GameSessionController(service)
+    controller.start(GameMode.HUMAN_RANDOM)
+    controller.submit_human_action(1, advance_ai=False)
+    # Only the human's own step ran; the AI seat is now pending.
+    assert service.steps == [1]
+    assert controller.is_ai_turn() is True
+
+
+def test_ai_speed_slider_bounds_include_the_one_second_default() -> None:
+    from bang_rl.gui.screens.game_screen import (
+        AI_SPEED_DEFAULT_MS,
+        AI_SPEED_MAX_MS,
+        AI_SPEED_MIN_MS,
+    )
+
+    assert AI_SPEED_MIN_MS <= AI_SPEED_DEFAULT_MS <= AI_SPEED_MAX_MS
+    assert AI_SPEED_DEFAULT_MS == 1000
+
+
+def test_new_ai_speed_i18n_keys_exist_in_both_languages() -> None:
+    from bang_rl.gui.i18n import _STRINGS
+
+    for key in ("game.ai_speed", "game.ai_speed_value", "game.you_name", "game.player_name"):
+        assert key in _STRINGS
+        assert "en" in _STRINGS[key]
+        assert "ko" in _STRINGS[key]

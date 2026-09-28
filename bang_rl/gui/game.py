@@ -158,7 +158,7 @@ class GameSessionController:
             self._publish()
             raise GameGuiError(self.message) from exc
 
-    def submit_human_action(self, action: int) -> GameControllerSnapshot:
+    def submit_human_action(self, action: int, *, advance_ai: bool = True) -> GameControllerSnapshot:
         if not self.active or self.handle is None or self.state is None:
             raise GameGuiError("No active game session.")
         if self.paused:
@@ -179,8 +179,46 @@ class GameSessionController:
             self.state = result.state
             self.message = None
             self._finish_if_terminal()
-            if self.active:
+            # When ``advance_ai`` is False the caller (the graphical screen)
+            # drives the AI cadence one turn at a time via step_single_ai_turn
+            # on a QTimer, so the controller must not fast-forward here.
+            if self.active and advance_ai:
                 self._advance_to_human_turn()
+            return self._publish()
+        except Exception as exc:
+            self.message = self._error_message(exc)
+            self._publish()
+            raise GameGuiError(self.message) from exc
+
+    def is_ai_turn(self) -> bool:
+        """Return ``True`` when it is an AI seat's turn on an active session."""
+
+        return bool(
+            self.active
+            and not self.paused
+            and self.state is not None
+            and not (self.state.terminated or self.state.truncated)
+            and self.state.current_player != self.HUMAN_PLAYER
+        )
+
+    def step_single_ai_turn(self) -> GameControllerSnapshot:
+        """Advance exactly ONE AI turn, then publish the new snapshot.
+
+        Unlike :meth:`_advance_to_human_turn`, which loops until the human seat
+        is reached, this performs at most a single ``service.step`` so the GUI
+        can animate AI turns one at a time on a QTimer.  It is a no-op when it
+        is not an AI seat's turn (human active, paused, terminal, or inactive),
+        which lets the caller poll it safely.  Kept Qt-free and covered by the
+        FakeService tests.
+        """
+
+        if not self.is_ai_turn() or self.handle is None:
+            return self._publish()
+        try:
+            result = self.service.step(self.handle)
+            self.state = result.state
+            self.message = None
+            self._finish_if_terminal()
             return self._publish()
         except Exception as exc:
             self.message = self._error_message(exc)

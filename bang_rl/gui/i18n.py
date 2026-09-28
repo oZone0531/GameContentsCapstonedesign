@@ -58,6 +58,18 @@ _STRINGS: dict[str, dict[str, str]] = {
     "game.action.bang": {"en": "BANG Player {player}", "ko": "뱅 플레이어 {player}"},
     "game.pause": {"en": "Pause", "ko": "일시정지"},
     "game.resume": {"en": "Resume", "ko": "재개"},
+    "game.ai_speed": {"en": "AI turn speed", "ko": "AI 턴 속도"},
+    "game.ai_speed_value": {
+        "en": "AI turn speed: {seconds:.1f}s per turn",
+        "ko": "AI 턴 속도: 턴당 {seconds:.1f}초",
+    },
+    "game.you_name": {"en": "You", "ko": "나"},
+    "game.player_name": {"en": "Player {player}", "ko": "플레이어 {player}"},
+    "game.click_hint": {
+        "en": "Your turn: click an opponent to BANG, click yourself to PASS.",
+        "ko": "당신 차례: 상대를 눌러 뱅, 자신을 눌러 패스하세요.",
+    },
+    "game.hp_label": {"en": "HP {health}", "ko": "체력 {health}"},
     "game.paused_msg": {"en": "Game paused.", "ko": "게임이 일시정지되었습니다."},
     "game.finished_normally_faction": {
         "en": "Game finished normally. {faction} wins.",
