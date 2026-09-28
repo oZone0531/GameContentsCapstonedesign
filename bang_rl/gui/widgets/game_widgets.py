@@ -4,10 +4,12 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from ..i18n import tr
 from ..qt_compat import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QListWidget,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -17,6 +19,7 @@ from ..qt_compat import (
     pyqtSignal,
     require_qt,
 )
+from ..roles import hidden_role_label, role_name
 
 
 def opponent_public_rows(state: Any, *, human_player: int = 0) -> tuple[dict[str, Any], ...]:
@@ -44,11 +47,14 @@ def opponent_public_rows(state: Any, *, human_player: int = 0) -> tuple[dict[str
 if QT_AVAILABLE:
 
     class GameBoard(QGroupBox):
-        def __init__(self, parent: QWidget | None = None) -> None:
+        def __init__(self, parent: QWidget | None = None, *, human_player: int = 0) -> None:
             require_qt()
-            super().__init__("Public game state", parent)
+            super().__init__(tr("game.public_state"), parent)
+            self.human_player = human_player
+            self.your_role = QLabel(parent=self)
             self._labels = [QLabel(parent=self) for _ in range(5)]
             layout = QVBoxLayout(self)
+            layout.addWidget(self.your_role)
             for label in self._labels:
                 layout.addWidget(label)
 
@@ -56,9 +62,20 @@ if QT_AVAILABLE:
             observation = state.observation
             healths = _sequence(observation.get("healths"), 5, 0)
             alive = _sequence(observation.get("alive"), 5, False)
+            revealed = _sequence(observation.get("revealed_roles"), 5, 255)
+            visibility = _sequence(observation.get("role_visibility"), 5, 0)
+            self.your_role.setText(
+                tr("game.you_are", player=self.human_player, role=_self_role(observation, self.human_player))
+            )
+            hp = tr("game.hp")
             for index, label in enumerate(self._labels):
-                status = "alive" if bool(alive[index]) else "eliminated"
-                label.setText(f"Player {index}: HP {healths[index]} — {status}")
+                status = tr("game.alive") if bool(alive[index]) else tr("game.eliminated")
+                you = tr("game.you_suffix") if index == self.human_player else ""
+                if index == self.human_player or int(visibility[index]) >= 2:
+                    known = _self_role(observation, index) if index == self.human_player else role_name(revealed[index])
+                else:
+                    known = hidden_role_label()
+                label.setText(f"Player {index}{you}: {hp} {healths[index]} — {status} — {known}")
 
 
     class ActionPanel(QWidget):
@@ -71,14 +88,14 @@ if QT_AVAILABLE:
             layout = QVBoxLayout(self)
             buttons_layout = QHBoxLayout()
             self.buttons: list[QPushButton] = []
-            labels = ["PASS", "BANG Player 0", "BANG Player 1", "BANG Player 2", "BANG Player 3", "BANG Player 4"]
+            labels = [tr("game.action.pass")] + [tr("game.action.bang", player=index) for index in range(5)]
             for action, label in enumerate(labels):
                 button = QPushButton(label, self)
                 button.clicked.connect(lambda _checked=False, selected=action: self.actionRequested.emit(selected))
                 buttons_layout.addWidget(button)
                 self.buttons.append(button)
             layout.addLayout(buttons_layout)
-            self.pause_button = QPushButton("Pause", self)
+            self.pause_button = QPushButton(tr("game.pause"), self)
             self.pause_button.clicked.connect(self.pauseRequested.emit)
             layout.addWidget(self.pause_button)
             self.message = QLabel(self)
@@ -88,7 +105,7 @@ if QT_AVAILABLE:
         def update_mask(self, mask: Sequence[int], *, paused: bool = False, active: bool = True) -> None:
             for button, allowed in zip(self.buttons, mask):
                 button.setEnabled(bool(allowed) and active and not paused)
-            self.pause_button.setText("Resume" if paused else "Pause")
+            self.pause_button.setText(tr("game.resume") if paused else tr("game.pause"))
             self.pause_button.setEnabled(active)
 
         def set_message(self, message: str | None) -> None:
@@ -100,10 +117,12 @@ if QT_AVAILABLE:
 
         def __init__(self, parent: QWidget | None = None, *, human_player: int = 0) -> None:
             require_qt()
-            super().__init__("Public opponent HUD", parent)
+            super().__init__(tr("game.opponents"), parent)
             self.human_player = human_player
             self.table = QTableWidget(4, 4, self)
-            self.table.setHorizontalHeaderLabels(["Player", "HP", "Status", "Role info"])
+            self.table.setHorizontalHeaderLabels(
+                [tr("hud.player"), tr("hud.hp"), tr("hud.status"), tr("hud.role")]
+            )
             layout = QVBoxLayout(self)
             layout.addWidget(self.table)
 
@@ -111,9 +130,36 @@ if QT_AVAILABLE:
             for row, opponent in enumerate(opponent_public_rows(state, human_player=self.human_player)):
                 self.table.setItem(row, 0, QTableWidgetItem(f"Player {opponent['player']}"))
                 self.table.setItem(row, 1, QTableWidgetItem(str(opponent["health"])))
-                self.table.setItem(row, 2, QTableWidgetItem("alive" if opponent["alive"] else "eliminated"))
-                role_text = "Hidden" if opponent["revealed_role"] is None else str(opponent["revealed_role"])
+                status = tr("game.alive") if opponent["alive"] else tr("game.eliminated")
+                self.table.setItem(row, 2, QTableWidgetItem(status))
+                role_text = hidden_role_label() if opponent["revealed_role"] is None else role_name(opponent["revealed_role"])
                 self.table.setItem(row, 3, QTableWidgetItem(role_text))
+
+
+    class GameLog(QGroupBox):
+        """Chronological, human-readable log of public game events."""
+
+        def __init__(self, parent: QWidget | None = None) -> None:
+            require_qt()
+            super().__init__(tr("game.log"), parent)
+            self.list = QListWidget(self)
+            layout = QVBoxLayout(self)
+            layout.addWidget(self.list)
+
+        def update_state(self, state: Any) -> None:
+            observation = getattr(state, "observation", None)
+            if observation is None:
+                return
+            events = observation.get("event_sequence") or ()
+            self.list.clear()
+            for event in events:
+                if isinstance(event, Mapping):
+                    self.list.addItem(format_event(event))
+            count = self.list.count()
+            if count:
+                self.list.setCurrentRow(count - 1)
+                self.list.scrollToBottom()
+
 
 else:
 
@@ -129,6 +175,59 @@ else:
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
             require_qt()
 
+    class GameLog:  # type: ignore[no-redef]
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            require_qt()
+
+
+def _self_role(observation: Mapping[str, Any], human_player: int) -> str:
+    """Resolve the viewer's own role label from the public observation."""
+
+    self_role = observation.get("self_role")
+    if self_role is not None:
+        try:
+            values = list(self_role)
+        except TypeError:
+            values = [self_role]
+        if values:
+            return role_name(values[0])
+    revealed = _sequence(observation.get("revealed_roles"), 5, 255)
+    return role_name(revealed[human_player]) if 0 <= human_player < len(revealed) else hidden_role_label()
+
+
+def format_event(event: Mapping[str, Any]) -> str:
+    """Render a single public event row as a readable, localized log line."""
+
+    step = event.get("environment_step")
+    prefix = tr("event.step", step=step) if step is not None else ""
+    event_type = str(event.get("event_type", "")).strip()
+    name = _event_label(event_type)
+    actor = event.get("actor_idx")
+    target = event.get("target_idx")
+    eliminated = event.get("eliminated_idx")
+    revealed = event.get("revealed_role")
+    parts: list[str] = [name]
+    if actor is not None:
+        parts.append(tr("event.by", player=int(actor)))
+    if target is not None:
+        parts.append(tr("event.target", player=int(target)))
+    if eliminated is not None:
+        parts.append(tr("event.eliminated", player=int(eliminated)))
+    if revealed is not None:
+        parts.append(tr("event.role", role=role_name(revealed)))
+    return prefix + " ".join(parts)
+
+
+def _event_label(event_type: str) -> str:
+    known = {
+        "bang", "pass", "player_eliminated", "role_revealed",
+        "game_started", "game_ended", "turn_started",
+    }
+    key = event_type.lower()
+    if key in known:
+        return tr(f"event.{key}")
+    return " ".join(part.capitalize() for part in key.replace("-", "_").split("_") if part) or "Event"
+
 
 def _sequence(value: Any, length: int, default: Any) -> list[Any]:
     if value is None:
@@ -140,4 +239,4 @@ def _sequence(value: Any, length: int, default: Any) -> list[Any]:
     return (values + [default] * length)[:length]
 
 
-__all__ = ["ActionPanel", "DebugHUD", "GameBoard", "opponent_public_rows"]
+__all__ = ["ActionPanel", "DebugHUD", "GameBoard", "GameLog", "format_event", "opponent_public_rows"]

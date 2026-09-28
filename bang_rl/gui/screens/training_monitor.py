@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from collections.abc import Callable
+
 from ..qt_compat import (
     QDoubleSpinBox,
     QFormLayout,
@@ -20,6 +22,7 @@ from ..qt_compat import (
     QT_AVAILABLE,
     require_qt,
 )
+from ..i18n import tr
 from ..training import TrainingMonitorController, TrainingMonitorSnapshot, TrainingSetup
 
 try:  # pyqtgraph is optional even when PyQt6 is available.
@@ -57,13 +60,13 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self.output = QLineEdit(self)
             self.artifact = QLineEdit(self)
             form = QFormLayout(self)
-            form.addRow("Mode", self.mode)
-            form.addRow("Episodes", self.episodes)
-            form.addRow("Target MainAgent transitions", self.target)
-            form.addRow("Seed", self.seed)
-            form.addRow("Report path", self.report)
-            form.addRow("Output path", self.output)
-            form.addRow("Artifact path", self.artifact)
+            form.addRow(tr("training.mode"), self.mode)
+            form.addRow(tr("training.episodes"), self.episodes)
+            form.addRow(tr("training.target"), self.target)
+            form.addRow(tr("training.seed"), self.seed)
+            form.addRow(tr("training.report_path"), self.report)
+            form.addRow(tr("training.output_path"), self.output)
+            form.addRow(tr("training.artifact_path"), self.artifact)
 
         def setup(self) -> TrainingSetup:
             target = self.target.value() or None
@@ -88,27 +91,29 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             *,
             setup_panel: TrainingSetupPanel | None = None,
             parent: QWidget | None = None,
+            on_back: Callable[[], None] | None = None,
         ) -> None:
             require_qt()
             super().__init__(parent)
             self.controller = controller or TrainingMonitorController()
             self.setup_panel = setup_panel or TrainingSetupPanel(parent=self)
+            self.on_back = on_back
             self.controller.on_update = self._render
             self.progress_bar = QProgressBar(self)
             self.progress_bar.setFormat("MainAgent transitions: %v / %m")
             self.environment_steps = QLabel("Environment steps: 0", self)
             self.truncated = QLabel("Truncated: 0 (0.0%)", self)
             self.metrics = QLabel("Metrics: —", self)
-            self.status = QLabel("No training job", self)
-            self.snapshot = QLabel("Snapshot: not started", self)
+            self.status = QLabel(tr("training.no_job"), self)
+            self.snapshot = QLabel(tr("training.snapshot_not_started"), self)
             self.paths = QLabel("Report: — · Artifact: —", self)
             self.logs = QPlainTextEdit(self)
             self.logs.setReadOnly(True)
             self.message = QLabel(self)
-            self.start_button = QPushButton("Start", self)
-            self.pause_button = QPushButton("Pause", self)
-            self.resume_button = QPushButton("Resume", self)
-            self.stop_button = QPushButton("Stop", self)
+            self.start_button = QPushButton(tr("training.start"), self)
+            self.pause_button = QPushButton(tr("training.pause"), self)
+            self.resume_button = QPushButton(tr("training.resume"), self)
+            self.stop_button = QPushButton(tr("training.stop"), self)
             buttons = QHBoxLayout()
             for button in (self.start_button, self.pause_button, self.resume_button, self.stop_button):
                 buttons.addWidget(button)
@@ -116,7 +121,10 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self.pause_button.clicked.connect(self._pause)
             self.resume_button.clicked.connect(self._resume)
             self.stop_button.clicked.connect(self._stop)
+            self.back_button = QPushButton(tr("common.back"), self)
+            self.back_button.clicked.connect(self._go_back)
             layout = QVBoxLayout(self)
+            layout.addWidget(self.back_button)
             layout.addWidget(self.setup_panel)
             layout.addLayout(buttons)
             layout.addWidget(self.progress_bar)
@@ -134,7 +142,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 layout.addWidget(self.plot)
             else:
                 self.plot = None
-                layout.addWidget(QLabel("Win-rate graph requires optional pyqtgraph.", self))
+                layout.addWidget(QLabel(tr("training.graph_needs_pyqtgraph"), self))
             layout.addWidget(self.logs)
             layout.addWidget(self.message)
             self._timer = QTimer(self)
@@ -142,6 +150,11 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self._timer.timeout.connect(self.controller.refresh)
             self._timer.start()
             self._render(self.controller.snapshot)
+
+        def _go_back(self) -> None:
+            self._timer.stop()
+            if self.on_back is not None:
+                self.on_back()
 
         def _start(self) -> None:
             self.controller.start(self.setup_panel.setup())
@@ -160,8 +173,8 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             if progress is None:
                 self.progress_bar.setRange(0, 1)
                 self.progress_bar.setValue(0)
-                self.status.setText("No training job")
-                self.snapshot.setText("Snapshot: not started")
+                self.status.setText(tr("training.no_job"))
+                self.snapshot.setText(tr("training.snapshot_not_started"))
                 self.paths.setText("Report: — · Artifact: —")
                 return
             target = getattr(state.handle, "snapshot", None)

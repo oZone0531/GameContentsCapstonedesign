@@ -20,6 +20,22 @@ python -m pip install -r requirements-gui.lock
 
 `requirements.lock` intentionally excludes PyQt6 and pyqtgraph. `requirements-gui.lock` includes it with the non-GUI lock. The GUI is optional: `import bang_rl.gui` remains safe in a headless installation, while constructing a concrete GUI widget requires the `[gui]` extra.
 
+### Launching the GUI (Windows)
+
+Two helper batch files are provided in the repository root:
+
+```powershell
+# 1. Install base + GUI dependencies (run once)
+install_gui.bat
+
+# 2. Launch the main menu (game / training / settings)
+run_gui.bat
+```
+
+`run_gui.bat` starts `python -m bang_rl.gui`. Each screen (game, training, settings)
+has a "← Back to menu" button, human games show a readable game log, and roles are
+displayed by name (Sheriff, Deputy, Outlaw A/B, Traitor) instead of numeric codes.
+
 ## Validation
 
 ```powershell

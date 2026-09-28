@@ -18,6 +18,7 @@ try:  # pragma: no cover - availability depends on the host environment
     from PyQt6.QtWidgets import (
         QApplication,
         QCheckBox,
+        QComboBox,
         QDialog,
         QDialogButtonBox,
         QDoubleSpinBox,
@@ -47,6 +48,7 @@ except ImportError as exc:  # pragma: no cover - exercised when Qt is absent
     QT_AVAILABLE = False
     QT_IMPORT_ERROR = exc
     QObject = QTimer = Qt = pyqtSignal = QApplication = None
+    QComboBox = None
     QCheckBox = QDialog = QDialogButtonBox = QDoubleSpinBox = None
     QFormLayout = QGroupBox = QHBoxLayout = QLabel = QLineEdit = None
     QListWidget = QListWidgetItem = QMainWindow = QPlainTextEdit = None
@@ -69,6 +71,7 @@ __all__ = [
     "QT_AVAILABLE",
     "QApplication",
     "QCheckBox",
+    "QComboBox",
     "QDialog",
     "QDialogButtonBox",
     "QDoubleSpinBox",

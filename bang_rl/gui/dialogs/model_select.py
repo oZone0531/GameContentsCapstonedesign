@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..i18n import tr
 from ..qt_compat import (
     QDialog,
     QDialogButtonBox,
@@ -32,7 +33,7 @@ class ArtifactOption:
 
     @property
     def compatibility_text(self) -> str:
-        return "Compatible" if self.compatible else "Not compatible"
+        return tr("model.compatible") if self.compatible else tr("model.not_compatible")
 
 
 class ModelSelection:
@@ -84,12 +85,12 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
         def __init__(self, options: Iterable[ArtifactOption], parent: QWidget | None = None) -> None:
             require_qt()
             super().__init__(parent)
-            self.setWindowTitle("Select inference model")
+            self.setWindowTitle(tr("model.title"))
             self._options = tuple(options)
             self._selected: ArtifactOption | None = None
             layout = QVBoxLayout(self)
             self._list = QListWidget(self)
-            self._details = QLabel("Select a compatible model.", self)
+            self._details = QLabel(tr("model.select_prompt"), self)
             self._details.setWordWrap(True)
             layout.addWidget(self._list)
             layout.addWidget(self._details)
@@ -116,18 +117,18 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
         def _show_details(self, item: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
             option = None if item is None else item.data(0x0100)
             if option is None:
-                self._details.setText("Select a compatible model.")
+                self._details.setText(tr("model.select_prompt"))
                 return
             metadata = ", ".join(f"{key}: {value}" for key, value in option.metadata.items())
             errors = "; ".join(str(error.get("message", error)) for error in option.errors)
             suffix = f" Errors: {errors}" if errors else ""
-            self._details.setText(f"{metadata or 'No metadata available.'}{suffix}")
+            self._details.setText(f"{metadata or tr('model.no_metadata')}{suffix}")
 
         def _accept_selection(self) -> None:
             item = self._list.currentItem()
             option = None if item is None else item.data(0x0100)
             if option is None or not option.compatible:
-                self._details.setText("This model is incompatible and cannot be executed.")
+                self._details.setText(tr("model.incompatible_msg"))
                 return
             self._selected = option
             self.accept()
