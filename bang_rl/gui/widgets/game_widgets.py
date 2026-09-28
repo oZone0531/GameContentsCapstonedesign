@@ -24,6 +24,12 @@ from ..qt_compat import (
 from ..roles import hidden_role_label, role_name
 
 
+# Maximum pixel width of the Opponents ('상대') HUD panel. Defined outside the
+# ``if QT_AVAILABLE:`` gate so it is importable/testable headlessly. Keeps the
+# panel from over-expanding while still fitting four short opponent rows.
+OPPONENT_PANEL_MAX_WIDTH = 340
+
+
 def opponent_public_rows(state: Any, *, human_player: int = 0) -> tuple[dict[str, Any], ...]:
     """Build a privacy-safe four-opponent projection from a public DTO."""
 
@@ -121,7 +127,13 @@ if QT_AVAILABLE:
             require_qt()
             super().__init__(tr("game.opponents"), parent)
             self.human_player = human_player
+            # Bound the panel width so the Opponents ('상대') group stops
+            # consuming excessive horizontal space. The four rows only hold a
+            # short player id, HP, status and a role label, so a modest cap is
+            # plenty and leaves room for the board and log panels.
+            self.setMaximumWidth(OPPONENT_PANEL_MAX_WIDTH)
             self.table = QTableWidget(4, 4, self)
+            self.table.setMaximumWidth(OPPONENT_PANEL_MAX_WIDTH)
             self.table.setHorizontalHeaderLabels(
                 [tr("hud.player"), tr("hud.hp"), tr("hud.status"), tr("hud.role")]
             )
@@ -253,4 +265,12 @@ def _sequence(value: Any, length: int, default: Any) -> list[Any]:
     return (values + [default] * length)[:length]
 
 
-__all__ = ["ActionPanel", "DebugHUD", "GameBoard", "GameLog", "format_event", "opponent_public_rows"]
+__all__ = [
+    "ActionPanel",
+    "DebugHUD",
+    "GameBoard",
+    "GameLog",
+    "OPPONENT_PANEL_MAX_WIDTH",
+    "format_event",
+    "opponent_public_rows",
+]

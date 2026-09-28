@@ -98,6 +98,8 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             self.back_button.clicked.connect(self._go_back)
             self.reward_label = QLabel(tr("settings.reward_json"), self)
 
+            self._apply_tooltips()
+
             form = QFormLayout()
             form.addRow(tr("settings.language"), self.language)
             form.addRow(tr("settings.ppo_clip"), self.clip)
@@ -138,9 +140,33 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
                 spin.setDecimals(4)
                 initial = definition.get("initial_value")
                 spin.setValue(float(initial) if initial is not None else float(baseline))
+                spin.setToolTip(tr("tooltip.emotion_initial_values"))
                 self.emotion_form.addRow(name, spin)
                 self.emotion_spins.append(spin)
                 self.emotion_names.append(name)
+
+        def _apply_tooltips(self) -> None:
+            """Set localized mouse-over help on every settings field.
+
+            Called once on build and again from _retranslate() so a language
+            switch updates the help text. Each per-emotion initial-value spin
+            also gets the shared emotion tooltip.
+            """
+
+            self.language.setToolTip(tr("tooltip.language"))
+            self.clip.setToolTip(tr("tooltip.ppo_clip"))
+            self.cpu.setToolTip(tr("tooltip.cpu"))
+            self.ram.setToolTip(tr("tooltip.ram"))
+            self.workers.setToolTip(tr("tooltip.workers"))
+            self.batch.setToolTip(tr("tooltip.batch"))
+            self.buffer.setToolTip(tr("tooltip.buffer"))
+            self.gpu.setToolTip(tr("tooltip.gpu"))
+            self.reward.setToolTip(tr("tooltip.reward_json"))
+            self.reward_label.setToolTip(tr("tooltip.reward_json"))
+            self.emotion_group.setToolTip(tr("tooltip.emotion_initial_values"))
+            self.dummy_ai_button.setToolTip(tr("tooltip.dummy_ai"))
+            for spin in self.emotion_spins:
+                spin.setToolTip(tr("tooltip.emotion_initial_values"))
 
         def _open_dummy_ai(self) -> None:
             dialog = DummyAISettingsDialog(self.editor, parent=self, on_applied=self._on_dummy_applied)
@@ -170,6 +196,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             self.emotion_group.setTitle(tr("settings.emotion_initial_values"))
             self.emotion_initial_help.setText(tr("settings.emotion_initial_help"))
             self.dummy_ai_button.setText(tr("settings.dummy_ai"))
+            self._apply_tooltips()
 
         def _go_back(self) -> None:
             if self.on_back is not None:

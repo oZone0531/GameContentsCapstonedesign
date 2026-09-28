@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import sys
 
-from .qt_compat import QApplication, GuiDependencyError, QT_AVAILABLE, QT_IMPORT_ERROR
-from .main_window import MainWindow
+from .qt_compat import QApplication, GuiDependencyError, QFont, QT_AVAILABLE, QT_IMPORT_ERROR
+from .main_window import MIN_FONT_POINT_SIZE, MainWindow
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -31,6 +31,11 @@ def main(argv: list[str] | None = None) -> int:
 
     args = list(sys.argv if argv is None else argv)
     app = QApplication.instance() or QApplication(args)
+    # Enlarge the whole GUI's text to at least MIN_FONT_POINT_SIZE (>=10pt) so
+    # every screen is comfortably readable. Keep any larger platform default.
+    font: QFont = app.font()
+    font.setPointSize(max(MIN_FONT_POINT_SIZE, font.pointSize()))
+    app.setFont(font)
     try:
         window = MainWindow()
     except GuiDependencyError as exc:  # pragma: no cover - defensive

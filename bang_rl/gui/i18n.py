@@ -205,6 +205,52 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ko": "승률 그래프에는 pyqtgraph(선택 설치)가 필요합니다.",
     },
 
+    # Settings field help tooltips (shown on mouse-over of each field/label)
+    "tooltip.language": {
+        "en": "Language used for the whole GUI.",
+        "ko": "GUI 전체에 사용되는 언어를 의미합니다.",
+    },
+    "tooltip.ppo_clip": {
+        "en": "PPO clipping epsilon that limits how far each policy update can move.",
+        "ko": "정책 갱신 폭을 제한하는 PPO 클리핑 엡실론 값을 의미합니다.",
+    },
+    "tooltip.cpu": {
+        "en": "Number of CPU cores used for training.",
+        "ko": "학습에 사용되는 CPU 코어의 수를 의미합니다.",
+    },
+    "tooltip.ram": {
+        "en": "Amount of RAM in gigabytes reserved for training.",
+        "ko": "학습에 할당되는 RAM 용량(GB)을 의미합니다.",
+    },
+    "tooltip.workers": {
+        "en": "Number of parallel worker processes that collect experience.",
+        "ko": "경험을 수집하는 병렬 워커 프로세스의 수를 의미합니다.",
+    },
+    "tooltip.batch": {
+        "en": "Number of samples used per training update.",
+        "ko": "한 번의 학습 갱신에 사용되는 샘플 수를 의미합니다.",
+    },
+    "tooltip.buffer": {
+        "en": "Number of transitions stored in the experience buffer.",
+        "ko": "경험 버퍼에 저장되는 전이의 수를 의미합니다.",
+    },
+    "tooltip.gpu": {
+        "en": "Use the GPU/CUDA for training when available.",
+        "ko": "가능한 경우 학습에 GPU/CUDA를 사용할지 여부를 의미합니다.",
+    },
+    "tooltip.reward_json": {
+        "en": "Reward shaping configuration in JSON format.",
+        "ko": "JSON 형식의 보상 설계 설정을 의미합니다.",
+    },
+    "tooltip.emotion_initial_values": {
+        "en": "Starting value (0-1) for each of the dummy AI's emotions.",
+        "ko": "더미 AI의 각 감정에 대한 초기값(0~1)을 의미합니다.",
+    },
+    "tooltip.dummy_ai": {
+        "en": "Open the dummy AI emotion configuration dialog.",
+        "ko": "더미 AI 감정 설정 창을 여는 버튼입니다.",
+    },
+
     # Model selection dialog
     "model.title": {"en": "Select inference model", "ko": "추론 모델 선택"},
     "model.select_prompt": {"en": "Select a compatible model.", "ko": "호환되는 모델을 선택하세요."},

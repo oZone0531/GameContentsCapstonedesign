@@ -25,6 +25,19 @@ from .settings import SettingsEditor
 from .training import TrainingMonitorController
 
 
+# Fixed, large window geometry shared by every screen. These live outside the
+# ``if QT_AVAILABLE:`` gate so they can be imported and unit-tested headlessly.
+# The window is sized once (see MainWindow.__init__) and never resized when the
+# user switches between the menu, game, training, and settings screens, so its
+# size stays constant and every screen's content fits without scrolling.
+WINDOW_WIDTH = 1280
+WINDOW_HEIGHT = 860
+
+# Minimum application font point size (item: make GUI text >= 10pt). Shared with
+# __main__.main() which sets the global QApplication font.
+MIN_FONT_POINT_SIZE = 10
+
+
 if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
 
     class MainWindow(QMainWindow):
@@ -43,6 +56,12 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             require_qt()
             super().__init__(parent)
             self.setWindowTitle(tr("app.title"))
+            # Size the window once to a large fixed geometry and keep it there.
+            # A matching minimum size stops any screen from shrinking it, and
+            # _set_screen no longer calls adjustSize(), so switching screens
+            # never changes the window size (item 1).
+            self.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
+            self.setMinimumSize(WINDOW_WIDTH, WINDOW_HEIGHT)
             self.service = service
             self.training_service = training_service
             self.artifact_paths = tuple(str(path) for path in artifact_paths)
@@ -58,16 +77,16 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self._show_menu()
 
         def _set_screen(self, widget: QWidget) -> None:
-            """Swap the central widget and resize the window to fit it.
+            """Swap the central widget while keeping the window size fixed.
 
-            Screens vary a lot in size (the settings form is much taller than
-            the menu), so without this the window keeps the largest screen's
-            geometry and the smaller menu ends up stranded in a big window.
+            The window is sized once in __init__ to a large fixed geometry, so
+            this must NOT call adjustSize() on the widget or the window.
+            Otherwise the window would resize to each screen's preferred size
+            and jump around when the user moves between the menu, game,
+            training, and settings screens (item 1).
             """
 
             self.setCentralWidget(widget)
-            widget.adjustSize()
-            self.adjustSize()
 
         def _show_menu(self) -> None:
             menu = QWidget(self)
