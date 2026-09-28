@@ -117,6 +117,29 @@ _STRINGS: dict[str, dict[str, str]] = {
     "event.role": {"en": "[role: {role}]", "ko": "[역할: {role}]"},
     "event.step": {"en": "[step {step}] ", "ko": "[스텝 {step}] "},
 
+    # Log-row hover: the game moment at which an action was recorded.
+    "log.moment": {
+        "en": "Recorded at step {step}",
+        "ko": "스텝 {step} 시점에 기록됨",
+    },
+    "log.moment_round": {
+        "en": "Recorded at step {step}, round {round}",
+        "ko": "스텝 {step}, 라운드 {round} 시점에 기록됨",
+    },
+    "log.moment_unknown": {
+        "en": "Recorded moment unavailable",
+        "ko": "기록된 시점 정보 없음",
+    },
+    # Bang! hit / elimination status shown during the shot animation.
+    "board.hit": {
+        "en": "Player {player} was hit!",
+        "ko": "플레이어 {player}가 명중당했습니다!",
+    },
+    "board.eliminated": {
+        "en": "Player {player} was eliminated!",
+        "ko": "플레이어 {player}가 탈락했습니다!",
+    },
+
     # Settings screen
     "settings.language": {"en": "Language", "ko": "언어"},
     "settings.ppo_clip": {"en": "PPO clip epsilon", "ko": "PPO 클립 엡실론"},

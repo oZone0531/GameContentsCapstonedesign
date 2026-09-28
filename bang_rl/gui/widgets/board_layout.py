@@ -14,7 +14,7 @@ action ``0`` (PASS).
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 PLAYER_COUNT = 5
 
@@ -114,30 +114,88 @@ def is_action_legal(action: int, mask: Sequence[int]) -> bool:
     return bool(mask[action])
 
 
+# Fully-faded eliminated seat: near-black with a low alpha so it visibly
+# recedes behind the living, coloured seats.
+_ELIMINATED_COLOR = (24, 24, 28, 90)
+
+
+def health_to_color(
+    health: int,
+    max_health: int,
+    alive: bool,
+) -> tuple[int, int, int, int]:
+    """Return an ``(r, g, b, a)`` fill for a seat from its health/alive state.
+
+    A living seat fades from a calm full-HP blue toward a *vivid* red as its
+    health drops: at full HP the colour is clearly not red, at ~1 HP it is a
+    near-pure vivid red.  An eliminated seat (``alive`` False or ``health<=0``)
+    renders as a faded near-black (low alpha) so it is visually distinct from
+    the living, coloured players.  Kept Qt-free so FEAT-004 colour behaviour is
+    unit-testable headlessly.
+    """
+
+    current = int(health)
+    if not bool(alive) or current <= 0:
+        return _ELIMINATED_COLOR
+    ceiling = max(1, int(max_health))
+    ratio = max(0.0, min(1.0, current / ceiling))
+    # Vivid red at low HP -> calm blue at full HP. ``damage`` is how hurt the
+    # seat is (1.0 at 1/ceiling health, 0.0 at full health).
+    damage = 1.0 - ratio
+    red = int(round(70 + 185 * damage))
+    green = int(round(150 - 120 * damage))
+    blue = int(round(210 - 170 * damage))
+    return (
+        max(0, min(255, red)),
+        max(0, min(255, green)),
+        max(0, min(255, blue)),
+        255,
+    )
+
+
 def seat_fill_color(
     player: int,
     healths: Sequence[int],
     alive: Sequence[bool],
     *,
     max_health: int = 5,
-) -> tuple[int, int, int]:
-    """Return an ``(r, g, b)`` fill for a seat based on health/alive state.
+) -> tuple[int, int, int, int]:
+    """Return an ``(r, g, b, a)`` fill for ``player`` based on health/alive.
 
-    An eliminated seat is a dark grey; a living seat fades from a healthy blue
-    toward red as its health drops.  FEAT-004 extends the visual treatment;
-    this keeps the math pure and testable now.
+    Thin adapter over :func:`health_to_color` that reads the per-seat values
+    out of the public ``healths``/``alive`` sequences.  A living seat reddens
+    with damage; an eliminated seat is faded near-black.
     """
 
-    if player < 0 or player >= len(alive) or not bool(alive[player]):
-        return (70, 70, 70)
+    is_alive = 0 <= player < len(alive) and bool(alive[player])
     current = int(healths[player]) if 0 <= player < len(healths) else 0
-    ceiling = max(1, int(max_health))
-    ratio = max(0.0, min(1.0, current / ceiling))
-    # Interpolate from red (low health) to a calm blue (full health).
-    red = int(round(200 - 120 * ratio))
-    green = int(round(90 + 60 * ratio))
-    blue = int(round(90 + 110 * ratio))
-    return (red, green, blue)
+    return health_to_color(current, max_health, is_alive)
+
+
+def new_animation_events(
+    prev_events: Sequence[Mapping] | None,
+    current_events: Sequence[Mapping] | None,
+) -> list[Mapping]:
+    """Return the bang/elimination events added since ``prev_events``.
+
+    ``event_sequence`` grows monotonically, so the freshly-appended tail is
+    ``current_events[len(prev_events):]``.  From that tail we keep only the
+    events worth animating: ``bang`` shots and ``player_eliminated``
+    eliminations.  Pure and Qt-free so the trigger diff is unit-testable.
+    """
+
+    prev = list(prev_events or ())
+    current = list(current_events or ())
+    start = len(prev) if len(current) >= len(prev) else 0
+    tail = current[start:]
+    animated = {"bang", "player_eliminated"}
+    result: list[Mapping] = []
+    for event in tail:
+        if not isinstance(event, Mapping):
+            continue
+        if str(event.get("event_type", "")).strip().lower() in animated:
+            result.append(event)
+    return result
 
 
 def muzzle_point(
@@ -225,9 +283,11 @@ __all__ = [
     "action_for_seat",
     "circle_radius",
     "gun_angle",
+    "health_to_color",
     "is_action_legal",
     "muzzle_point",
     "muzzle_point_and_angle",
+    "new_animation_events",
     "seat_at_point",
     "seat_fill_color",
     "seat_for_action",

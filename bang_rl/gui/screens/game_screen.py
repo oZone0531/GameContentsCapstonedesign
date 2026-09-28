@@ -118,6 +118,9 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
 
             self._alive = False
             self._ai_timer.stop()
+            # Stop the board's own shot-animation timer so a late frame never
+            # repaints this soon-to-be-deleted widget.
+            self.board.detach()
             if getattr(self.controller, "on_update", None) is self._render:
                 self.controller.on_update = None
 
