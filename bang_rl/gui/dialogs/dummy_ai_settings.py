@@ -144,10 +144,16 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             self.count.setRange(1, 64)
             self.count.setValue(max(1, int(emotion.get("emotion_count", len(definitions) or 1))))
             self.count.valueChanged.connect(self._rebuild_rows)
+            self.initial_baseline = QDoubleSpinBox(self)
+            self.initial_baseline.setRange(-1_000_000.0, 1_000_000.0)
+            self.initial_baseline.setDecimals(4)
+            self.initial_baseline.setValue(float(emotion.get("initial_baseline", 0.0) or 0.0))
+            self.initial_baseline.setToolTip(tr("tooltip.emotion_initial_baseline_field"))
 
             header = QFormLayout()
             header.addRow(tr("settings.emotion_schema_version"), self.schema_version)
             header.addRow(tr("settings.emotion_count"), self.count)
+            header.addRow(tr("settings.emotion_initial_baseline"), self.initial_baseline)
 
             self._rows: list[_EmotionRow] = []
             self._rows_host = QWidget(self)
@@ -226,6 +232,10 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             return {
                 "schema_version": self.schema_version.text().strip() or "1.0",
                 "emotion_count": self.count.value(),
+                # Carry the editable baseline so a non-zero initial_baseline is
+                # never silently reset to EmotionConfig's 0.0 default on Apply
+                # or Save. The dialog exposes it as its own spin field.
+                "initial_baseline": self.initial_baseline.value(),
                 "emotions": emotions,
             }
 
@@ -235,6 +245,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             emotion = dict(self.editor.snapshot.dummy_emotion)
             definitions = list(emotion.get("emotions") or [])
             self.schema_version.setText(str(emotion.get("schema_version", "1.0")))
+            self.initial_baseline.setValue(float(emotion.get("initial_baseline", 0.0) or 0.0))
             # Setting the count fires valueChanged -> _rebuild_rows; block it so
             # the freshly loaded definitions are used instead of the old rows.
             self.count.blockSignals(True)

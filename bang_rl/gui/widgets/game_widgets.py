@@ -238,6 +238,11 @@ if QT_AVAILABLE:
         """
 
         actionRequested = pyqtSignal(int)
+        # Emitted when a newly-appended bang hits a target / an elimination is
+        # recorded, so the screen can show a transient localized status line
+        # (board.hit / board.eliminated) alongside the visual shot animation.
+        playerHit = pyqtSignal(int)
+        playerEliminated = pyqtSignal(int)
 
         _MIN_WIDTH = 560
         _MIN_HEIGHT = 520
@@ -278,13 +283,22 @@ if QT_AVAILABLE:
             new_events = new_animation_events(self._seen_events, events)
             self._seen_events = events
             for event in new_events:
-                if str(event.get("event_type", "")).strip().lower() != "bang":
+                event_type = str(event.get("event_type", "")).strip().lower()
+                if event_type == "player_eliminated":
+                    eliminated = event.get("eliminated_idx")
+                    if eliminated is None:
+                        eliminated = event.get("target_idx")
+                    if eliminated is not None:
+                        self.playerEliminated.emit(int(eliminated))
+                    continue
+                if event_type != "bang":
                     continue
                 actor = event.get("actor_idx")
                 target = event.get("target_idx")
                 if actor is None or target is None:
                     continue
                 self.play_bang(int(actor), int(target))
+                self.playerHit.emit(int(target))
                 # Animate the most recent bang; earlier ones in the same batch
                 # are reflected by the resulting HP/eliminated styling.
 

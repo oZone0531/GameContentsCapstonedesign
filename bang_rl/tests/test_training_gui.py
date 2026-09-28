@@ -172,6 +172,55 @@ def test_settings_editor_preserves_reward_and_terminal_updates() -> None:
     assert definition.effects == {"aggression": 0.2}
 
 
+def test_dialog_apply_preserves_non_zero_initial_baseline() -> None:
+    # The dummy-AI dialog's _collect_emotion now carries initial_baseline, so a
+    # non-zero baseline must survive an Apply (previously it was silently reset
+    # to EmotionConfig's 0.0 default because the collected dict omitted it).
+    editor = SettingsEditor(SystemConfig())
+    # Stage a config that carries a non-zero baseline (as if loaded from a file).
+    editor.apply_dummy_emotion(
+        {
+            "schema_version": "1.0",
+            "emotion_count": 1,
+            "initial_baseline": 0.6,
+            "emotions": [{"name": "fear", "initial_value": 0.2}],
+        }
+    )
+    assert editor.snapshot.config.preset.emotion.initial_baseline == pytest.approx(0.6)
+
+    # Reproduce exactly what DummyAISettingsDialog._collect_emotion builds: the
+    # header fields + per-row definitions + the baseline read from its spin.
+    snapshot = editor.snapshot
+    emotion = dict(snapshot.dummy_emotion)
+    collected = {
+        "schema_version": str(emotion.get("schema_version", "1.0")),
+        "emotion_count": int(emotion.get("emotion_count", 1)),
+        "initial_baseline": float(emotion.get("initial_baseline", 0.0)),
+        "emotions": [dict(item) for item in emotion["emotions"]],
+    }
+    applied = editor.apply_dummy_emotion(collected)
+    # The baseline is preserved rather than reset to 0.0.
+    assert applied.config.preset.emotion.initial_baseline == pytest.approx(0.6)
+
+
+def test_non_zero_initial_baseline_survives_save_load_round_trip(tmp_path: Path) -> None:
+    source = SettingsEditor(SystemConfig())
+    source.apply_dummy_emotion(
+        {
+            "schema_version": "1.0",
+            "emotion_count": 1,
+            "initial_baseline": 0.35,
+            "emotions": [{"name": "fear", "initial_value": 0.2}],
+        }
+    )
+    path = tmp_path / "emotions.json"
+    source.export_dummy_emotion(path)
+
+    target = SettingsEditor(SystemConfig())
+    staged = target.import_dummy_emotion(path)
+    assert staged.config.preset.emotion.initial_baseline == pytest.approx(0.35)
+
+
 def test_settings_editor_rejects_duplicate_emotion_names() -> None:
     editor = SettingsEditor(SystemConfig())
     emotion = {

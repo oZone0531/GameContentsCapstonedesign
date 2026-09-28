@@ -57,7 +57,13 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.board = GraphicalBoard(self, human_player=controller.HUMAN_PLAYER)
             self.log = GameLog(self)
             self.status = QLabel(self)
+            # Transient hit / elimination status line shown during the shot
+            # animation, plus a click hint shown on the human's own turn.
+            self.event_status = QLabel(self)
+            self.hint = QLabel(self)
             self.actions = ActionPanel(self)
+            self.board.playerHit.connect(self._on_player_hit)
+            self.board.playerEliminated.connect(self._on_player_eliminated)
 
             # AI turns advance one at a time on this timer; the slider controls
             # its interval. Guarded by _alive so a torn-down screen never
@@ -69,6 +75,8 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.back_button = QPushButton(tr("common.back"), self)
             self.back_button.clicked.connect(self._go_back)
 
+            # Static descriptive label for the slider ("AI turn speed").
+            self.speed_title = QLabel(tr("game.ai_speed"), self)
             self.speed_label = QLabel(self)
             self.speed_slider = QSlider(Qt.Orientation.Horizontal, self)
             self.speed_slider.setMinimum(AI_SPEED_MIN_MS)
@@ -84,12 +92,15 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             top.addWidget(self.board, 3)
 
             speed_row = QHBoxLayout()
+            speed_row.addWidget(self.speed_title)
             speed_row.addWidget(self.speed_label)
             speed_row.addWidget(self.speed_slider, 1)
 
             layout = QVBoxLayout(self)
             layout.addWidget(self.back_button)
             layout.addLayout(top, 1)
+            layout.addWidget(self.hint)
+            layout.addWidget(self.event_status)
             layout.addLayout(speed_row)
             layout.addWidget(self.actions)
             layout.addWidget(self.status)
@@ -133,6 +144,17 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
 
         def _update_speed_label(self, value: int) -> None:
             self.speed_label.setText(tr("game.ai_speed_value", seconds=int(value) / 1000.0))
+
+        # -- transient hit / elimination status --------------------------
+        def _on_player_hit(self, player: int) -> None:
+            if not self._alive:
+                return
+            self.event_status.setText(tr("board.hit", player=int(player)))
+
+        def _on_player_eliminated(self, player: int) -> None:
+            if not self._alive:
+                return
+            self.event_status.setText(tr("board.eliminated", player=int(player)))
 
         # -- actions -----------------------------------------------------
         def _submit_action(self, action: int) -> None:
@@ -188,6 +210,13 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 self.actions.update_mask(
                     snapshot.state.action_mask, paused=snapshot.paused, active=snapshot.active
                 )
+                # Show the click hint only while it is the human's live turn.
+                is_human_turn = (
+                    snapshot.active
+                    and not snapshot.paused
+                    and snapshot.state.current_player == self.controller.HUMAN_PLAYER
+                )
+                self.hint.setText(tr("game.click_hint") if is_human_turn else "")
                 status = snapshot.state.termination_status
                 self.status.setText(
                     tr(
@@ -199,6 +228,7 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 )
             else:
                 self.actions.update_mask((0, 0, 0, 0, 0, 0), paused=snapshot.paused, active=snapshot.active)
+                self.hint.setText("")
                 self.status.setText(tr("game.no_session"))
             self.actions.set_message(snapshot.message)
 

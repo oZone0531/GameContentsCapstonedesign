@@ -74,6 +74,8 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.back_button = QPushButton(tr("common.back"), self)
             self.back_button.clicked.connect(self._go_back)
 
+            # Static label describing that the viewer auto-plays by default.
+            self.autoplay_label = QLabel(tr("replay.autoplay"), self)
             self.play_button = QPushButton(tr("replay.pause"), self)
             self.play_button.clicked.connect(self._toggle_play)
             self.prev_button = QPushButton(tr("replay.prev"), self)
@@ -96,6 +98,7 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             top.addWidget(self.board, 3)
 
             controls = QHBoxLayout()
+            controls.addWidget(self.autoplay_label)
             controls.addWidget(self.prev_button)
             controls.addWidget(self.play_button)
             controls.addWidget(self.next_button)

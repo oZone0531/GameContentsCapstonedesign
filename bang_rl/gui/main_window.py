@@ -157,6 +157,17 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             Returns the parsed mapping, or ``None`` when the user cancels or the
             file cannot be read. Kept tolerant so the replay screen still opens
             (empty) rather than raising when no valid file is chosen.
+
+            Privacy: the standard recorded episode shape is already a public
+            projection. ``bang_rl.data.collector`` stores only public data --
+            every observation goes through ``_observation`` which strips the
+            private role keys, and every event goes through ``_event_mapping``
+            which rejects non-public events. The only private field a dump can
+            carry is the top-level ``role_labels`` list (written only under
+            ``include_private=True``), and :class:`~bang_rl.gui.replay.ReplayModel`
+            never reads it: it copies just the public observation keys, so hidden
+            (living, non-self, non-sheriff) roles stay hidden on the board. See
+            the note in ``bang_rl/gui/replay.py``.
             """
 
             path, _selected = QFileDialog.getOpenFileName(

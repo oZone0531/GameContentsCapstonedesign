@@ -272,10 +272,13 @@ def test_illegal_targets_are_rejected_against_the_mask() -> None:
 def test_seat_fill_color_reflects_health_and_elimination() -> None:
     healths = (5, 1, 0, 4, 4)
     alive = (True, True, False, True, True)
-    # Eliminated seat is dark grey regardless of stored health.
-    assert board_layout.seat_fill_color(2, healths, alive) == (70, 70, 70)
+    # An eliminated seat is a faded near-black RGBA regardless of stored health.
+    assert board_layout.seat_fill_color(2, healths, alive) == (24, 24, 28, 90)
     full = board_layout.seat_fill_color(0, healths, alive)
     low = board_layout.seat_fill_color(1, healths, alive)
+    # Living seats return an opaque RGBA fill.
+    assert full[3] == 255
+    assert low[3] == 255
     # Lower health shifts the fill redder (more red, less blue) than full health.
     assert low[0] > full[0]
     assert low[2] < full[2]
@@ -350,7 +353,19 @@ def test_ai_speed_slider_bounds_include_the_one_second_default() -> None:
 def test_new_ai_speed_i18n_keys_exist_in_both_languages() -> None:
     from bang_rl.gui.i18n import _STRINGS
 
-    for key in ("game.ai_speed", "game.ai_speed_value", "game.you_name", "game.player_name"):
+    for key in (
+        "game.ai_speed",
+        "game.ai_speed_value",
+        "game.you_name",
+        "game.player_name",
+        # Keys wired into the graphical board / screens (no longer dead).
+        "game.click_hint",
+        "board.hit",
+        "board.eliminated",
+        "replay.autoplay",
+        "settings.emotion_initial_baseline",
+        "tooltip.emotion_initial_baseline_field",
+    ):
         assert key in _STRINGS
         assert "en" in _STRINGS[key]
         assert "ko" in _STRINGS[key]

@@ -194,6 +194,9 @@ _STRINGS: dict[str, dict[str, str]] = {
     },
     "settings.emotion_count": {"en": "Number of emotions", "ko": "감정 개수"},
     "settings.emotion_schema_version": {"en": "Schema version", "ko": "스키마 버전"},
+    "settings.emotion_initial_baseline": {
+        "en": "Initial baseline", "ko": "초기 기준값",
+    },
     "settings.emotion_name": {"en": "Name", "ko": "이름"},
     "settings.emotion_initial": {"en": "Initial value", "ko": "감정 초기값"},
     "settings.emotion_change_rate": {"en": "Change rate", "ko": "증가율"},
@@ -308,6 +311,10 @@ _STRINGS: dict[str, dict[str, str]] = {
     "tooltip.emotion_initial_values": {
         "en": "Starting value (0-1) for each of the dummy AI's emotions.",
         "ko": "더미 AI의 각 감정에 대한 초기값(0~1)을 의미합니다.",
+    },
+    "tooltip.emotion_initial_baseline_field": {
+        "en": "Shared baseline added to every emotion when it is initialized.",
+        "ko": "모든 감정을 초기화할 때 더해지는 공통 기준값을 의미합니다.",
     },
     "tooltip.dummy_ai": {
         "en": "Open the dummy AI emotion configuration dialog.",

@@ -31,6 +31,16 @@ from typing import Any
 
 # Observation keys the GraphicalBoard / GameLog read from a snapshot. Kept here
 # so reconstruction always carries the full set (missing keys default safely).
+#
+# Privacy: these are exactly the keys of the environment's PUBLIC projection
+# (``bang_rl.env.state.PublicEnvironmentState.to_public``): ``revealed_roles``,
+# ``role_visibility`` and ``self_role`` already only expose the sheriff, any
+# eliminated player, and the viewer's own role -- a living non-sheriff, non-self
+# role is 255 / HIDDEN. Recorded episodes are stored public too: the collector's
+# ``_observation`` strips the private role keys and ``_event_mapping`` rejects
+# non-public events. The private ``role_labels`` list (top-level, only under
+# ``include_private=True``) is deliberately NOT in this set, so ReplayModel never
+# copies it into a snapshot and hidden roles cannot leak into the board/log.
 _OBSERVATION_KEYS = (
     "healths",
     "alive",
