@@ -11,8 +11,10 @@ from ..qt_compat import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QPlainTextEdit,
     QPushButton,
@@ -70,6 +72,10 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             self._build_emotion_spins()
             self.dummy_ai_button = QPushButton(tr("settings.dummy_ai"), self)
             self.dummy_ai_button.clicked.connect(self._open_dummy_ai)
+            self.emotion_save_button = QPushButton(tr("settings.emotion_save_file"), self)
+            self.emotion_save_button.clicked.connect(self._save_emotion_file)
+            self.emotion_load_button = QPushButton(tr("settings.emotion_load_file"), self)
+            self.emotion_load_button.clicked.connect(self._load_emotion_file)
             self.cpu = QSpinBox(self)
             self.cpu.setRange(1, 4096)
             self.cpu.setValue(hardware["cpu_cores"])
@@ -114,6 +120,10 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             layout.addLayout(form)
             layout.addWidget(self.emotion_group)
             layout.addWidget(self.dummy_ai_button)
+            emotion_file_row = QHBoxLayout()
+            emotion_file_row.addWidget(self.emotion_save_button)
+            emotion_file_row.addWidget(self.emotion_load_button)
+            layout.addLayout(emotion_file_row)
             layout.addWidget(self.reward_label)
             layout.addWidget(self.reward)
             layout.addWidget(self.help)
@@ -165,6 +175,8 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             self.reward_label.setToolTip(tr("tooltip.reward_json"))
             self.emotion_group.setToolTip(tr("tooltip.emotion_initial_values"))
             self.dummy_ai_button.setToolTip(tr("tooltip.dummy_ai"))
+            self.emotion_save_button.setToolTip(tr("tooltip.emotion_save_file"))
+            self.emotion_load_button.setToolTip(tr("tooltip.emotion_load_file"))
             for spin in self.emotion_spins:
                 spin.setToolTip(tr("tooltip.emotion_initial_values"))
 
@@ -177,6 +189,37 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             # the per-emotion initial-value rows to match the staged config.
             self._build_emotion_spins()
             self.error.setText(tr("settings.dummy_ai_applied"))
+
+        def _save_emotion_file(self) -> None:
+            path, _ = QFileDialog.getSaveFileName(
+                self, tr("settings.emotion_save_file"), "", tr("settings.emotion_file_filter")
+            )
+            if not path:
+                return
+            try:
+                # Stage the per-emotion initial values shown on this screen so
+                # the saved file matches what the user sees.
+                if self.emotion_spins:
+                    self.editor.apply_dummy_emotion(self._emotion_initial_payload())
+                self.editor.export_dummy_emotion(path)
+            except SettingsValidationError as exc:
+                self.error.setText(str(exc))
+                return
+            self.error.setText(tr("settings.emotion_file_saved", path=path))
+
+        def _load_emotion_file(self) -> None:
+            path, _ = QFileDialog.getOpenFileName(
+                self, tr("settings.emotion_load_file"), "", tr("settings.emotion_file_filter")
+            )
+            if not path:
+                return
+            try:
+                self.editor.import_dummy_emotion(path)
+            except SettingsValidationError as exc:
+                self.error.setText(str(exc))
+                return
+            self._build_emotion_spins()
+            self.error.setText(tr("settings.emotion_file_loaded", path=path))
 
         def _change_language(self, _index: int) -> None:
             code = self.language.currentData()
@@ -196,6 +239,8 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             self.emotion_group.setTitle(tr("settings.emotion_initial_values"))
             self.emotion_initial_help.setText(tr("settings.emotion_initial_help"))
             self.dummy_ai_button.setText(tr("settings.dummy_ai"))
+            self.emotion_save_button.setText(tr("settings.emotion_save_file"))
+            self.emotion_load_button.setText(tr("settings.emotion_load_file"))
             self._apply_tooltips()
 
         def _go_back(self) -> None:

@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from pydantic import ValidationError
 
-from bang_rl.config import ConfigService, SystemConfig
+from bang_rl.config import ConfigFileError, ConfigService, EmotionConfig, SystemConfig
 
 
 RESOURCE_HELP = (
@@ -151,6 +151,43 @@ class SettingsEditor:
         preset = self._config.preset.model_dump(mode="python")
         preset["emotion"] = dict(emotion)
         return self.apply({"preset": preset})
+
+    def export_dummy_emotion(self, path: str | Path) -> Path:
+        """Write the staged ``config.preset.emotion`` to a standalone file.
+
+        The file contains ONLY the emotion config (``schema_version``,
+        ``emotion_count``, ``initial_baseline``, ``emotions[...]``) as YAML or
+        JSON (dispatched on the path suffix by :class:`ConfigService`), so it
+        can be edited by hand outside the GUI and re-loaded with
+        :meth:`import_dummy_emotion`.
+        """
+
+        destination = Path(path)
+        try:
+            self.config_service.save(destination, self._config.preset.emotion, EmotionConfig)
+        except ValidationError as exc:
+            raise SettingsValidationError(self._error_list(exc)) from exc
+        except ConfigFileError as exc:
+            raise SettingsValidationError(({"loc": ("emotion",), "msg": str(exc)},)) from exc
+        return destination
+
+    def import_dummy_emotion(self, path: str | Path) -> SettingsSnapshot:
+        """Load a standalone emotion file and stage it as the dummy AI emotion.
+
+        The document is validated into an :class:`EmotionConfig` and staged
+        through :meth:`apply_dummy_emotion`, so Pydantic rules (unique names,
+        ``initial_value`` in ``[0, 1]``, finite rules, ``emotion_count >= 1``)
+        surface as a readable :class:`SettingsValidationError` rather than a raw
+        traceback.
+        """
+
+        try:
+            loaded = self.config_service.load(path, EmotionConfig)
+        except ValidationError as exc:
+            raise SettingsValidationError(self._error_list(exc)) from exc
+        except ConfigFileError as exc:
+            raise SettingsValidationError(({"loc": ("emotion",), "msg": str(exc)},)) from exc
+        return self.apply_dummy_emotion(loaded.model_dump(mode="json"))
 
     def save(self, path: str | Path | None = None) -> SettingsSnapshot:
         destination = Path(path or self._source_path or "config.json")

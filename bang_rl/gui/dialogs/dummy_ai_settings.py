@@ -22,6 +22,7 @@ from ..qt_compat import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QLabel,
@@ -158,12 +159,22 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             self.error = QLabel(self)
             self.error.setWordWrap(True)
             self.buttons = QDialogButtonBox(self)
+            self.save_file_button = self.buttons.addButton(
+                tr("settings.emotion_save_file"), QDialogButtonBox.ButtonRole.ActionRole
+            )
+            self.load_file_button = self.buttons.addButton(
+                tr("settings.emotion_load_file"), QDialogButtonBox.ButtonRole.ActionRole
+            )
             self.apply_button = self.buttons.addButton(
                 tr("settings.dummy_ai_apply"), QDialogButtonBox.ButtonRole.AcceptRole
             )
             self.cancel_button = self.buttons.addButton(
                 tr("settings.dummy_ai_cancel"), QDialogButtonBox.ButtonRole.RejectRole
             )
+            self.save_file_button.setToolTip(tr("tooltip.emotion_save_file"))
+            self.load_file_button.setToolTip(tr("tooltip.emotion_load_file"))
+            self.save_file_button.clicked.connect(self._save_to_file)
+            self.load_file_button.clicked.connect(self._load_from_file)
             self.apply_button.clicked.connect(self._apply)
             self.cancel_button.clicked.connect(self.reject)
 
@@ -208,15 +219,62 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
                     collected.append({"name": row.name.text().strip() or f"emotion_{index}"})
             return collected
 
+        def _collect_emotion(self) -> dict[str, Any]:
+            """Build the emotion mapping from the current rows (may raise)."""
+
+            emotions = [row.to_definition(index) for index, row in enumerate(self._rows)]
+            return {
+                "schema_version": self.schema_version.text().strip() or "1.0",
+                "emotion_count": self.count.value(),
+                "emotions": emotions,
+            }
+
+        def _reload_rows_from_editor(self) -> None:
+            """Repopulate the header and rows from the staged emotion config."""
+
+            emotion = dict(self.editor.snapshot.dummy_emotion)
+            definitions = list(emotion.get("emotions") or [])
+            self.schema_version.setText(str(emotion.get("schema_version", "1.0")))
+            # Setting the count fires valueChanged -> _rebuild_rows; block it so
+            # the freshly loaded definitions are used instead of the old rows.
+            self.count.blockSignals(True)
+            self.count.setValue(
+                max(1, int(emotion.get("emotion_count", len(definitions) or 1)))
+            )
+            self.count.blockSignals(False)
+            self._populate_rows(definitions)
+
+        def _save_to_file(self) -> None:
+            path, _ = QFileDialog.getSaveFileName(
+                self, tr("settings.emotion_save_file"), "", tr("settings.emotion_file_filter")
+            )
+            if not path:
+                return
+            try:
+                self.editor.apply_dummy_emotion(self._collect_emotion())
+                self.editor.export_dummy_emotion(path)
+            except SettingsValidationError as exc:
+                self.error.setText(str(exc))
+                return
+            self.error.setText(tr("settings.emotion_file_saved", path=path))
+
+        def _load_from_file(self) -> None:
+            path, _ = QFileDialog.getOpenFileName(
+                self, tr("settings.emotion_load_file"), "", tr("settings.emotion_file_filter")
+            )
+            if not path:
+                return
+            try:
+                self.editor.import_dummy_emotion(path)
+            except SettingsValidationError as exc:
+                self.error.setText(str(exc))
+                return
+            self._reload_rows_from_editor()
+            self.error.setText(tr("settings.emotion_file_loaded", path=path))
+
         def _apply(self) -> None:
             try:
-                emotions = [row.to_definition(index) for index, row in enumerate(self._rows)]
-                emotion = {
-                    "schema_version": self.schema_version.text().strip() or "1.0",
-                    "emotion_count": self.count.value(),
-                    "emotions": emotions,
-                }
-                self.editor.apply_dummy_emotion(emotion)
+                self.editor.apply_dummy_emotion(self._collect_emotion())
             except SettingsValidationError as exc:
                 self.error.setText(str(exc))
                 return

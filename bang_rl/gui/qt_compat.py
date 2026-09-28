@@ -23,6 +23,7 @@ try:  # pragma: no cover - availability depends on the host environment
         QDialog,
         QDialogButtonBox,
         QDoubleSpinBox,
+        QFileDialog,
         QFormLayout,
         QGroupBox,
         QHBoxLayout,
@@ -53,7 +54,7 @@ except ImportError as exc:  # pragma: no cover - exercised when Qt is absent
     QObject = QTimer = Qt = pyqtSignal = QApplication = None
     QFont = None
     QComboBox = None
-    QCheckBox = QDialog = QDialogButtonBox = QDoubleSpinBox = None
+    QCheckBox = QDialog = QDialogButtonBox = QDoubleSpinBox = QFileDialog = None
     QFormLayout = QGroupBox = QHBoxLayout = QHeaderView = QLabel = QLineEdit = None
     QListWidget = QListWidgetItem = QMainWindow = QPlainTextEdit = None
     QProgressBar = QPushButton = QScrollArea = QSpinBox = QStackedWidget = None
@@ -79,6 +80,7 @@ __all__ = [
     "QDialog",
     "QDialogButtonBox",
     "QDoubleSpinBox",
+    "QFileDialog",
     "QFont",
     "QFormLayout",
     "QGroupBox",

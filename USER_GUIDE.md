@@ -165,11 +165,43 @@ python -m pip install -e ".[gui]"
 | **버퍼 크기 (Buffer size)** | 경험(전이) 저장 버퍼 크기 | 1 ~ 1,000,000,000 |
 | **GPU (Use GPU/CUDA)** | GPU/CUDA 사용 여부 | 켜기 / 끄기 |
 | **보상 설정 (Reward Config, JSON)** | 보상 규칙을 JSON으로 직접 편집 (승리/패배 보상, 이벤트 보상 등) | JSON 텍스트 |
+| **더미 AI 설정 (Dummy AI settings)** | 더미 AI 감정 개수/이름/증감 조건/효과를 편집하는 창 열기 | 버튼 |
+| **감정 설정 파일로 저장 (Save emotions to file)** | 현재 더미 AI 감정 설정을 별도 파일(YAML/JSON)로 저장 | 버튼 |
+| **감정 설정 파일 불러오기 (Load emotions from file)** | 저장했거나 손으로 편집한 감정 설정 파일을 불러와 적용 | 버튼 |
 | **검증 후 저장 (Validate and save)** | 입력값을 검증 후 config로 저장. 오류 시 하단에 메시지 표시 | 버튼 |
 | **← 메뉴로 돌아가기** | 메인 메뉴로 복귀 | 버튼 |
 | **하단 메시지 줄** | 저장 성공 / 검증 오류 / 언어 저장 안내 표시 | 표시용 |
 
 > 화면에는 자원 설정 도움말 문구도 표시됩니다: "CPU 코어를 1~2개 남겨두면 보통 운영체제와 GUI가 원활하게 동작합니다."
+
+### 더미 AI 감정 설정 파일 (GUI 밖에서 편집)
+
+더미 AI의 감정 설정은 **별도의 파일**로 저장하고 불러올 수 있어 GUI를 열지 않고도 손으로 편집할 수 있습니다. 저장/불러오기는 설정 화면과 **더미 AI 설정** 창 양쪽의 버튼에서 모두 사용할 수 있습니다.
+
+- **저장:** *감정 설정 파일로 저장* 을 누르고 저장 위치와 이름을 지정합니다. 확장자에 따라 형식이 정해집니다: `.yaml`/`.yml`은 YAML, `.json`은 JSON.
+- **불러오기:** *감정 설정 파일 불러오기* 를 누르고 파일을 선택하면 값이 검증된 뒤 화면에 반영됩니다. 이름 중복이나 `initial_value` 범위(0~1) 위반 같은 오류는 하단 메시지 줄에 읽기 쉬운 형태로 표시됩니다.
+
+파일에는 **감정 설정만** 담기며 구조는 `EmotionConfig` 스키마를 따릅니다. 각 필드는 다음과 같습니다.
+
+- `schema_version`: 스키마 버전 문자열 (예: `"1.0"`).
+- `emotion_count`: 감정 개수 (1 이상).
+- `initial_baseline`: 감정 초기 기준값 (0~1).
+- `emotions`: 감정 정의 목록. 각 항목은 `name`, `initial_value`(0~1 또는 생략), `change_rate`, `decay_rate`, `event_updates`, `action_updates`, `reward_updates`, `terminal_updates`, `effects`(이름-숫자 매핑)를 가질 수 있습니다.
+
+최소 YAML 예시 (프로젝트 루트 `config.example.yaml`의 `emotion` 블록과 동일한 형식):
+
+```yaml
+schema_version: "1.0"
+emotion_count: 1
+initial_baseline: 0.0
+emotions:
+  - name: calm
+    initial_value: 0.0
+    change_rate: 0.0
+    decay_rate: 0.0
+```
+
+이 파일은 텍스트 편집기로 직접 수정한 뒤 GUI에서 다시 불러올 수 있습니다.
 
 ---
 

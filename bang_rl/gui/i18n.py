@@ -185,6 +185,34 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Dummy AI emotions updated.", "ko": "더미 AI 감정이 업데이트되었습니다.",
     },
 
+    # Dummy AI emotion save/load to a standalone external file
+    "settings.emotion_save_file": {
+        "en": "Save emotions to file", "ko": "감정 설정 파일로 저장",
+    },
+    "settings.emotion_load_file": {
+        "en": "Load emotions from file", "ko": "감정 설정 파일 불러오기",
+    },
+    "settings.emotion_file_filter": {
+        "en": "Emotion config (*.yaml *.yml *.json)",
+        "ko": "감정 설정 파일 (*.yaml *.yml *.json)",
+    },
+    "settings.emotion_file_saved": {
+        "en": "Dummy AI emotions saved to {path}.",
+        "ko": "더미 AI 감정을 {path}에 저장했습니다.",
+    },
+    "settings.emotion_file_loaded": {
+        "en": "Dummy AI emotions loaded from {path}.",
+        "ko": "더미 AI 감정을 {path}에서 불러왔습니다.",
+    },
+    "tooltip.emotion_save_file": {
+        "en": "Save the dummy AI's emotion configuration to a standalone file you can edit by hand.",
+        "ko": "더미 AI의 감정 설정을 직접 편집할 수 있는 별도의 파일로 저장합니다.",
+    },
+    "tooltip.emotion_load_file": {
+        "en": "Load a dummy AI emotion configuration file that was saved or edited outside the GUI.",
+        "ko": "GUI 밖에서 저장하거나 편집한 더미 AI 감정 설정 파일을 불러옵니다.",
+    },
+
     # Training monitor
     "training.mode": {"en": "Mode", "ko": "모드"},
     "training.episodes": {"en": "Episodes", "ko": "에피소드"},

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from bang_rl.app import TrainingProgress
-from bang_rl.config import ConfigService, SystemConfig
+from bang_rl.config import ConfigService, EmotionConfig, SystemConfig
 from bang_rl.gui.settings import SettingsEditor, SettingsValidationError
 from bang_rl.gui.training import (
     TrainingMonitorController,
@@ -189,6 +189,67 @@ def test_settings_editor_rejects_out_of_range_emotion_initial_value() -> None:
     emotion = {"emotions": [{"name": "fear", "initial_value": 1.5}]}
     with pytest.raises(SettingsValidationError, match=r"initial_value|\[0, 1\]"):
         editor.apply_dummy_emotion(emotion)
+
+
+@pytest.mark.parametrize("suffix", [".json", ".yaml", ".yml"])
+def test_export_import_dummy_emotion_round_trips(tmp_path: Path, suffix: str) -> None:
+    source = SettingsEditor(SystemConfig())
+    source.apply_dummy_emotion(
+        {
+            "schema_version": "2.0",
+            "emotion_count": 2,
+            "emotions": [
+                {"name": "fear", "initial_value": 0.25, "change_rate": 0.1},
+                {"name": "anger", "initial_value": 0.75, "action_updates": {"bang": 0.3}},
+            ],
+        }
+    )
+    original = source.snapshot.dummy_emotion
+
+    path = tmp_path / f"emotions{suffix}"
+    written = source.export_dummy_emotion(path)
+    assert written.is_file()
+
+    # The exported file contains ONLY the emotion config, not a full SystemConfig.
+    document = ConfigService().load(path, EmotionConfig)
+    assert set(document.model_dump(mode="json")) == set(original)
+
+    target = SettingsEditor(SystemConfig())
+    staged = target.import_dummy_emotion(path)
+
+    assert staged.dummy_emotion == original
+    names = [item.name for item in staged.config.preset.emotion.emotions]
+    assert names == ["fear", "anger"]
+    assert staged.config.preset.emotion.emotion_count == 2
+    initial_values = [item.initial_value for item in staged.config.preset.emotion.emotions]
+    assert initial_values == pytest.approx([0.25, 0.75])
+
+
+def test_import_dummy_emotion_rejects_invalid_file(tmp_path: Path) -> None:
+    editor = SettingsEditor(SystemConfig())
+    path = tmp_path / "bad.json"
+    path.write_text(
+        '{"schema_version": "1.0", "emotion_count": 2, "emotions": '
+        '[{"name": "fear", "initial_value": 0.1}, {"name": "fear", "initial_value": 0.2}]}',
+        encoding="utf-8",
+    )
+    with pytest.raises(SettingsValidationError, match="unique"):
+        editor.import_dummy_emotion(path)
+
+
+def test_import_dummy_emotion_rejects_out_of_range_initial_value(tmp_path: Path) -> None:
+    editor = SettingsEditor(SystemConfig())
+    path = tmp_path / "bad.yaml"
+    path.write_text(
+        "schema_version: '1.0'\n"
+        "emotion_count: 1\n"
+        "emotions:\n"
+        "  - name: fear\n"
+        "    initial_value: 1.5\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SettingsValidationError, match=r"initial_value|\[0, 1\]"):
+        editor.import_dummy_emotion(path)
 
 
 def test_monitor_wires_start_pause_resume_stop_and_displays_public_progress() -> None:
