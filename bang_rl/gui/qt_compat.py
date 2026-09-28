@@ -25,6 +25,7 @@ try:  # pragma: no cover - availability depends on the host environment
         QFormLayout,
         QGroupBox,
         QHBoxLayout,
+        QHeaderView,
         QLabel,
         QLineEdit,
         QListWidget,
@@ -33,6 +34,7 @@ try:  # pragma: no cover - availability depends on the host environment
         QPlainTextEdit,
         QProgressBar,
         QPushButton,
+        QScrollArea,
         QSpinBox,
         QStackedWidget,
         QTableWidget,
@@ -50,9 +52,9 @@ except ImportError as exc:  # pragma: no cover - exercised when Qt is absent
     QObject = QTimer = Qt = pyqtSignal = QApplication = None
     QComboBox = None
     QCheckBox = QDialog = QDialogButtonBox = QDoubleSpinBox = None
-    QFormLayout = QGroupBox = QHBoxLayout = QLabel = QLineEdit = None
+    QFormLayout = QGroupBox = QHBoxLayout = QHeaderView = QLabel = QLineEdit = None
     QListWidget = QListWidgetItem = QMainWindow = QPlainTextEdit = None
-    QProgressBar = QPushButton = QSpinBox = QStackedWidget = None
+    QProgressBar = QPushButton = QScrollArea = QSpinBox = QStackedWidget = None
     QTableWidget = QTableWidgetItem = QTabWidget = QVBoxLayout = QWidget = None
 
 
@@ -78,6 +80,7 @@ __all__ = [
     "QFormLayout",
     "QGroupBox",
     "QHBoxLayout",
+    "QHeaderView",
     "QLabel",
     "QLineEdit",
     "QListWidget",
@@ -86,6 +89,7 @@ __all__ = [
     "QPlainTextEdit",
     "QProgressBar",
     "QPushButton",
+    "QScrollArea",
     "QSpinBox",
     "QStackedWidget",
     "QTableWidget",

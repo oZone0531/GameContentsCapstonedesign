@@ -60,6 +60,25 @@ class SettingsSnapshot:
     def reward_config(self) -> Mapping[str, Any]:
         return self.config.reward_config.model_dump(mode="json")
 
+    @property
+    def dummy_emotion(self) -> Mapping[str, Any]:
+        """The dummy AI's full emotion config as a JSON-safe mapping."""
+
+        return self.config.preset.emotion.model_dump(mode="json")
+
+    @property
+    def dummy_emotions(self) -> tuple[Mapping[str, Any], ...]:
+        """One JSON-safe mapping per configured dummy-AI emotion."""
+
+        return tuple(
+            definition.model_dump(mode="json")
+            for definition in self.config.preset.emotion.emotions
+        )
+
+    @property
+    def dummy_emotion_count(self) -> int:
+        return int(self.config.preset.emotion.emotion_count)
+
 
 class SettingsEditor:
     """Stage, validate, save, and commit GUI-editable configuration values."""
@@ -118,6 +137,20 @@ class SettingsEditor:
 
     def update(self, **values: Any) -> SettingsSnapshot:
         return self.apply(values)
+
+    def apply_dummy_emotion(self, emotion: Mapping[str, Any]) -> SettingsSnapshot:
+        """Stage an edited dummy-AI emotion config into ``config.preset.emotion``.
+
+        The full preset dict is rebuilt from the current draft and only its
+        ``emotion`` entry is replaced, so the edit flows through the existing
+        ``preset`` key in :meth:`_payload` and is validated by Pydantic exactly
+        like every other staged change (unique names, ``initial_value`` in
+        ``[0, 1]``, finite rules, ``emotion_count >= 1``).
+        """
+
+        preset = self._config.preset.model_dump(mode="python")
+        preset["emotion"] = dict(emotion)
+        return self.apply({"preset": preset})
 
     def save(self, path: str | Path | None = None) -> SettingsSnapshot:
         destination = Path(path or self._source_path or "config.json")

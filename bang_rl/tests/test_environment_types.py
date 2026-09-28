@@ -175,6 +175,31 @@ def test_public_state_never_exposes_hidden_roles() -> None:
     assert json.loads(public.to_json())["players"][4]["role"] is None
 
 
+def test_deputy_viewer_with_all_alive_only_sees_self_and_sheriff() -> None:
+    # Game rule: only the Sheriff is public. A living Deputy must never learn any
+    # other living player's role (no elimination-of-alternatives deduction).
+    roles = (Role.SHERIFF, Role.DEPUTY, Role.OUTLAW_A, Role.OUTLAW_B, Role.TRAITOR)
+    deputy_idx = 1
+    state = EnvironmentState(
+        episode_id="deputy-privacy",
+        seed=7,
+        roles=roles,
+        health=(5, 4, 4, 4, 4),
+        alive=(True, True, True, True, True),
+    )
+
+    public = state.to_public(viewer_idx=deputy_idx)
+
+    assert public.role_visibility[deputy_idx] == RoleVisibility.SELF
+    assert public.role_visibility[state.sheriff_idx] == RoleVisibility.REVEALED
+    for other in (2, 3, 4):
+        assert public.role_visibility[other] == RoleVisibility.HIDDEN
+        assert public.revealed_roles[other] == 255
+        assert public.players[other].role is None
+    # No living non-self, non-sheriff role is ever CONFIRMED/REVEALED.
+    assert RoleVisibility.CONFIRMED not in public.role_visibility
+
+
 def test_public_and_privileged_state_round_trip() -> None:
     state = EnvironmentState.initial("round-trip", 99)
     assert EnvironmentState.from_dict(state.to_dict()) == state

@@ -6,6 +6,8 @@ from typing import Any
 
 from collections.abc import Callable
 
+from bang_rl.paths import ARTIFACTS_DIR, OUTPUTS_DIR, REPORTS_DIR
+
 from ..qt_compat import (
     QDoubleSpinBox,
     QFormLayout,

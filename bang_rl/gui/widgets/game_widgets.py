@@ -8,6 +8,7 @@ from ..i18n import tr
 from ..qt_compat import (
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QListWidget,
     QPushButton,
@@ -15,6 +16,7 @@ from ..qt_compat import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    Qt,
     QT_AVAILABLE,
     pyqtSignal,
     require_qt,
@@ -123,6 +125,17 @@ if QT_AVAILABLE:
             self.table.setHorizontalHeaderLabels(
                 [tr("hud.player"), tr("hud.hp"), tr("hud.status"), tr("hud.role")]
             )
+            # Keep the four opponent rows compact so the panel stops wasting
+            # horizontal space: the three short columns (Player/HP/Status) size
+            # to their contents while the role column takes the remaining width.
+            header = self.table.horizontalHeader()
+            for column in (0, 1, 2):
+                header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+            # The row index adds no information for a fixed four-opponent table.
+            self.table.verticalHeader().setVisible(False)
+            # Four rows always fit, so a vertical scrollbar only adds clutter.
+            self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             layout = QVBoxLayout(self)
             layout.addWidget(self.table)
 
@@ -134,6 +147,7 @@ if QT_AVAILABLE:
                 self.table.setItem(row, 2, QTableWidgetItem(status))
                 role_text = hidden_role_label() if opponent["revealed_role"] is None else role_name(opponent["revealed_role"])
                 self.table.setItem(row, 3, QTableWidgetItem(role_text))
+            self.table.resizeColumnsToContents()
 
 
     class GameLog(QGroupBox):

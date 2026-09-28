@@ -237,12 +237,26 @@ class GameSessionController:
             return
         self.active = False
         self.paused = False
-        self.message = "Game finished normally." if self.state.terminated else "Game stopped at the episode limit."
+        self.message = self._terminal_message()
         if self.handle is not None and not self._closed:
             try:
                 self.service.close_session(self.handle)
             finally:
                 self._closed = True
+
+    def _terminal_message(self) -> str:
+        # i18n.tr and roles.faction_name are Qt-free, so importing them in this
+        # headless controller keeps game-over text localized without pulling in
+        # PyQt. Imported lazily to avoid any import-time coupling.
+        from bang_rl.gui.i18n import tr
+        from bang_rl.gui.roles import faction_name
+
+        if self.state is not None and self.state.truncated:
+            return tr("game.finished_truncated")
+        faction = getattr(self.state, "winning_team", None) if self.state is not None else None
+        if faction:
+            return tr("game.finished_normally_faction", faction=faction_name(faction))
+        return tr("game.finished_normally")
 
     @staticmethod
     def _error_message(exc: Exception) -> str:
@@ -251,7 +265,15 @@ class GameSessionController:
             reason = details.get("message") or details.get("code")
             if reason:
                 return str(reason)
-        return str(exc) or type(exc).__name__
+        text = str(exc)
+        if text:
+            return text
+        # tr is Qt-free, so this keeps the fallback localized without pulling
+        # in PyQt from this headless controller. Imported lazily to avoid any
+        # import-time coupling.
+        from bang_rl.gui.i18n import tr
+
+        return tr("game.error_generic")
 
 
 __all__ = [

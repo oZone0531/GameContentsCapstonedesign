@@ -108,11 +108,23 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 if dialog.exec() != dialog.DialogCode.Accepted or dialog.selected_option is None:
                     return
                 artifact_path = dialog.selected_option.path
+            # Detach any callback still bound to a previously-shown (and now
+            # torn-down) GameScreen so controller.start()'s internal publish
+            # cannot render into deleted C++ widgets.
+            self.controller.on_update = None
             try:
                 self.controller.start(mode, artifact_path=artifact_path)
             except GameGuiError as exc:
-                self.statusBar().showMessage(str(exc))
+                # showMessage's default timeout auto-clears the text; passing 0
+                # keeps the error visible in the always-present status bar until
+                # the next action replaces it. Fall back to a localized generic
+                # message when the exception carries no text.
+                message = str(exc) or tr("game.error_generic")
+                self.statusBar().showMessage(message, 0)
                 return
+            # GameScreen.__init__ re-binds controller.on_update to its own
+            # _render and renders the current snapshot itself, so building it
+            # after start() keeps the callback pointed at a live screen.
             self._game_screen = GameScreen(self.controller, self, on_back=self._show_menu)
             self._set_screen(self._game_screen)
 

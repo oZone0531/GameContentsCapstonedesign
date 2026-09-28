@@ -96,6 +96,101 @@ def test_settings_editor_rejects_invalid_values_before_staging() -> None:
     assert editor.snapshot.config == before.config
 
 
+def test_settings_snapshot_exposes_dummy_emotion_state() -> None:
+    editor = SettingsEditor(SystemConfig())
+    snapshot = editor.snapshot
+    assert snapshot.dummy_emotion_count == len(snapshot.config.preset.emotion.emotions)
+    assert snapshot.dummy_emotion_count == snapshot.config.preset.emotion.emotion_count
+    assert len(snapshot.dummy_emotions) == snapshot.dummy_emotion_count
+    assert snapshot.dummy_emotion["emotions"][0]["name"] == (
+        snapshot.config.preset.emotion.emotions[0].name
+    )
+
+
+def test_settings_editor_applies_per_emotion_initial_values() -> None:
+    editor = SettingsEditor(SystemConfig())
+    emotion = dict(editor.snapshot.dummy_emotion)
+    definitions = [dict(item) for item in emotion["emotions"]]
+    definitions[0]["initial_value"] = 0.42
+    emotion["emotions"] = definitions
+    state = editor.apply_dummy_emotion(emotion)
+    assert state.config.preset.emotion.emotions[0].initial_value == pytest.approx(0.42)
+
+
+def test_settings_editor_applies_named_dummy_emotions() -> None:
+    editor = SettingsEditor(SystemConfig())
+    emotion = {
+        "schema_version": "2.0",
+        "emotion_count": 3,
+        "emotions": [
+            {"name": "fear", "initial_value": 0.1, "change_rate": 0.2},
+            {"name": "anger", "initial_value": 0.5, "action_updates": {"bang": 0.3}},
+            {"name": "calm", "initial_value": 0.9, "effects": {"aggression": -0.2}},
+        ],
+    }
+    state = editor.apply_dummy_emotion(emotion)
+    names = [item.name for item in state.config.preset.emotion.emotions]
+    assert names == ["fear", "anger", "calm"]
+    assert state.config.preset.emotion.emotion_count == 3
+    assert state.config.preset.emotion.schema_version == "2.0"
+
+
+def test_settings_editor_preserves_reward_and_terminal_updates() -> None:
+    # A preset that supplies reward_updates/terminal_updates must survive a
+    # dialog round-trip; editing one emotion must never silently wipe them.
+    editor = SettingsEditor(SystemConfig())
+    emotion = {
+        "schema_version": "2.0",
+        "emotion_count": 1,
+        "emotions": [
+            {
+                "name": "fear",
+                "initial_value": 0.3,
+                "change_rate": 0.1,
+                "decay_rate": 0.05,
+                "event_updates": {"hit": 0.2},
+                "action_updates": {"bang": 0.1},
+                "reward_updates": {"win": -0.4},
+                "terminal_updates": {"eliminated": 0.6},
+                "effects": {"aggression": 0.2},
+            }
+        ],
+    }
+    staged = editor.apply_dummy_emotion(emotion)
+
+    # Simulate the dialog reading the staged config back out, serializing each
+    # row, and re-applying (the destructive path the review flagged).
+    reloaded = dict(staged.dummy_emotion)
+    definitions = [dict(item) for item in reloaded["emotions"]]
+    round_tripped = editor.apply_dummy_emotion({**reloaded, "emotions": definitions})
+
+    definition = round_tripped.config.preset.emotion.emotions[0]
+    assert definition.reward_updates == {"win": -0.4}
+    assert definition.terminal_updates == {"eliminated": 0.6}
+    assert definition.event_updates == {"hit": 0.2}
+    assert definition.action_updates == {"bang": 0.1}
+    assert definition.effects == {"aggression": 0.2}
+
+
+def test_settings_editor_rejects_duplicate_emotion_names() -> None:
+    editor = SettingsEditor(SystemConfig())
+    emotion = {
+        "emotions": [
+            {"name": "fear", "initial_value": 0.1},
+            {"name": "fear", "initial_value": 0.2},
+        ],
+    }
+    with pytest.raises(SettingsValidationError, match="unique"):
+        editor.apply_dummy_emotion(emotion)
+
+
+def test_settings_editor_rejects_out_of_range_emotion_initial_value() -> None:
+    editor = SettingsEditor(SystemConfig())
+    emotion = {"emotions": [{"name": "fear", "initial_value": 1.5}]}
+    with pytest.raises(SettingsValidationError, match=r"initial_value|\[0, 1\]"):
+        editor.apply_dummy_emotion(emotion)
+
+
 def test_monitor_wires_start_pause_resume_stop_and_displays_public_progress() -> None:
     service = FakeTrainingService(progress())
     controller = TrainingMonitorController(service)
@@ -113,6 +208,20 @@ def test_monitor_wires_start_pause_resume_stop_and_displays_public_progress() ->
     controller.stop()
     assert [call[0] for call in service.calls] == ["pause", "resume", "cancel"]
     assert controller.snapshot.progress.status == "cancelled"
+
+
+def test_training_start_wires_to_service_start_orchestrator() -> None:
+    """The 'AI 학습' Start button reaches TrainingMonitorController.start -> service.start."""
+
+    service = FakeTrainingService(progress())
+    controller = TrainingMonitorController(service)
+    setup = TrainingSetup(config=SystemConfig(), episodes=3, target_transitions=7)
+    controller.start(setup)
+    assert len(service.requests) == 1
+    request = service.requests[0]
+    assert request.episodes == 3
+    assert request.target_transitions == 7
+    assert controller.handle is service.handle
 
 
 def test_privileged_metadata_is_not_renderable_in_public_monitor_data() -> None:

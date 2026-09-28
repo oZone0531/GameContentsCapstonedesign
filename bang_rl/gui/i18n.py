@@ -46,6 +46,10 @@ _STRINGS: dict[str, dict[str, str]] = {
     "game.alive": {"en": "alive", "ko": "생존"},
     "game.eliminated": {"en": "eliminated", "ko": "탈락"},
     "game.no_session": {"en": "No game session", "ko": "진행 중인 게임이 없습니다"},
+    "game.error_generic": {
+        "en": "The operation could not be completed.",
+        "ko": "작업을 완료할 수 없습니다.",
+    },
     "game.status_line": {
         "en": "Step {step} · turn Player {player} · {status}",
         "ko": "스텝 {step} · 플레이어 {player} 차례 · {status}",
@@ -55,6 +59,23 @@ _STRINGS: dict[str, dict[str, str]] = {
     "game.pause": {"en": "Pause", "ko": "일시정지"},
     "game.resume": {"en": "Resume", "ko": "재개"},
     "game.paused_msg": {"en": "Game paused.", "ko": "게임이 일시정지되었습니다."},
+    "game.finished_normally_faction": {
+        "en": "Game finished normally. {faction} wins.",
+        "ko": "게임이 정상적으로 종료되었습니다. {faction} 승리.",
+    },
+    "game.finished_normally": {
+        "en": "Game finished normally.",
+        "ko": "게임이 정상적으로 종료되었습니다.",
+    },
+    "game.finished_truncated": {
+        "en": "Game stopped at the episode limit.",
+        "ko": "게임이 에피소드 한도에서 중단되었습니다.",
+    },
+
+    # Winning factions (game-over message)
+    "faction.sheriff_team": {"en": "Sheriff team", "ko": "보안관 팀"},
+    "faction.outlaw_team": {"en": "Outlaw team", "ko": "무법자 팀"},
+    "faction.traitor_team": {"en": "Traitor", "ko": "배신자"},
 
     # HUD table headers
     "hud.player": {"en": "Player", "ko": "플레이어"},
@@ -112,6 +133,56 @@ _STRINGS: dict[str, dict[str, str]] = {
             "자원을 직접 설정하세요. CPU 코어 1~2개를 남겨두면 보통 운영체제와 GUI가 원활하게 "
             "동작합니다. 벤치마크나 자동 튜닝, OOM 탐색은 수행하지 않습니다."
         ),
+    },
+
+    # Dummy AI emotion configuration (Settings screen + dialog)
+    "settings.emotion_initial_values": {
+        "en": "Emotion initial values", "ko": "감정 초기 기준값",
+    },
+    "settings.emotion_initial_help": {
+        "en": "Set the starting value (0-1) for each of the dummy AI's emotions.",
+        "ko": "더미 AI의 각 감정에 대한 초기값(0~1)을 설정하세요.",
+    },
+    "settings.dummy_ai": {"en": "Dummy AI settings", "ko": "더미 AI 설정"},
+    "settings.dummy_ai_title": {
+        "en": "Dummy AI emotion configuration", "ko": "더미 AI 감정 설정",
+    },
+    "settings.dummy_ai_help": {
+        "en": (
+            "Configure how many emotions the dummy AI has, their names, how they "
+            "increase or decrease, and their effects when high or low."
+        ),
+        "ko": (
+            "더미 AI가 갖는 감정의 개수, 이름, 증감 조건, 감정이 높거나 낮을 때의 영향을 "
+            "설정하세요."
+        ),
+    },
+    "settings.emotion_count": {"en": "Number of emotions", "ko": "감정 개수"},
+    "settings.emotion_schema_version": {"en": "Schema version", "ko": "스키마 버전"},
+    "settings.emotion_name": {"en": "Name", "ko": "이름"},
+    "settings.emotion_initial": {"en": "Initial value", "ko": "감정 초기값"},
+    "settings.emotion_change_rate": {"en": "Change rate", "ko": "증가율"},
+    "settings.emotion_decay_rate": {"en": "Decay rate", "ko": "감소율"},
+    "settings.emotion_event_updates": {
+        "en": "Event conditions (JSON)", "ko": "이벤트 증감 조건 (JSON)",
+    },
+    "settings.emotion_action_updates": {
+        "en": "Action conditions (JSON)", "ko": "행동 증감 조건 (JSON)",
+    },
+    "settings.emotion_reward_updates": {
+        "en": "Reward conditions (JSON)", "ko": "보상 증감 조건 (JSON)",
+    },
+    "settings.emotion_terminal_updates": {
+        "en": "Terminal conditions (JSON)", "ko": "종료 증감 조건 (JSON)",
+    },
+    "settings.emotion_effects": {
+        "en": "Effects when high/low (JSON)", "ko": "감정 효과 높음/낮음 (JSON)",
+    },
+    "settings.emotion_number": {"en": "Emotion {index}", "ko": "감정 {index}"},
+    "settings.dummy_ai_apply": {"en": "Apply", "ko": "적용"},
+    "settings.dummy_ai_cancel": {"en": "Cancel", "ko": "취소"},
+    "settings.dummy_ai_applied": {
+        "en": "Dummy AI emotions updated.", "ko": "더미 AI 감정이 업데이트되었습니다.",
     },
 
     # Training monitor

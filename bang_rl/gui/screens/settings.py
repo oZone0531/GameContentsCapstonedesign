@@ -5,12 +5,14 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from ..dialogs import DummyAISettingsDialog
 from ..i18n import LANGUAGE_LABELS, LANGUAGES, current_language, set_language, tr
 from ..qt_compat import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
+    QGroupBox,
     QLabel,
     QPlainTextEdit,
     QPushButton,
@@ -55,10 +57,19 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             self.clip.setRange(0.000001, 0.999999)
             self.clip.setDecimals(6)
             self.clip.setValue(self.editor.snapshot.ppo_clip_epsilon)
-            self.baseline = QDoubleSpinBox(self)
-            self.baseline.setRange(0.0, 1.0)
-            self.baseline.setDecimals(4)
-            self.baseline.setValue(self.editor.snapshot.emotion_initial_baseline)
+            # Per-emotion initial-value editor for the dummy AI. One spinbox is
+            # built per emotion currently in ``config.preset.emotion`` (works
+            # for any emotion_count, not a hard-coded 6).
+            self.emotion_group = QGroupBox(tr("settings.emotion_initial_values"), self)
+            self.emotion_form = QFormLayout(self.emotion_group)
+            self.emotion_initial_help = QLabel(tr("settings.emotion_initial_help"), self.emotion_group)
+            self.emotion_initial_help.setWordWrap(True)
+            self.emotion_form.addRow(self.emotion_initial_help)
+            self.emotion_spins: list[QDoubleSpinBox] = []
+            self.emotion_names: list[str] = []
+            self._build_emotion_spins()
+            self.dummy_ai_button = QPushButton(tr("settings.dummy_ai"), self)
+            self.dummy_ai_button.clicked.connect(self._open_dummy_ai)
             self.cpu = QSpinBox(self)
             self.cpu.setRange(1, 4096)
             self.cpu.setValue(hardware["cpu_cores"])
@@ -90,7 +101,6 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             form = QFormLayout()
             form.addRow(tr("settings.language"), self.language)
             form.addRow(tr("settings.ppo_clip"), self.clip)
-            form.addRow(tr("settings.emotion_baseline"), self.baseline)
             form.addRow(tr("settings.cpu"), self.cpu)
             form.addRow(tr("settings.ram"), self.ram)
             form.addRow(tr("settings.workers"), self.workers)
@@ -100,11 +110,47 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             layout = QVBoxLayout(self)
             layout.addWidget(self.back_button)
             layout.addLayout(form)
+            layout.addWidget(self.emotion_group)
+            layout.addWidget(self.dummy_ai_button)
             layout.addWidget(self.reward_label)
             layout.addWidget(self.reward)
             layout.addWidget(self.help)
             layout.addWidget(self.save_button)
             layout.addWidget(self.error)
+
+        def _build_emotion_spins(self) -> None:
+            """(Re)create one initial-value spinbox per configured emotion."""
+
+            for spin in self.emotion_spins:
+                label = self.emotion_form.labelForField(spin)
+                if label is not None:
+                    label.setParent(None)
+                    label.deleteLater()
+                spin.setParent(None)
+                spin.deleteLater()
+            self.emotion_spins = []
+            self.emotion_names = []
+            baseline = self.editor.snapshot.emotion_initial_baseline
+            for definition in self.editor.snapshot.dummy_emotions:
+                name = str(definition.get("name", ""))
+                spin = QDoubleSpinBox(self.emotion_group)
+                spin.setRange(0.0, 1.0)
+                spin.setDecimals(4)
+                initial = definition.get("initial_value")
+                spin.setValue(float(initial) if initial is not None else float(baseline))
+                self.emotion_form.addRow(name, spin)
+                self.emotion_spins.append(spin)
+                self.emotion_names.append(name)
+
+        def _open_dummy_ai(self) -> None:
+            dialog = DummyAISettingsDialog(self.editor, parent=self, on_applied=self._on_dummy_applied)
+            dialog.exec()
+
+        def _on_dummy_applied(self) -> None:
+            # The dummy-AI dialog may have changed emotion names/count; rebuild
+            # the per-emotion initial-value rows to match the staged config.
+            self._build_emotion_spins()
+            self.error.setText(tr("settings.dummy_ai_applied"))
 
         def _change_language(self, _index: int) -> None:
             code = self.language.currentData()
@@ -121,6 +167,9 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             self.save_button.setText(tr("settings.save"))
             self.back_button.setText(tr("common.back"))
             self.reward_label.setText(tr("settings.reward_json"))
+            self.emotion_group.setTitle(tr("settings.emotion_initial_values"))
+            self.emotion_initial_help.setText(tr("settings.emotion_initial_help"))
+            self.dummy_ai_button.setText(tr("settings.dummy_ai"))
 
         def _go_back(self) -> None:
             if self.on_back is not None:
@@ -133,7 +182,6 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
                 raise SettingsValidationError(({"loc": ("reward_config",), "msg": str(exc)},)) from exc
             return {
                 "ppo_clip_epsilon": self.clip.value(),
-                "emotion_initial_baseline": self.baseline.value(),
                 "hardware": {
                     "cpu_cores": self.cpu.value(),
                     "ram_gb": self.ram.value(),
@@ -145,8 +193,23 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
                 "reward_config": reward,
             }
 
+        def _emotion_initial_payload(self) -> dict[str, Any]:
+            """Build a preset-emotion mapping with the edited per-emotion values."""
+
+            emotion = dict(self.editor.snapshot.dummy_emotion)
+            definitions = [dict(item) for item in (emotion.get("emotions") or [])]
+            for index, spin in enumerate(self.emotion_spins):
+                if index < len(definitions):
+                    definitions[index]["initial_value"] = spin.value()
+            emotion["emotions"] = definitions
+            return emotion
+
         def _save(self) -> None:
             try:
+                # Stage the per-emotion initial values into config.preset.emotion
+                # first, then the flat training/hardware/reward values.
+                if self.emotion_spins:
+                    self.editor.apply_dummy_emotion(self._emotion_initial_payload())
                 self.editor.apply(self._values())
                 self.editor.save()
                 self.error.setText(tr("settings.saved"))

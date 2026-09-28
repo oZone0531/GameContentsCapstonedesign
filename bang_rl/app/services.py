@@ -154,6 +154,8 @@ class PublicGameState:
     terminated: bool
     truncated: bool
     termination_status: str
+    winning_team: str | None = None
+    winners: tuple[int, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -166,6 +168,8 @@ class PublicGameState:
             "terminated": self.terminated,
             "truncated": self.truncated,
             "termination_status": self.termination_status,
+            "winning_team": self.winning_team,
+            "winners": list(self.winners),
         }
 
 
@@ -536,6 +540,16 @@ class GameService:
         observation = _json_value(env.observe())
         selected = getattr(env.agent_selection, "index", None)
         status = "normal" if bool(env.state.terminated) else "truncated" if bool(env.state.truncated) else "running"
+        # Surface the winning faction as a stable string id (e.g. "sheriff_team")
+        # only when the episode terminated normally. Never expose living roles.
+        winning_team: str | None = None
+        winners: tuple[int, ...] = ()
+        terminal = env.state.terminal_result if bool(env.state.terminated) else None
+        if terminal is not None:
+            team = getattr(terminal, "winning_team", None)
+            if team is not None:
+                winning_team = str(getattr(team, "name", team)).lower()
+            winners = tuple(int(index) for index in getattr(terminal, "winners", ()))
         return PublicGameState(
             session.handle.session_id,
             env.state.episode_id,
@@ -546,6 +560,8 @@ class GameService:
             bool(env.state.terminated),
             bool(env.state.truncated),
             status,
+            winning_team,
+            winners,
         )
 
     def get_state(self, handle: SessionHandle | str) -> PublicGameState:

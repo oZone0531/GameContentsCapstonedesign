@@ -32,7 +32,14 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             super().__init__(parent)
             self.controller = controller
             self.on_back = on_back
+            self._alive = True
             self.setWindowTitle(tr("game.title"))
+            # The board | HUD | log panels sit side by side in the top row, so
+            # give the screen enough width for the Opponents panel to show in
+            # full without horizontal scrolling. A minimum width (rather than a
+            # hardcoded top-level geometry) keeps MainWindow._set_screen's
+            # adjustSize() behavior intact.
+            self.setMinimumWidth(1024)
             self.back_button = QPushButton(tr("common.back"), self)
             self.back_button.clicked.connect(self._go_back)
             self.status = QLabel(self)
@@ -55,9 +62,22 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self._render(controller.snapshot)
 
         def _go_back(self) -> None:
+            self._detach()
             self.controller.close()
             if self.on_back is not None:
                 self.on_back()
+
+        def _detach(self) -> None:
+            """Stop rendering into this (about to be torn down) screen.
+
+            ``setCentralWidget`` deletes the underlying C++ objects of the
+            previous central widget, so any later ``controller.on_update``
+            publish must not touch this screen's now-dead widgets.
+            """
+
+            self._alive = False
+            if getattr(self.controller, "on_update", None) is self._render:
+                self.controller.on_update = None
 
         def _submit_action(self, action: int) -> None:
             try:
@@ -71,6 +91,8 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self._render(snapshot)
 
         def _render(self, snapshot: Any) -> None:
+            if not self._alive:
+                return
             if snapshot.state is not None:
                 self.board.update_state(snapshot.state)
                 self.hud.update_state(snapshot.state)
@@ -91,6 +113,7 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.actions.set_message(snapshot.message)
 
         def closeEvent(self, event: Any) -> None:
+            self._detach()
             self.controller.close()
             event.accept()
 
