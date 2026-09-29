@@ -8,6 +8,7 @@ from typing import Any
 
 from .i18n import tr
 from .qt_compat import (
+    Qt,
     QFileDialog,
     QMainWindow,
     QLabel,
@@ -40,6 +41,37 @@ WINDOW_HEIGHT = 860
 # Minimum application font point size (item: make GUI text >= 10pt). Shared with
 # __main__.main() which sets the global QApplication font.
 MIN_FONT_POINT_SIZE = 10
+
+# Menu button geometry (user item 1). Each main-menu button and each game-mode
+# button is sized to about half the window width, with horizontal padding and a
+# larger font, then centered in its vertical layout. These live outside the
+# ``if QT_AVAILABLE:`` gate so they can be imported and unit-tested headlessly
+# (mirroring WINDOW_WIDTH / MIN_FONT_POINT_SIZE above). GameModeSelect imports
+# them so the whole menu stays visually consistent.
+MENU_BUTTON_WIDTH = WINDOW_WIDTH // 2
+MENU_BUTTON_MIN_HEIGHT = 48
+# Point size (>= 14pt) and horizontal/vertical padding applied via a stylesheet
+# so the button text is large relative to the wide window.
+MENU_BUTTON_FONT_POINT_SIZE = 16
+MENU_BUTTON_STYLE = "padding: 12px 40px; font-size: 16pt;"
+
+
+def style_menu_button(button: Any) -> None:
+    """Apply the shared half-width + large-font menu-button geometry.
+
+    Shared by the main menu (main_window) and the game-mode selector
+    (game_mode.py) so the whole menu is visually consistent. Defined outside
+    any ``if QT_AVAILABLE:`` gate but only ever called on real ``QPushButton``
+    instances, which exist only when Qt is available.
+    """
+
+    button.setFixedWidth(MENU_BUTTON_WIDTH)
+    button.setMinimumHeight(MENU_BUTTON_MIN_HEIGHT)
+    button.setStyleSheet(MENU_BUTTON_STYLE)
+    font = button.font()
+    if font.pointSize() < MENU_BUTTON_FONT_POINT_SIZE:
+        font.setPointSize(MENU_BUTTON_FONT_POINT_SIZE)
+        button.setFont(font)
 
 
 if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
@@ -96,25 +128,43 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
 
             self.setCentralWidget(widget)
 
+        def _style_menu_button(self, button: QPushButton, layout: QVBoxLayout) -> None:
+            """Size a menu button to about half the window with a larger font.
+
+            Applies the shared MENU_BUTTON_* geometry (half-width, minimum
+            height, horizontal padding + larger font via a stylesheet) and
+            centers the button horizontally in its vertical layout so the
+            half-width buttons sit centered (user item 1).
+            """
+
+            style_menu_button(button)
+            layout.setAlignment(button, Qt.AlignmentFlag.AlignHCenter)
+
         def _show_menu(self) -> None:
             menu = QWidget(self)
             layout = QVBoxLayout(menu)
             title = QLabel(tr("app.title"), menu)
             layout.addWidget(title)
+            layout.setAlignment(title, Qt.AlignmentFlag.AlignHCenter)
             mode_select = GameModeSelect(self._select_mode, menu)
             layout.addWidget(mode_select)
+            layout.setAlignment(mode_select, Qt.AlignmentFlag.AlignHCenter)
             training_button = QPushButton(tr("menu.training"), menu)
             training_button.clicked.connect(self._show_training)
             layout.addWidget(training_button)
+            self._style_menu_button(training_button, layout)
             settings_button = QPushButton(tr("menu.settings"), menu)
             settings_button.clicked.connect(self._show_settings)
             layout.addWidget(settings_button)
+            self._style_menu_button(settings_button, layout)
             replay_button = QPushButton(tr("menu.replay"), menu)
             replay_button.clicked.connect(self._show_replay)
             layout.addWidget(replay_button)
+            self._style_menu_button(replay_button, layout)
             exit_button = QPushButton(tr("menu.exit"), menu)
             exit_button.clicked.connect(self.close)
             layout.addWidget(exit_button)
+            self._style_menu_button(exit_button, layout)
             self._set_screen(menu)
 
         def _show_training(self) -> None:
@@ -139,8 +189,6 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             """
 
             episode = self.replay_episode
-            if episode is None:
-                episode = self._prompt_replay_episode()
             model = None
             if episode is not None:
                 try:
@@ -148,7 +196,17 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 except (TypeError, ValueError, KeyError) as exc:
                     self.statusBar().showMessage(str(exc) or tr("replay.no_episode"), 0)
                     model = None
-            self._replay_screen = ReplayScreen(model, parent=self, on_back=self._show_menu)
+            # Open the folder-based browser rooted at the in-project replay
+            # folder so every auto-saved human game is listed. An in-memory
+            # episode (if supplied) is still shown first via the model argument.
+            from ..paths import REPLAYS_DIR
+
+            self._replay_screen = ReplayScreen(
+                model,
+                parent=self,
+                on_back=self._show_menu,
+                replay_directory=REPLAYS_DIR,
+            )
             self._set_screen(self._replay_screen)
 
         def _prompt_replay_episode(self) -> Any:
@@ -184,6 +242,9 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
 
         def _select_mode(self, mode: GameMode) -> None:
             artifact_path: str | None = None
+            # Clear any prior Main-AI metadata so a non-Main mode does not carry
+            # a stale AI version into its saved replay.
+            self.controller.set_ai_metadata(None)
             if mode is GameMode.HUMAN_MAIN_DUMMY:
                 self._selection = self._selection or ModelSelection()
                 options = self._selection.discover(self.artifact_paths, config=self.config)
@@ -191,6 +252,9 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 if dialog.exec() != dialog.DialogCode.Accepted or dialog.selected_option is None:
                     return
                 artifact_path = dialog.selected_option.path
+                # Record the chosen artifact's metadata (incl. version) so the
+                # auto-saved replay captures which AI version was used.
+                self.controller.set_ai_metadata(dialog.selected_option.metadata)
             # Detach any callback still bound to a previously-shown (and now
             # torn-down) GameScreen so controller.start()'s internal publish
             # cannot render into deleted C++ widgets.

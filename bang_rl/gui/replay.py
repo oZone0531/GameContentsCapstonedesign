@@ -148,7 +148,10 @@ class ReplayModel:
     (clamped at the ends), ``seek``, ``snapshot_at`` and a
     ``snapshot_for_moment`` / ``index_for_moment`` lookup that maps an
     ``environment_step`` (or a log-row index / an event mapping) to the
-    snapshot representing the game at that moment.  All pure and Qt-free.
+    snapshot representing the game at that moment.  A log-row lookup resolves
+    against the COMPLETE cumulative log (:meth:`full_events`), independent of
+    the cursor, so it matches what the live GameLog renders.  All pure and
+    Qt-free.
     """
 
     def __init__(self, episode: Any) -> None:
@@ -408,12 +411,14 @@ class ReplayModel:
     def index_for_log_row(self, row: int) -> int | None:
         """Map a hovered GameLog row to the snapshot index at that moment.
 
-        The log renders the cumulative ``event_sequence`` of the current
-        snapshot, so row ``r`` corresponds to the event at that position; its
-        ``environment_step`` selects the moment's snapshot.
+        The live GameLog renders the FULL cumulative event log (that of the
+        latest/longest snapshot), so a row is resolved against
+        :meth:`full_events` rather than the cursor's (possibly short) current
+        log.  This makes hover-preview / click-to-rewind work for every row the
+        user actually sees, not just the opening turn's few events.
         """
 
-        events = self.current_events()
+        events = self.full_events()
         if row is None or not (0 <= int(row) < len(events)):
             return None
         return self.index_for_event(events[int(row)])
@@ -425,6 +430,23 @@ class ReplayModel:
         if snapshot is None:
             return ()
         return tuple(snapshot.observation.get("event_sequence") or ())
+
+    def full_events(self) -> tuple[Mapping[str, Any], ...]:
+        """Return the COMPLETE cumulative event log for the whole episode.
+
+        Each snapshot carries the cumulative ``event_sequence`` up to its own
+        ``environment_step``, so the longest one (the latest turn) is the full
+        log the live GameLog renders.  Resolving a clicked/hovered row against
+        this log -- independent of the cursor position -- is what makes rows
+        past the opening turn map to the correct moment.
+        """
+
+        longest: tuple[Mapping[str, Any], ...] = ()
+        for snapshot in self._snapshots:
+            events = tuple(snapshot.observation.get("event_sequence") or ())
+            if len(events) > len(longest):
+                longest = events
+        return longest
 
     def snapshot_for_moment(self, moment: Any) -> ReplaySnapshot | None:
         """Return the snapshot at ``moment`` (an event mapping or a step int)."""

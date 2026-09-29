@@ -96,6 +96,23 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             form.addRow(tr("settings.emotion_reward_updates"), self.reward_updates)
             form.addRow(tr("settings.emotion_terminal_updates"), self.terminal_updates)
             form.addRow(tr("settings.emotion_effects"), self.effects)
+            # Item 3: hover help on every emotion field AND its form label.
+            row_tooltips = (
+                (self.name, "tooltip.emotion_name"),
+                (self.initial, "tooltip.emotion_initial_values"),
+                (self.change_rate, "tooltip.emotion_change_rate"),
+                (self.decay_rate, "tooltip.emotion_decay_rate"),
+                (self.event_updates, "tooltip.emotion_event_updates"),
+                (self.action_updates, "tooltip.emotion_action_updates"),
+                (self.reward_updates, "tooltip.emotion_reward_updates"),
+                (self.terminal_updates, "tooltip.emotion_terminal_updates"),
+                (self.effects, "tooltip.emotion_effects"),
+            )
+            for field, key in row_tooltips:
+                field.setToolTip(tr(key))
+                label = form.labelForField(field)
+                if label is not None:
+                    label.setToolTip(tr(key))
 
         def to_definition(self, index: int) -> dict[str, Any]:
             return {
@@ -154,6 +171,17 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             header.addRow(tr("settings.emotion_schema_version"), self.schema_version)
             header.addRow(tr("settings.emotion_count"), self.count)
             header.addRow(tr("settings.emotion_initial_baseline"), self.initial_baseline)
+            # Item 3: hover help on the header fields AND their form labels.
+            header_tooltips = (
+                (self.schema_version, "tooltip.emotion_schema_version"),
+                (self.count, "tooltip.emotion_count"),
+                (self.initial_baseline, "tooltip.emotion_initial_baseline_field"),
+            )
+            for field, key in header_tooltips:
+                field.setToolTip(tr(key))
+                label = header.labelForField(field)
+                if label is not None:
+                    label.setToolTip(tr(key))
 
             self._rows: list[_EmotionRow] = []
             self._rows_host = QWidget(self)

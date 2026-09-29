@@ -165,6 +165,27 @@ def test_log_row_hover_maps_to_the_moment_snapshot() -> None:
     assert model.index_for_log_row(999) is None
 
 
+def test_log_row_hover_maps_full_log_with_cursor_at_start() -> None:
+    # Regression for the item-8 bug: the live GameLog renders the FULL
+    # cumulative log, but the freshly built ReplayModel sits at cursor 0 whose
+    # own event_sequence is the SHORTEST log. Rows past the opening turn must
+    # still map to the right snapshot WITHOUT first seeking to the end.
+    model = ReplayModel(_mapping_episode())
+    assert model.index == 0
+    # The full log the user sees has every recorded event.
+    full = model.full_events()
+    assert len(full) == len(_events())
+    # The short current-cursor log only holds the opening turn's events.
+    assert len(model.current_events()) < len(full)
+    # A row PAST the opening turn (the elimination) still resolves correctly
+    # even though the cursor never left index 0.
+    assert model.index_for_log_row(len(full) - 1) == 2
+    # The step-1 bang row maps to the step-1 snapshot.
+    assert model.index_for_log_row(2) == 1
+    # Resolving the row did not disturb the cursor.
+    assert model.index == 0
+
+
 def test_event_diff_between_consecutive_snapshots_yields_new_bangs() -> None:
     model = ReplayModel(_mapping_episode())
     prev = model.snapshot_at(0).observation["event_sequence"]

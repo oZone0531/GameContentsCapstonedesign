@@ -9,13 +9,24 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 REPORTS_DIR = PROJECT_ROOT / "reports"
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
+# In-project replay storage. Mirrors the models/logs/datasets convention
+# (bang_rl/replays/* gitignored except a .gitkeep placeholder). Every
+# human-played GUI game is auto-saved here so it can be browsed and replayed.
+REPLAYS_DIR = PROJECT_ROOT / "bang_rl" / "replays"
 
 
 def ensure_training_directories() -> None:
-    """Create the three project-local training roots if they are missing."""
+    """Create the project-local training roots if they are missing."""
 
-    for directory in (REPORTS_DIR, OUTPUTS_DIR, ARTIFACTS_DIR):
+    for directory in (REPORTS_DIR, OUTPUTS_DIR, ARTIFACTS_DIR, REPLAYS_DIR):
         directory.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_replays_directory() -> Path:
+    """Create and return the in-project replay-storage directory."""
+
+    REPLAYS_DIR.mkdir(parents=True, exist_ok=True)
+    return REPLAYS_DIR
 
 
 def default_training_paths() -> tuple[Path, Path, Path]:
@@ -70,8 +81,10 @@ __all__ = [
     "ARTIFACTS_DIR",
     "OUTPUTS_DIR",
     "PROJECT_ROOT",
+    "REPLAYS_DIR",
     "REPORTS_DIR",
     "default_training_paths",
+    "ensure_replays_directory",
     "ensure_training_directories",
     "latest_artifact",
     "resolve_training_file",

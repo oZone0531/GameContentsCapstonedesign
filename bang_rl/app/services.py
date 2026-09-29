@@ -156,6 +156,11 @@ class PublicGameState:
     termination_status: str
     winning_team: str | None = None
     winners: tuple[int, ...] = ()
+    # Every seat's true role index, populated ONLY once the episode is over
+    # (terminated or truncated) so the GUI can reveal all players at game end.
+    # Empty during play so no living role ever leaks. Never persisted to a
+    # recorded observation or replay record (replays stay public-projection).
+    final_roles: tuple[int, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -170,6 +175,7 @@ class PublicGameState:
             "termination_status": self.termination_status,
             "winning_team": self.winning_team,
             "winners": list(self.winners),
+            "final_roles": list(self.final_roles),
         }
 
 
@@ -550,6 +556,16 @@ class GameService:
             if team is not None:
                 winning_team = str(getattr(team, "name", team)).lower()
             winners = tuple(int(index) for index in getattr(terminal, "winners", ()))
+        # Reveal every seat's true role ONLY once the episode is over so the
+        # GUI can show all players at game end. During play this stays empty so
+        # no living role leaks. This is the only GUI-facing read of the private
+        # env.state.roles, guarded so a fake/mock session that lacks it never
+        # raises.
+        final_roles: tuple[int, ...] = ()
+        if bool(env.state.terminated) or bool(env.state.truncated):
+            true_roles = getattr(getattr(env, "state", None), "roles", None)
+            if true_roles is not None:
+                final_roles = tuple(int(getattr(role, "value", role)) for role in true_roles)
         return PublicGameState(
             session.handle.session_id,
             env.state.episode_id,
@@ -562,6 +578,7 @@ class GameService:
             status,
             winning_team,
             winners,
+            final_roles,
         )
 
     def get_state(self, handle: SessionHandle | str) -> PublicGameState:

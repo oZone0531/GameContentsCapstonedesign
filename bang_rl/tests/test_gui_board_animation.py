@@ -14,7 +14,11 @@ from bang_rl.gui.i18n import LANGUAGES, current_language, set_language
 from bang_rl.gui.i18n import _STRINGS
 from bang_rl.gui.widgets.board_layout import (
     circle_radius,
+    facing_angle,
+    gun_anchor_and_angle,
     health_to_color,
+    highlight_color,
+    interpolate_angle,
     muzzle_point_and_angle,
     new_animation_events,
     seat_fill_color,
@@ -86,6 +90,76 @@ def test_muzzle_sits_on_shooter_circle_edge_toward_target() -> None:
 def test_muzzle_none_for_missing_or_coincident_seats() -> None:
     assert muzzle_point_and_angle(0, 0, 800, 800) is None
     assert muzzle_point_and_angle(0, 99, 800, 800) is None
+
+
+# -- FEAT-004 facing / gun-on-right / angle-lerp / highlight geometry ------
+
+def test_facing_angle_points_each_seat_toward_board_center() -> None:
+    width, height = 800.0, 800.0
+    cx, cy = width / 2.0, height / 2.0
+    positions = seat_positions(width, height)
+    for player in range(5):
+        sx, sy = positions[player]
+        angle = facing_angle(player, width, height)
+        # The unit facing vector must point from the seat toward the centre:
+        # its dot product with (centre - seat) is positive.
+        fx, fy = math.cos(angle), math.sin(angle)
+        dx, dy = cx - sx, cy - sy
+        assert fx * dx + fy * dy > 0, f"seat {player} should face the board centre"
+
+
+def test_gun_sits_on_the_right_of_the_facing_direction() -> None:
+    width, height = 800.0, 800.0
+    positions = seat_positions(width, height)
+    for player in range(5):
+        facing = facing_angle(player, width, height)
+        result = gun_anchor_and_angle(player, width, height, facing=facing)
+        assert result is not None
+        (ax, ay), angle = result
+        # The barrel points along the facing angle.
+        assert math.isclose(angle, facing, abs_tol=1e-9)
+        cx, cy = positions[player]
+        # Offset of the anchor from the seat centre lies on the RIGHT of the
+        # facing direction. Right-of-facing in screen coords (y down) is
+        # (sin f, -cos f); the dot product with the offset is positive.
+        off_x, off_y = ax - cx, ay - cy
+        right_x, right_y = math.sin(facing), -math.cos(facing)
+        assert off_x * right_x + off_y * right_y > 0
+
+
+def test_gun_anchor_none_for_missing_seat() -> None:
+    assert gun_anchor_and_angle(99, 800, 800, facing=0.0) is None
+
+
+def test_interpolate_angle_endpoints_and_shortest_path() -> None:
+    assert math.isclose(interpolate_angle(0.5, 1.5, 0.0), 0.5, abs_tol=1e-9)
+    assert math.isclose(interpolate_angle(0.5, 1.5, 1.0), 1.5, abs_tol=1e-9)
+    # Halfway is the midpoint for a small, non-wrapping span.
+    assert math.isclose(interpolate_angle(0.0, 1.0, 0.5), 0.5, abs_tol=1e-9)
+    # Across the +/-pi wrap the shortest path steps the SHORT way: from
+    # 3.0 rad to -3.0 rad the shortest move is +~0.283 rad (through +pi),
+    # not the -6.0 rad long way.
+    result = interpolate_angle(3.0, -3.0, 0.5)
+    delta = (-3.0 - 3.0 + math.pi) % (2.0 * math.pi) - math.pi
+    assert math.isclose(result, 3.0 + delta * 0.5, abs_tol=1e-9)
+    assert delta > 0, "shortest path from 3.0 to -3.0 goes the short (positive) way"
+
+
+def test_interpolate_angle_clamps_t() -> None:
+    assert math.isclose(interpolate_angle(0.2, 0.8, -1.0), 0.2, abs_tol=1e-9)
+    assert math.isclose(interpolate_angle(0.2, 0.8, 5.0), 0.8, abs_tol=1e-9)
+
+
+def test_highlight_color_brightens_each_channel_and_clamps() -> None:
+    r, g, b, a = highlight_color((70, 150, 210, 255))
+    assert r > 70 and g > 150 and b > 210
+    assert a == 255
+    # Every channel stays within range and a bright input clamps at 255.
+    assert all(0 <= channel <= 255 for channel in (r, g, b, a))
+    assert highlight_color((255, 255, 255, 255)) == (255, 255, 255, 255)
+    # Short inputs are tolerated (missing alpha defaults to opaque).
+    r2, g2, b2, a2 = highlight_color((0, 0, 0))
+    assert (r2, g2, b2) > (0, 0, 0) and a2 == 255
 
 
 # -- new-event diff ---------------------------------------------------------
@@ -168,3 +242,17 @@ def test_no_em_dash_in_new_board_strings() -> None:
     for key in keys:
         for text in _STRINGS[key].values():
             assert "\u2014" not in text
+
+
+def test_feat004_game_i18n_keys_exist_in_both_languages() -> None:
+    keys = (
+        "game.winner_banner",
+        "game.no_winner_banner",
+        "game.time_travel_hint",
+        "game.time_travel_hint_terminal",
+    )
+    for key in keys:
+        assert key in _STRINGS, f"missing key {key}"
+        for language in LANGUAGES:
+            assert _STRINGS[key][language].strip(), f"{key} empty for {language}"
+            assert "\u2014" not in _STRINGS[key][language]

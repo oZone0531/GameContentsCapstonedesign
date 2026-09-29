@@ -26,6 +26,7 @@ from ..qt_compat import (
     QT_AVAILABLE,
     require_qt,
 )
+from ..replay import ReplayModel
 from ..widgets.game_widgets import ActionPanel, GameLog, GraphicalBoard
 
 
@@ -51,6 +52,9 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.controller = controller
             self.on_back = on_back
             self._alive = True
+            # True while the pointer hovers a log row and the board is showing
+            # that recorded moment as a read-only preview (item 8).
+            self._log_hover_preview = False
             self.setWindowTitle(tr("game.title"))
             self.setMinimumWidth(1024)
 
@@ -108,6 +112,15 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.board.actionRequested.connect(self._submit_action)
             self.actions.actionRequested.connect(self._submit_action)
             self.actions.pauseRequested.connect(self._toggle_pause)
+
+            # Item 8: hovering a left-log row previews that moment on the board;
+            # clicking a row rewinds the game to that moment so play continues
+            # from there. Mirrors the ReplayScreen log-hover wiring.
+            self.log.list.setMouseTracking(True)
+            self.log.list.itemEntered.connect(self._on_log_row_hovered)
+            self.log.list.itemClicked.connect(self._on_log_row_clicked)
+            self.log.list.viewport().installEventFilter(self)
+
             controller.on_update = self._render
             self._render(controller.snapshot)
 
@@ -199,6 +212,65 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self._render(snapshot)
             if not self.controller.is_ai_turn():
                 self._ai_timer.stop()
+
+        # -- log-row time travel (item 8) --------------------------------
+        def _log_model(self) -> ReplayModel | None:
+            """Build a ReplayModel over the recorded per-turn observations."""
+
+            observations = getattr(self.controller, "_replay_observations", None)
+            if not observations:
+                return None
+            try:
+                return ReplayModel(list(observations))
+            except (TypeError, ValueError):
+                return None
+
+        def _on_log_row_hovered(self, item: Any) -> None:
+            if not self._alive or item is None:
+                return
+            model = self._log_model()
+            if model is None or model.is_empty():
+                return
+            row = self.log.list.row(item)
+            index = model.index_for_log_row(row)
+            if index is None:
+                return
+            snapshot = model.snapshot_at(index)
+            if snapshot is None:
+                return
+            # Read-only preview of the hovered moment; the live view is
+            # restored when the pointer leaves the log (eventFilter Leave).
+            self._log_hover_preview = True
+            self.board.update_state(snapshot)
+            self.log.update_state(snapshot)
+
+        def _end_log_hover_preview(self) -> None:
+            if not self._alive or not self._log_hover_preview:
+                return
+            self._log_hover_preview = False
+            # Restore whatever the controller is currently showing (the live
+            # turn, or a committed time-travel preview if a row was clicked).
+            self._render(self.controller.snapshot)
+
+        def _on_log_row_clicked(self, item: Any) -> None:
+            if not self._alive or item is None:
+                return
+            row = self.log.list.row(item)
+            # Clicking commits the rewind through the Qt-free controller, then
+            # re-renders so play can continue from that moment.
+            self._log_hover_preview = False
+            self._ai_timer.stop()
+            snapshot = self.controller.time_travel_to(row)
+            self._render(snapshot)
+
+        def eventFilter(self, source: Any, event: Any) -> bool:
+            if (
+                self._alive
+                and source is self.log.list.viewport()
+                and event.type() == event.Type.Leave
+            ):
+                self._end_log_hover_preview()
+            return super().eventFilter(source, event)
 
         # -- rendering ---------------------------------------------------
         def _render(self, snapshot: Any) -> None:

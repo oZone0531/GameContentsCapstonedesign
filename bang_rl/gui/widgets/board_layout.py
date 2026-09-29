@@ -246,6 +246,183 @@ def gun_angle(
     return None if result is None else result[1]
 
 
+def facing_angle(
+    player: int,
+    width: float,
+    height: float,
+    *,
+    human_player: int = 0,
+    player_count: int = PLAYER_COUNT,
+) -> float:
+    """Return the default facing angle (radians) for ``player``.
+
+    Each character normally faces the CENTRE of the board ``(width/2,
+    height/2)``.  The angle is measured from the positive x-axis (math
+    convention, ``atan2(dy, dx)``).  A seat sitting exactly on the centre (or a
+    missing seat) faces straight up (``-pi/2``) as a stable fallback so the
+    helper never raises.  Qt-free so FEAT-004 facing geometry is unit-testable.
+    """
+
+    positions = seat_positions(width, height, human_player=human_player, player_count=player_count)
+    if player not in positions:
+        return -math.pi / 2
+    sx, sy = positions[player]
+    cx = float(width) / 2.0
+    cy = float(height) / 2.0
+    dx = cx - sx
+    dy = cy - sy
+    if dx == 0 and dy == 0:
+        return -math.pi / 2
+    return math.atan2(dy, dx)
+
+
+def gun_anchor_and_angle(
+    player: int,
+    width: float,
+    height: float,
+    *,
+    facing: float,
+    human_player: int = 0,
+    player_count: int = PLAYER_COUNT,
+) -> tuple[tuple[float, float], float] | None:
+    """Return ``((anchor_x, anchor_y), angle)`` for the gun a character holds.
+
+    The gun sits on the character's RIGHT side relative to the ``facing``
+    direction and its barrel points along ``facing``.  "Right of facing" in
+    screen coordinates (y grows downward) is the facing vector rotated by
+    ``-90 degrees`` (``(sin(f), -cos(f))``); the anchor is placed on the seat
+    circle edge along that right vector.  Returns ``None`` when the seat is
+    missing.  Pure and Qt-free so seat/gun placement is unit-testable.
+    """
+
+    positions = seat_positions(width, height, human_player=human_player, player_count=player_count)
+    if player not in positions:
+        return None
+    cx, cy = positions[player]
+    radius = circle_radius(width, height)
+    # Right of the facing direction in screen coords (y down): rotate facing by
+    # -90 degrees -> (cos(f - pi/2), sin(f - pi/2)) == (sin(f), -cos(f)).
+    right_x = math.sin(facing)
+    right_y = -math.cos(facing)
+    anchor = (cx + radius * right_x, cy + radius * right_y)
+    return anchor, float(facing)
+
+
+def interpolate_angle(a: float, b: float, t: float) -> float:
+    """Shortest-path angular interpolation from ``a`` to ``b`` at ``t``.
+
+    ``t`` is clamped to ``[0, 1]`` (``t=0`` -> ``a``, ``t=1`` -> ``b``).  The
+    step from ``a`` to ``b`` is taken along the shortest direction across the
+    ``+/-pi`` wrap, so easing a barrel from its facing angle to the aim angle
+    and back never spins the long way round.  Qt-free and unit-testable.
+    """
+
+    t = max(0.0, min(1.0, float(t)))
+    delta = (float(b) - float(a) + math.pi) % (2.0 * math.pi) - math.pi
+    return float(a) + delta * t
+
+
+def highlight_color(base_rgba: Sequence[int]) -> tuple[int, int, int, int]:
+    """Return a brighter ``(r, g, b, a)`` for a hovered seat's fill.
+
+    Each colour channel is lightened toward ``255`` by ~35% (clamped) so a
+    hovered target visibly stands out over the normal seat fill; the alpha is
+    preserved.  Pure and Qt-free so the highlight math is unit-testable.
+    """
+
+    values = list(base_rgba) + [0, 0, 0, 255]
+    r, g, b, a = (int(values[0]), int(values[1]), int(values[2]), int(values[3]))
+
+    def _lighten(channel: int) -> int:
+        channel = max(0, min(255, channel))
+        return max(0, min(255, int(round(channel + (255 - channel) * 0.35))))
+
+    return (_lighten(r), _lighten(g), _lighten(b), max(0, min(255, a)))
+
+
+HIDDEN_ROLE_SENTINEL = 255
+
+
+def _self_role_index(observation: Mapping, human_player: int) -> int:
+    """Return the viewer's own role index from ``self_role`` (255 if unknown).
+
+    The public observation carries ``self_role`` (the viewer's own role, always
+    known to them) either as a scalar or a one-element sequence.  Returns the
+    hidden sentinel when it is absent or unreadable.  Pure and Qt-free.
+    """
+
+    self_role = observation.get("self_role")
+    if self_role is None:
+        return HIDDEN_ROLE_SENTINEL
+    try:
+        values = list(self_role)
+    except TypeError:
+        values = [self_role]
+    if not values:
+        return HIDDEN_ROLE_SENTINEL
+    try:
+        return int(values[0])
+    except (TypeError, ValueError):
+        return HIDDEN_ROLE_SENTINEL
+
+
+def role_for_display(
+    player: int,
+    observation: Mapping,
+    final_roles: Sequence[int] | None,
+    game_over: bool,
+    *,
+    human_player: int = 0,
+) -> int:
+    """Return the role index to display beneath ``player`` (255 == hidden).
+
+    The single source of truth for item 7's "reveal all at end" decision, kept
+    Qt-free so it is unit-testable headlessly:
+
+    * The human's own seat always shows its real role from ``self_role``.
+    * When the game is over AND a non-empty ``final_roles`` is supplied (only
+      the terminal :class:`PublicGameState` carries it), every seat shows its
+      true role from ``final_roles`` so all players are revealed at game end.
+    * Otherwise the seat follows the public reveal logic: a role visible in the
+      public ``revealed_roles`` (visibility >= 2) is shown, else it stays
+      hidden.  No living role ever leaks mid-game.
+    """
+
+    if player == int(human_player):
+        return _self_role_index(observation, human_player)
+
+    finals = list(final_roles or ())
+    if game_over and finals and 0 <= player < len(finals):
+        try:
+            return int(finals[player])
+        except (TypeError, ValueError):
+            return HIDDEN_ROLE_SENTINEL
+
+    revealed = observation.get("revealed_roles")
+    revealed_values = list(revealed) if revealed is not None else []
+    visibility = observation.get("role_visibility")
+    visibility_values = list(visibility) if visibility is not None else []
+
+    def _revealed_index() -> int:
+        if 0 <= player < len(revealed_values):
+            try:
+                return int(revealed_values[player])
+            except (TypeError, ValueError):
+                return HIDDEN_ROLE_SENTINEL
+        return HIDDEN_ROLE_SENTINEL
+
+    if game_over:
+        return _revealed_index()
+    if 0 <= player < len(visibility_values):
+        try:
+            visible = int(visibility_values[player]) >= 2
+        except (TypeError, ValueError):
+            visible = False
+        if visible:
+            return _revealed_index()
+    return HIDDEN_ROLE_SENTINEL
+
+
 def muzzle_point_and_angle(
     shooter: int,
     target: int,
@@ -279,15 +456,21 @@ def muzzle_point_and_angle(
 
 
 __all__ = [
+    "HIDDEN_ROLE_SENTINEL",
     "PLAYER_COUNT",
     "action_for_seat",
     "circle_radius",
+    "facing_angle",
+    "gun_anchor_and_angle",
     "gun_angle",
     "health_to_color",
+    "highlight_color",
+    "interpolate_angle",
     "is_action_legal",
     "muzzle_point",
     "muzzle_point_and_angle",
     "new_animation_events",
+    "role_for_display",
     "seat_at_point",
     "seat_fill_color",
     "seat_for_action",

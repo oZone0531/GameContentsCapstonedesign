@@ -16,12 +16,16 @@ and the row -> moment mapping live in the pure :mod:`bang_rl.gui.replay`
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from ..i18n import tr
 from ..qt_compat import (
+    QFileDialog,
     QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
     QSlider,
     QTimer,
@@ -32,6 +36,7 @@ from ..qt_compat import (
     require_qt,
 )
 from ..replay import ReplayModel
+from .. import replay_store
 from ..widgets.game_widgets import GameLog, GraphicalBoard
 from .game_screen import AI_SPEED_DEFAULT_MS, AI_SPEED_MAX_MS, AI_SPEED_MIN_MS
 
@@ -50,12 +55,18 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             parent: QWidget | None = None,
             *,
             on_back: Callable[[], None] | None = None,
+            replay_directory: str | Path | None = None,
         ) -> None:
             require_qt()
             super().__init__(parent)
             self.model = model
             self.on_back = on_back
             self._alive = True
+            # Current folder the browser lists replays from. When set the left
+            # browser is populated via the Qt-free replay_store.list_replays.
+            self._replay_directory: Path | None = (
+                Path(replay_directory) if replay_directory is not None else None
+            )
             # Snapshot index to restore to after a log-row hover preview ends.
             self._hover_restore_index: int | None = None
             self.setWindowTitle(tr("replay.title"))
@@ -64,6 +75,19 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.board = GraphicalBoard(self, human_player=REPLAY_HUMAN_PLAYER)
             self.log = GameLog(self)
             self.status = QLabel(self)
+
+            # Left-side file browser: lists saved replays from the current
+            # folder. Selecting one loads it onto the board/log. The re-point
+            # button opens a native folder picker to change the load folder.
+            self.browser_label = QLabel(tr("replay.browser"), self)
+            self.browser = QListWidget(self)
+            self.browser.itemActivated.connect(self._on_replay_selected)
+            self.browser.itemClicked.connect(self._on_replay_selected)
+            self.repath_button = QPushButton(tr("replay.repath"), self)
+            self.repath_button.clicked.connect(self._on_repath_clicked)
+            self.open_file_button = QPushButton(tr("replay.open_file"), self)
+            self.open_file_button.clicked.connect(self._on_open_file_clicked)
+            self._replay_paths: list[Path] = []
 
             # Auto-play timer; the slider sets its interval. Guarded by _alive so
             # a torn-down screen never renders into deleted C++ objects.
@@ -92,8 +116,15 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.speed_slider.valueChanged.connect(self._on_speed_changed)
             self._update_speed_label(AI_SPEED_DEFAULT_MS)
 
-            # Left = log, center = graphical board (same layout as GameScreen).
+            # Left = folder browser, then log, center = graphical board.
+            browser_column = QVBoxLayout()
+            browser_column.addWidget(self.browser_label)
+            browser_column.addWidget(self.browser, 1)
+            browser_column.addWidget(self.repath_button)
+            browser_column.addWidget(self.open_file_button)
+
             top = QHBoxLayout()
+            top.addLayout(browser_column, 1)
             top.addWidget(self.log, 1)
             top.addWidget(self.board, 3)
 
@@ -121,9 +152,99 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.log.list.itemEntered.connect(self._on_log_row_hovered)
             self.log.list.viewport().installEventFilter(self)
 
+            # Populate the browser from the initial folder (if any). This does
+            # not auto-load a file, so an in-memory model (if supplied) stays
+            # shown; with no model the first listed replay can be selected.
+            self._reload_browser()
+
             self._render_current()
             # Default behaviour: auto-play from the first turn to the last.
             self._start_autoplay()
+
+        # -- folder browser ----------------------------------------------
+        def _reload_browser(self) -> None:
+            """Refresh the file list from the current replay directory."""
+
+            if not self._alive:
+                return
+            self.browser.clear()
+            self._replay_paths = []
+            if self._replay_directory is None:
+                return
+            try:
+                paths = replay_store.list_replays(self._replay_directory)
+            except OSError:
+                paths = []
+            self._replay_paths = list(paths)
+            for path in self._replay_paths:
+                item = QListWidgetItem(self._browser_label_for(path))
+                self.browser.addItem(item)
+
+        def _browser_label_for(self, path: Path) -> str:
+            """Build a display label from a lightweight replay header read."""
+
+            label = path.name
+            try:
+                record = replay_store.load_replay(path)
+            except (OSError, ValueError):
+                return label
+            summary = replay_store.replay_summary(record)
+            mode_label = summary.get("mode_label")
+            outcome = summary.get("outcome")
+            parts = [path.name]
+            if mode_label:
+                parts.append(str(mode_label))
+            if outcome:
+                parts.append(str(outcome))
+            return "  |  ".join(parts)
+
+        def _on_replay_selected(self, item: Any) -> None:
+            if not self._alive or item is None:
+                return
+            row = self.browser.row(item)
+            if not (0 <= row < len(self._replay_paths)):
+                return
+            path = self._replay_paths[row]
+            try:
+                record = replay_store.load_replay(path)
+                model = ReplayModel(record)
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                self.status.setText(str(exc) or tr("replay.no_episode"))
+                return
+            self._load_model(model)
+
+        def _load_model(self, model: ReplayModel) -> None:
+            """Swap in a freshly loaded model and restart playback."""
+
+            self._play_timer.stop()
+            self._hover_restore_index = None
+            self.model = model
+            self._render_current()
+            self._start_autoplay()
+
+        def _on_repath_clicked(self) -> None:
+            start_dir = str(self._replay_directory) if self._replay_directory else ""
+            directory = QFileDialog.getExistingDirectory(
+                self, tr("replay.folder_title"), start_dir
+            )
+            if not directory:
+                return
+            self._replay_directory = Path(directory)
+            self._reload_browser()
+
+        def _on_open_file_clicked(self) -> None:
+            path, _selected = QFileDialog.getOpenFileName(
+                self, tr("replay.open_file"), "", tr("replay.file_filter")
+            )
+            if not path:
+                return
+            try:
+                record = replay_store.load_replay(path)
+                model = ReplayModel(record)
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                self.status.setText(str(exc) or tr("replay.no_episode"))
+                return
+            self._load_model(model)
 
         # -- navigation --------------------------------------------------
         def _go_back(self) -> None:

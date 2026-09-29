@@ -115,6 +115,10 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             form.addRow(tr("settings.batch"), self.batch)
             form.addRow(tr("settings.buffer"), self.buffer)
             form.addRow(tr("settings.gpu"), self.gpu)
+            # Keep the form so _apply_tooltips() (also called on language change)
+            # can attach tooltips to the menu LABELS, not just the fields.
+            self.form = form
+            self._apply_label_tooltips()
             layout = QVBoxLayout(self)
             layout.addWidget(self.back_button)
             layout.addLayout(form)
@@ -180,6 +184,35 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             for spin in self.emotion_spins:
                 spin.setToolTip(tr("tooltip.emotion_initial_values"))
 
+        def _apply_label_tooltips(self) -> None:
+            """Attach mouse-over help to each QFormLayout menu LABEL.
+
+            Item 3: hover help must cover the setting menu labels (Language,
+            PPO clip, CPU cores, RAM, Workers, Batch, Buffer, GPU) themselves,
+            not only the input fields. Called after the form is built and again
+            from _retranslate() so a language switch updates the label tooltips.
+            The form may not exist yet on the first _apply_tooltips() call, so
+            this is a separate method guarded by a getattr check.
+            """
+
+            form = getattr(self, "form", None)
+            if form is None:
+                return
+            label_tooltips = (
+                (self.language, "tooltip.language"),
+                (self.clip, "tooltip.ppo_clip"),
+                (self.cpu, "tooltip.cpu"),
+                (self.ram, "tooltip.ram"),
+                (self.workers, "tooltip.workers"),
+                (self.batch, "tooltip.batch"),
+                (self.buffer, "tooltip.buffer"),
+                (self.gpu, "tooltip.gpu"),
+            )
+            for field, key in label_tooltips:
+                label = form.labelForField(field)
+                if label is not None:
+                    label.setToolTip(tr(key))
+
         def _open_dummy_ai(self) -> None:
             dialog = DummyAISettingsDialog(self.editor, parent=self, on_applied=self._on_dummy_applied)
             dialog.exec()
@@ -242,6 +275,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             self.emotion_save_button.setText(tr("settings.emotion_save_file"))
             self.emotion_load_button.setText(tr("settings.emotion_load_file"))
             self._apply_tooltips()
+            self._apply_label_tooltips()
 
         def _go_back(self) -> None:
             if self.on_back is not None:

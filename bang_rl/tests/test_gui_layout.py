@@ -10,11 +10,19 @@ import pytest
 
 from bang_rl.gui.i18n import LANGUAGES, current_language, set_language, tr
 from bang_rl.gui.i18n import _STRINGS
-from bang_rl.gui.main_window import MIN_FONT_POINT_SIZE, WINDOW_HEIGHT, WINDOW_WIDTH
+from bang_rl.gui.main_window import (
+    MENU_BUTTON_MIN_HEIGHT,
+    MENU_BUTTON_WIDTH,
+    MIN_FONT_POINT_SIZE,
+    WINDOW_HEIGHT,
+    WINDOW_WIDTH,
+)
 from bang_rl.gui.widgets.game_widgets import OPPONENT_PANEL_MAX_WIDTH
 
 
 # Every Settings field/menu item that must expose a mouse-over help tooltip.
+# Includes the AI-training settings menu (tooltip.training_*) and the dummy-AI
+# emotion settings menu (tooltip.emotion_*) so item 3 is covered end to end.
 TOOLTIP_KEYS = (
     "tooltip.language",
     "tooltip.ppo_clip",
@@ -27,6 +35,26 @@ TOOLTIP_KEYS = (
     "tooltip.reward_json",
     "tooltip.emotion_initial_values",
     "tooltip.dummy_ai",
+    # AI-training settings menu (TrainingSetupPanel) labels + fields
+    "tooltip.training_mode",
+    "tooltip.training_episodes",
+    "tooltip.training_target",
+    "tooltip.training_seed",
+    "tooltip.training_report_path",
+    "tooltip.training_output_path",
+    "tooltip.training_artifact_path",
+    "tooltip.training_resume_artifact_path",
+    # Dummy-AI emotion settings menu (DummyAISettingsDialog) labels + fields
+    "tooltip.emotion_schema_version",
+    "tooltip.emotion_count",
+    "tooltip.emotion_name",
+    "tooltip.emotion_change_rate",
+    "tooltip.emotion_decay_rate",
+    "tooltip.emotion_event_updates",
+    "tooltip.emotion_action_updates",
+    "tooltip.emotion_reward_updates",
+    "tooltip.emotion_terminal_updates",
+    "tooltip.emotion_effects",
 )
 
 
@@ -38,6 +66,13 @@ def test_window_is_large_and_fixed_font_is_at_least_10pt() -> None:
 
 def test_opponent_panel_width_is_bounded() -> None:
     assert 0 < OPPONENT_PANEL_MAX_WIDTH <= WINDOW_WIDTH // 2
+
+
+def test_menu_button_width_is_about_half_the_window() -> None:
+    # User item 1: menu buttons should be about half the window width.
+    assert MENU_BUTTON_WIDTH == WINDOW_WIDTH // 2
+    assert WINDOW_WIDTH * 0.4 <= MENU_BUTTON_WIDTH <= WINDOW_WIDTH * 0.6
+    assert MENU_BUTTON_MIN_HEIGHT >= 40
 
 
 def test_every_settings_tooltip_key_exists_in_both_languages() -> None:

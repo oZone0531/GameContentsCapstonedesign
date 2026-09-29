@@ -31,14 +31,20 @@ from ..qt_compat import (
     pyqtSignal,
     require_qt,
 )
-from ..roles import hidden_role_label, role_name
+from ..roles import faction_name, hidden_role_label, role_name
 from .board_layout import (
+    HIDDEN_ROLE_SENTINEL,
     action_for_seat,
     circle_radius,
+    facing_angle,
+    gun_anchor_and_angle,
     health_to_color,
+    highlight_color,
+    interpolate_angle,
     is_action_legal,
     muzzle_point_and_angle,
     new_animation_events,
+    role_for_display,
     seat_at_point,
     seat_fill_color,
     seat_positions,
@@ -260,6 +266,8 @@ if QT_AVAILABLE:
             self._seen_events: tuple[Mapping, ...] = ()
             # Active shot animation state (None when the board is settled).
             self._shot: dict[str, Any] | None = None
+            # Seat currently under the pointer during the human's turn (item 5).
+            self._hover_seat: int | None = None
             self._anim_timer = QTimer(self)
             self._anim_timer.setSingleShot(False)
             self._anim_timer.timeout.connect(self._advance_shot)
@@ -272,6 +280,9 @@ if QT_AVAILABLE:
             self._mask = tuple(int(value) for value in mask) if mask is not None else (0,) * 6
             terminated = bool(getattr(state, "terminated", False) or getattr(state, "truncated", False))
             self._active = not terminated and getattr(state, "current_player", None) == self.human_player
+            if not self._active:
+                # Hover highlighting is only meaningful on the human's turn.
+                self._hover_seat = None
             self._trigger_new_events(state)
             self.update()
 
@@ -317,10 +328,27 @@ if QT_AVAILABLE:
                 return
             if shooter_idx == target_idx:
                 return
+            # Record the shooter's resting facing angle (toward the board
+            # centre) and the aim angle toward the target so the barrel can
+            # rotate facing -> target during phase 1 and ease back to facing
+            # over the remaining frames.
+            start_facing = facing_angle(
+                int(shooter_idx), self.width(), self.height(), human_player=self.human_player
+            )
+            aim = muzzle_point_and_angle(
+                int(shooter_idx),
+                int(target_idx),
+                self.width(),
+                self.height(),
+                human_player=self.human_player,
+            )
+            aim_angle = start_facing if aim is None else aim[1]
             self._shot = {
                 "shooter": int(shooter_idx),
                 "target": int(target_idx),
                 "frame": 0,
+                "start_facing": float(start_facing),
+                "aim_angle": float(aim_angle),
             }
             self._anim_timer.start(BANG_FRAME_MS)
             self.update()
@@ -371,6 +399,31 @@ if QT_AVAILABLE:
             if is_action_legal(action, self._mask):
                 self.actionRequested.emit(int(action))
 
+        def mouseMoveEvent(self, event: Any) -> None:
+            # Item 5: on the human's turn, hovering a seat highlights it. Track
+            # the hovered seat and repaint only when it changes.
+            if not self._active or self._state is None:
+                if self._hover_seat is not None:
+                    self._hover_seat = None
+                    self.update()
+                return
+            position = event.position()
+            seat = seat_at_point(
+                position.x(),
+                position.y(),
+                self.width(),
+                self.height(),
+                human_player=self.human_player,
+            )
+            if seat != self._hover_seat:
+                self._hover_seat = seat
+                self.update()
+
+        def leaveEvent(self, event: Any) -> None:
+            if self._hover_seat is not None:
+                self._hover_seat = None
+                self.update()
+
         # -- rendering ---------------------------------------------------
         def paintEvent(self, event: Any) -> None:
             painter = QPainter(self)
@@ -381,6 +434,7 @@ if QT_AVAILABLE:
                     return
                 self._paint_seats(painter)
                 self._paint_shot(painter)
+                self._paint_game_over_banner(painter)
             finally:
                 painter.end()
 
@@ -394,11 +448,15 @@ if QT_AVAILABLE:
             if shot is None or player != shot["target"]:
                 return (0.0, 0.0)
             frame = int(shot["frame"])
-            if frame >= BANG_SHOT_FRAMES:
+            aim_in_frames = max(1, BANG_SHOT_FRAMES // 2)
+            # The target only rattles once the shot actually fires (barrel aimed).
+            if frame < aim_in_frames or frame >= BANG_SHOT_FRAMES:
                 return (0.0, 0.0)
             # Decaying horizontal shake so the hit target visibly rattles.
-            amplitude = 6.0 * (1.0 - frame / max(1, BANG_SHOT_FRAMES))
-            return (amplitude * math.sin(frame * 2.2), 0.0)
+            hit_frame = frame - aim_in_frames
+            span = max(1, BANG_SHOT_FRAMES - aim_in_frames)
+            amplitude = 6.0 * (1.0 - hit_frame / span)
+            return (amplitude * math.sin(hit_frame * 2.2), 0.0)
 
         def _hit_flash(self, player: int) -> bool:
             """True when ``player`` should show the phase-1 hit flash outline."""
@@ -406,7 +464,8 @@ if QT_AVAILABLE:
             shot = self._shot
             if shot is None or player != shot["target"]:
                 return False
-            return int(shot["frame"]) < BANG_SHOT_FRAMES
+            aim_in_frames = max(1, BANG_SHOT_FRAMES // 2)
+            return aim_in_frames <= int(shot["frame"]) < BANG_SHOT_FRAMES
 
         def _paint_seats(self, painter: QPainter) -> None:
             observation = getattr(self._state, "observation", {}) or {}
@@ -438,7 +497,23 @@ if QT_AVAILABLE:
             healths: Sequence[int],
             alive: Sequence[bool],
         ) -> None:
-            color = QColor(*seat_fill_color(player, healths, alive))
+            base_fill = seat_fill_color(player, healths, alive)
+            # Item 5: on the human's turn, the hovered seat (a legal target or
+            # the human's own seat) is filled with a brighter colour.
+            hovered = (
+                self._active
+                and self._hover_seat == player
+                and (
+                    player == self.human_player
+                    or is_action_legal(
+                        action_for_seat(player, human_player=self.human_player), self._mask
+                    )
+                )
+            )
+            if hovered:
+                color = QColor(*highlight_color(base_fill))
+            else:
+                color = QColor(*base_fill)
             painter.setBrush(QBrush(color))
             highlight = (
                 self._active
@@ -447,6 +522,11 @@ if QT_AVAILABLE:
             if self._hit_flash(player):
                 # Bright flashing outline on the seat currently being hit.
                 pen = QPen(QColor(255, 90, 60))
+                pen.setWidth(5)
+            elif hovered:
+                # Emphasize the hovered selection with a thick bright outline
+                # on top of the brighter fill.
+                pen = QPen(QColor(255, 240, 150))
                 pen.setWidth(5)
             elif highlight:
                 pen = QPen(QColor(250, 210, 80))
@@ -460,46 +540,63 @@ if QT_AVAILABLE:
         def _paint_gun(
             self, painter: QPainter, player: int, cx: float, cy: float, radius: float
         ) -> None:
-            # A neutral gun points outward from the board centre; during a bang
-            # animation the shooter's gun rotates to point along the shooter ->
-            # target direction (angle from muzzle_point_and_angle).
+            # Item 4: every character holds a gun on its RIGHT side while facing
+            # the board centre. A settled character's barrel points along its
+            # facing angle. The shooter's barrel rotates facing -> target during
+            # phase 1, fires when aimed, then eases back to facing.
+            facing = facing_angle(player, self.width(), self.height(), human_player=self.human_player)
+            barrel_angle = self._gun_barrel_angle(player, facing)
+            anchor = gun_anchor_and_angle(
+                player, self.width(), self.height(), facing=facing, human_player=self.human_player
+            )
+            if anchor is None:
+                return
+            (ax, ay), _facing_angle = anchor
             painter.save()
             painter.setBrush(QBrush(QColor(10, 10, 10)))
             painter.setPen(QPen(QColor(10, 10, 10)))
             gun_length = radius * 0.9
             gun_height = max(4.0, radius * 0.18)
-            firing_angle = self._gun_firing_angle(player)
-            if firing_angle is not None:
-                # Draw the gun as a barrel starting at the circle edge and
-                # extending outward along the firing angle.
-                painter.translate(cx, cy)
-                painter.rotate(math.degrees(firing_angle))
-                rect = QRectF(radius - gun_length * 0.2, -gun_height / 2, gun_length, gun_height)
-                painter.drawRect(rect)
-            elif player == self.human_player:
-                # Human gun points up, toward the opponents.
-                rect = QRectF(cx - gun_height / 2, cy - radius - gun_length * 0.4, gun_height, gun_length)
-                painter.drawRect(rect)
-            else:
-                # Opponent guns point down, toward the human seat.
-                rect = QRectF(cx - gun_height / 2, cy + radius - gun_length * 0.6, gun_height, gun_length)
-                painter.drawRect(rect)
+            # Mount the barrel at the right-side anchor and orient it along the
+            # current barrel angle (facing when settled, aim while firing).
+            painter.translate(ax, ay)
+            painter.rotate(math.degrees(barrel_angle))
+            rect = QRectF(0.0, -gun_height / 2, gun_length, gun_height)
+            painter.drawRect(rect)
             painter.restore()
 
-        def _gun_firing_angle(self, player: int) -> float | None:
-            """Return the firing angle (radians) if ``player`` is the shooter."""
+        def _gun_barrel_angle(self, player: int, facing: float) -> float:
+            """Return the current barrel angle (radians) for ``player``.
+
+            Non-shooters (and every seat when settled) point along ``facing``.
+            The shooter animates facing -> aim across phase-1 frames, holds the
+            aim through the shot, then eases aim -> facing over phase 2.
+            """
 
             shot = self._shot
             if shot is None or player != shot["shooter"]:
-                return None
-            result = muzzle_point_and_angle(
-                shot["shooter"],
-                shot["target"],
-                self.width(),
-                self.height(),
-                human_player=self.human_player,
-            )
-            return None if result is None else result[1]
+                return facing
+            start = float(shot.get("start_facing", facing))
+            aim = float(shot.get("aim_angle", facing))
+            frame = int(shot["frame"])
+            # Rotate to the target across the first half of phase 1, hold aim
+            # for the flash, then ease back to facing during phase 2.
+            aim_in_frames = max(1, BANG_SHOT_FRAMES // 2)
+            if frame < aim_in_frames:
+                return interpolate_angle(start, aim, frame / aim_in_frames)
+            if frame < BANG_SHOT_FRAMES:
+                return aim
+            smoke = frame - BANG_SHOT_FRAMES
+            return interpolate_angle(aim, start, smoke / max(1, BANG_SMOKE_FRAMES))
+
+        def _shot_is_aimed(self) -> bool:
+            """True when the barrel has finished rotating onto the target."""
+
+            shot = self._shot
+            if shot is None:
+                return False
+            aim_in_frames = max(1, BANG_SHOT_FRAMES // 2)
+            return aim_in_frames <= int(shot["frame"]) < BANG_SHOT_FRAMES
 
         def _paint_shot(self, painter: QPainter) -> None:
             """Draw the bang! shot line: bright phase, then grey smoke fade."""
@@ -522,9 +619,15 @@ if QT_AVAILABLE:
                 return
             tx, ty = positions[shot["target"]]
             frame = int(shot["frame"])
+            aim_in_frames = max(1, BANG_SHOT_FRAMES // 2)
             painter.save()
+            if frame < aim_in_frames:
+                # Barrel is still rotating onto the target: no shot yet.
+                painter.restore()
+                return
             if frame < BANG_SHOT_FRAMES:
-                # Phase 1: yellow line with a red tint from muzzle to target.
+                # Phase 1 (aimed): yellow line with a red tint from muzzle to
+                # target, fired the moment the barrel is aimed at the target.
                 color = QColor(255, 210, 60, 235)
                 pen = QPen(color)
                 pen.setWidth(5)
@@ -546,6 +649,44 @@ if QT_AVAILABLE:
                 painter.drawLine(QPointF(mx, my), QPointF(tx, ty))
             painter.restore()
 
+        def _is_game_over(self) -> bool:
+            """True when the current state has terminated or truncated."""
+
+            state = self._state
+            if state is None:
+                return False
+            return bool(getattr(state, "terminated", False) or getattr(state, "truncated", False))
+
+        def _paint_game_over_banner(self, painter: QPainter) -> None:
+            """Item 7: large centered winning-team (or no-winner) banner."""
+
+            state = self._state
+            if state is None or not self._is_game_over():
+                return
+            terminated = bool(getattr(state, "terminated", False))
+            if terminated:
+                faction = getattr(state, "winning_team", None)
+                text = tr("game.winner_banner", faction=faction_name(faction))
+            else:
+                text = tr("game.no_winner_banner")
+            width = self.width()
+            height = self.height()
+            # Scale the banner to the board but keep it comfortably large.
+            point_size = max(28, int(min(width, height) * 0.06))
+            font = QFont()
+            font.setBold(True)
+            font.setPointSize(point_size)
+            painter.save()
+            painter.setFont(font)
+            rect = QRectF(0.0, 0.0, float(width), float(height))
+            # Shadow for legibility over the coloured seats, then the banner.
+            painter.setPen(QPen(QColor(0, 0, 0, 200)))
+            shadow = QRectF(2.0, 2.0, float(width), float(height))
+            painter.drawText(shadow, int(Qt.AlignmentFlag.AlignCenter), text)
+            painter.setPen(QPen(QColor(255, 235, 120)))
+            painter.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), text)
+            painter.restore()
+
         def _paint_caption(
             self,
             painter: QPainter,
@@ -563,10 +704,26 @@ if QT_AVAILABLE:
                 name = tr("game.you_name")
             else:
                 name = tr("game.player_name", player=player)
-            if player == self.human_player or int(visibility[player]) >= 2:
-                role = _self_role(observation, player) if player == self.human_player else role_name(revealed[player])
-            else:
-                role = hidden_role_label()
+            game_over = self._is_game_over()
+            # Item 7: at game end reveal EVERY seat's role from the terminal
+            # state's final_roles (all players are shown once the game is over).
+            # During play, and whenever final_roles is absent (a replay snapshot
+            # or a test stub may not carry it), fall back to the public reveal
+            # logic so no living role ever leaks. The helper also always shows
+            # the human's own known role for their seat (item 6).
+            final_roles = getattr(self._state, "final_roles", ())
+            role_index = role_for_display(
+                player,
+                observation,
+                final_roles,
+                game_over,
+                human_player=self.human_player,
+            )
+            role = (
+                hidden_role_label()
+                if int(role_index) == HIDDEN_ROLE_SENTINEL
+                else role_name(role_index)
+            )
             status = tr("game.alive") if bool(alive[player]) else tr("game.eliminated")
             hp = tr("game.hp_label", health=healths[player])
             painter.setPen(QPen(QColor(235, 235, 235)))

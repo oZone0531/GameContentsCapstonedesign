@@ -100,6 +100,33 @@ class GameSessionController:
         self.active = False
         self._closed = False
         self.message: str | None = None
+        # Replay capture (FEAT-003). Every human game is auto-saved on terminal.
+        # ai_metadata is optional artifact metadata (incl. version) supplied by
+        # main_window when a Main-AI model is chosen; mode_ai_versions maps each
+        # non-human seat to its AI descriptor. _replay_observations accumulates a
+        # deep-copyable public observation per turn and _replay_saved guards the
+        # one-save-per-episode rule.
+        self.ai_metadata: Mapping[str, Any] | None = None
+        self.mode_ai_versions: dict[str, Any] = {}
+        self._replay_observations: list[dict[str, Any]] = []
+        self._replay_saved = False
+        # Time-travel (FEAT-004 item 8). While previewing a past moment the
+        # live session state is stashed here so resume_live() can restore it.
+        # ``previewing`` marks that self.state currently holds a historic,
+        # read-only snapshot rather than the live session state.
+        self.previewing = False
+        self._live_state: PublicGameState | None = None
+        self._live_active = False
+        self._live_paused = False
+
+    def set_ai_metadata(self, metadata: Mapping[str, Any] | None) -> None:
+        """Record artifact metadata (incl. version) for the Main-AI seat.
+
+        Called by main_window when a Main-AI model is selected so the saved
+        replay can record which AI version was used. Kept Qt-free.
+        """
+
+        self.ai_metadata = dict(metadata) if metadata else None
 
     @property
     def snapshot(self) -> GameControllerSnapshot:
@@ -142,6 +169,13 @@ class GameSessionController:
             self.active = True
             self._closed = False
             self.message = None
+            # Reset replay capture for the new episode and derive the AI
+            # descriptor for each non-human seat from the mode (+ optional
+            # artifact metadata for the Main-AI seat).
+            self._replay_observations = []
+            self._replay_saved = False
+            self.mode_ai_versions = self._derive_ai_versions(selected)
+            self._record_replay_snapshot()
             self._advance_to_human_turn()
             return self._publish()
         except Exception as exc:
@@ -178,6 +212,7 @@ class GameSessionController:
             result = self.service.step(self.handle, normalized)
             self.state = result.state
             self.message = None
+            self._record_replay_snapshot()
             self._finish_if_terminal()
             # When ``advance_ai`` is False the caller (the graphical screen)
             # drives the AI cadence one turn at a time via step_single_ai_turn
@@ -218,12 +253,129 @@ class GameSessionController:
             result = self.service.step(self.handle)
             self.state = result.state
             self.message = None
+            self._record_replay_snapshot()
             self._finish_if_terminal()
             return self._publish()
         except Exception as exc:
             self.message = self._error_message(exc)
             self._publish()
             raise GameGuiError(self.message) from exc
+
+    def time_travel_to(self, moment: Any) -> GameControllerSnapshot:
+        """Rewind the board to a recorded ``moment`` (item 8).
+
+        ``moment`` may be a log-row index, an ``environment_step`` int, or an
+        event mapping. The recorded per-turn public observations
+        (``self._replay_observations``, populated by :meth:`_record_replay_snapshot`)
+        are wrapped in a Qt-free :class:`~bang_rl.gui.replay.ReplayModel`, which
+        maps the moment to the snapshot representing the game *as of* that
+        moment; that historic snapshot is published so the board and log show
+        exactly that point in time.
+
+        Behaviour chosen (documented in FEAT-004 findings): a REVIEW-then-continue
+        rewind. ``GameService`` sessions are seeded and deterministic, but the
+        public observations recorded here do NOT capture the human's individual
+        chosen actions unambiguously (a PASS produces no public event, and the
+        BANG action index cannot always be recovered from the public event
+        projection alone), so a faithful deterministic re-seek is not achievable
+        through the current service API. Instead the controller seeks the board
+        to the chosen moment as a clearly-labelled read-only preview
+        (``previewing`` True, ``active`` False) while stashing the live session
+        state; :meth:`resume_live` restores the live session so the human can
+        continue playing the LIVE game (not a new line forked from the past
+        moment). This keeps all branching logic Qt-free and never reads private
+        role state.
+
+        When the live game is already over (terminal, so ``self.active`` is
+        False), there is no live turn to resume, so the rewind is a pure
+        read-only review: the message uses ``game.time_travel_hint_terminal``
+        and leaving the log simply clears the preview.
+
+        Returns the current snapshot; a no-op (unchanged snapshot) when there is
+        nothing recorded to rewind to.
+        """
+
+        if not self._replay_observations:
+            return self._publish()
+        try:
+            from bang_rl.gui.replay import ReplayModel
+        except (ImportError, SyntaxError):
+            return self._publish()
+        try:
+            model = ReplayModel(list(self._replay_observations))
+        except (TypeError, ValueError):
+            return self._publish()
+        if model.is_empty():
+            return self._publish()
+        snapshot = self._resolve_moment(model, moment)
+        if snapshot is None:
+            return self._publish()
+        # Stash the live session state exactly once (the first rewind) so a
+        # later resume restores it even after several previews. Remember whether
+        # that stashed state is actually a resumable LIVE turn (active) so the
+        # hint does not over-promise "continue" on an already-finished game.
+        if not self.previewing:
+            self._live_state = self.state
+            self._live_active = self.active
+            self._live_paused = self.paused
+        self.previewing = True
+        self.state = snapshot
+        # A previewed historic moment is read-only: it is not the live turn.
+        self.active = False
+        self.paused = False
+        step = getattr(snapshot, "environment_step", None)
+        self.message = self._time_travel_message(step, resumable=self._live_active)
+        return self._publish()
+
+    @staticmethod
+    def _resolve_moment(model: Any, moment: Any) -> Any:
+        """Map a log-row / step / event ``moment`` to a replay snapshot."""
+
+        if isinstance(moment, Mapping):
+            index = model.index_for_event(moment)
+            return None if index is None else model.snapshot_at(index)
+        # Prefer a log-row interpretation (the GUI passes the clicked row), and
+        # fall back to treating the value as an environment_step.
+        try:
+            row = int(moment)
+        except (TypeError, ValueError):
+            return model.snapshot_for_moment(moment)
+        index = model.index_for_log_row(row)
+        if index is not None:
+            return model.snapshot_at(index)
+        return model.snapshot_for_moment(row)
+
+    @staticmethod
+    def _time_travel_message(step: Any, *, resumable: bool = True) -> str:
+        from bang_rl.gui.i18n import tr
+
+        try:
+            step_int = int(step)
+        except (TypeError, ValueError):
+            step_int = 0
+        # When the live game is still in progress the preview is followed by a
+        # return to the LIVE game; when it is already over there is nothing to
+        # resume, so use the review-only wording.
+        key = "game.time_travel_hint" if resumable else "game.time_travel_hint_terminal"
+        return tr(key, step=step_int)
+
+    def resume_live(self) -> GameControllerSnapshot:
+        """Leave a time-travel preview and restore the live session (item 8).
+
+        Restores the stashed live state/active/paused flags so the human can
+        continue playing from where the game actually is. A no-op when the
+        controller is not currently previewing.
+        """
+
+        if not self.previewing:
+            return self._publish()
+        self.previewing = False
+        self.state = self._live_state
+        self.active = self._live_active
+        self.paused = self._live_paused
+        self._live_state = None
+        self.message = None
+        return self._publish()
 
     def refresh(self) -> GameControllerSnapshot:
         if self.handle is not None and self.active:
@@ -267,8 +419,100 @@ class GameSessionController:
                 return
             result = self.service.step(self.handle)
             self.state = result.state
+            self._record_replay_snapshot()
             self._finish_if_terminal()
         raise GameGuiError("AI turn did not reach the human seat.")
+
+    def _derive_ai_versions(self, mode: GameMode) -> dict[str, Any]:
+        """Map each non-human seat to its AI descriptor for the replay record.
+
+        Random/dummy seats are described by the mode; the Main-AI seat (seat 1
+        in HUMAN_MAIN_DUMMY) uses the artifact metadata version when available.
+        Seat keys are strings so the record round-trips through JSON unchanged.
+        Qt-free and defensive.
+        """
+
+        seats = range(1, 5)
+        if mode is GameMode.HUMAN_RANDOM:
+            return {str(seat): "random" for seat in seats}
+        if mode is GameMode.HUMAN_DUMMY:
+            return {str(seat): "dummy" for seat in seats}
+        if mode is GameMode.HUMAN_MAIN_DUMMY:
+            version = None
+            if self.ai_metadata:
+                version = (
+                    self.ai_metadata.get("version")
+                    or self.ai_metadata.get("model_version")
+                    or self.ai_metadata.get("schema_version")
+                )
+            main_descriptor: Any = {"kind": "main", "version": version}
+            if self.ai_metadata:
+                main_descriptor["metadata"] = dict(self.ai_metadata)
+            versions: dict[str, Any] = {"1": main_descriptor}
+            for seat in range(2, 5):
+                versions[str(seat)] = "dummy"
+            return versions
+        return {str(seat): mode.value for seat in seats}
+
+    def _record_replay_snapshot(self) -> None:
+        """Append the current public observation to the replay buffer.
+
+        Stores a deep-copyable copy of ``self.state.observation`` (the public
+        projection, already carrying the cumulative ``event_sequence``).
+        Defensive: a missing state or observation is skipped, and consecutive
+        identical observations are de-duplicated. Never raises. Qt-free.
+        """
+
+        state = self.state
+        if state is None:
+            return
+        observation = getattr(state, "observation", None)
+        if not isinstance(observation, Mapping):
+            return
+        try:
+            import copy
+
+            snapshot = copy.deepcopy(dict(observation))
+        except Exception:
+            return
+        if self._replay_observations and self._replay_observations[-1] == snapshot:
+            return
+        self._replay_observations.append(snapshot)
+
+    def _save_replay_if_needed(self) -> None:
+        """Best-effort save of the finished human game as a replay JSON.
+
+        Runs exactly once per episode (``_replay_saved`` guard), only when a
+        mode is set and at least one observation was recorded. Imports the store
+        and paths lazily to keep import-time coupling minimal, and swallows any
+        failure so a save error never crashes the game.
+        """
+
+        if self._replay_saved or self.mode is None or not self._replay_observations:
+            return
+        self._replay_saved = True
+        state = self.state
+        if state is None:
+            return
+        try:
+            from bang_rl.gui import replay_store
+
+            record = replay_store.build_replay_record(
+                mode=self.mode.value,
+                mode_label=self.mode.label,
+                ai_versions=self.mode_ai_versions,
+                winning_team=getattr(state, "winning_team", None),
+                winners=getattr(state, "winners", ()) or (),
+                human_player=self.HUMAN_PLAYER,
+                seed=self.seed,
+                observations=self._replay_observations,
+                terminated=bool(getattr(state, "terminated", False)),
+                truncated=bool(getattr(state, "truncated", False)),
+            )
+            replay_store.save_replay(record)
+        except Exception:
+            # Never let a replay-save failure crash or interrupt the game.
+            return
 
     def _finish_if_terminal(self) -> None:
         if self.state is None or not (self.state.terminated or self.state.truncated):
@@ -276,6 +520,7 @@ class GameSessionController:
         self.active = False
         self.paused = False
         self.message = self._terminal_message()
+        self._save_replay_if_needed()
         if self.handle is not None and not self._closed:
             try:
                 self.service.close_session(self.handle)

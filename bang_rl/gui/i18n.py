@@ -83,6 +83,22 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Game stopped at the episode limit.",
         "ko": "게임이 에피소드 한도에서 중단되었습니다.",
     },
+    "game.winner_banner": {
+        "en": "{faction} wins!",
+        "ko": "{faction} 승리!",
+    },
+    "game.no_winner_banner": {
+        "en": "No winner (time limit)",
+        "ko": "승자 없음 (시간 초과)",
+    },
+    "game.time_travel_hint": {
+        "en": "Reviewing step {step} (read-only). Leave the log to return to the live game.",
+        "ko": "스텝 {step} 시점을 보는 중입니다 (읽기 전용). 로그에서 벗어나면 진행 중인 게임으로 돌아갑니다.",
+    },
+    "game.time_travel_hint_terminal": {
+        "en": "Reviewing step {step} of the finished game (read-only).",
+        "ko": "종료된 게임의 스텝 {step} 시점을 보는 중입니다 (읽기 전용).",
+    },
 
     # Winning factions (game-over message)
     "faction.sheriff_team": {"en": "Sheriff team", "ko": "보안관 팀"},
@@ -321,6 +337,82 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ko": "더미 AI 감정 설정 창을 여는 버튼입니다.",
     },
 
+    # AI-training settings menu (TrainingSetupPanel) field/label tooltips
+    "tooltip.training_mode": {
+        "en": "Training mode identifier passed to the training service.",
+        "ko": "학습 서비스에 전달되는 학습 모드 식별자를 의미합니다.",
+    },
+    "tooltip.training_episodes": {
+        "en": "Number of episodes to run in this training job.",
+        "ko": "이번 학습 작업에서 실행할 에피소드의 수를 의미합니다.",
+    },
+    "tooltip.training_target": {
+        "en": "Target number of MainAgent transitions; leave at the minimum to use the episode count instead.",
+        "ko": "목표 MainAgent 전이 수입니다. 최소값으로 두면 대신 에피소드 수를 사용합니다.",
+    },
+    "tooltip.training_seed": {
+        "en": "Random seed used to make the training run reproducible.",
+        "ko": "학습을 재현 가능하게 만드는 난수 시드를 의미합니다.",
+    },
+    "tooltip.training_report_path": {
+        "en": "Folder where the training report is written.",
+        "ko": "학습 리포트가 기록되는 폴더를 의미합니다.",
+    },
+    "tooltip.training_output_path": {
+        "en": "Folder where training output files are written.",
+        "ko": "학습 출력 파일이 기록되는 폴더를 의미합니다.",
+    },
+    "tooltip.training_artifact_path": {
+        "en": "Folder where the trained model artifact is saved.",
+        "ko": "학습된 모델 아티팩트가 저장되는 폴더를 의미합니다.",
+    },
+    "tooltip.training_resume_artifact_path": {
+        "en": "Existing artifact folder to continue training from.",
+        "ko": "이어서 학습할 기존 아티팩트 폴더를 의미합니다.",
+    },
+
+    # Dummy AI emotion dialog field/label tooltips
+    "tooltip.emotion_schema_version": {
+        "en": "Version of the emotion configuration schema.",
+        "ko": "감정 설정 스키마의 버전을 의미합니다.",
+    },
+    "tooltip.emotion_count": {
+        "en": "How many emotions the dummy AI has.",
+        "ko": "더미 AI가 갖는 감정의 개수를 의미합니다.",
+    },
+    "tooltip.emotion_name": {
+        "en": "Name of this emotion; each emotion must have a unique name.",
+        "ko": "이 감정의 이름입니다. 각 감정은 고유한 이름을 가져야 합니다.",
+    },
+    "tooltip.emotion_change_rate": {
+        "en": "How quickly this emotion increases when its conditions are met.",
+        "ko": "조건이 충족될 때 이 감정이 증가하는 속도를 의미합니다.",
+    },
+    "tooltip.emotion_decay_rate": {
+        "en": "How quickly this emotion decays back toward its baseline over time.",
+        "ko": "시간이 지남에 따라 이 감정이 기준값으로 감소하는 속도를 의미합니다.",
+    },
+    "tooltip.emotion_event_updates": {
+        "en": "JSON map of game events to how much they change this emotion.",
+        "ko": "게임 이벤트별로 이 감정을 얼마나 변화시키는지 나타내는 JSON 맵을 의미합니다.",
+    },
+    "tooltip.emotion_action_updates": {
+        "en": "JSON map of actions to how much they change this emotion.",
+        "ko": "행동별로 이 감정을 얼마나 변화시키는지 나타내는 JSON 맵을 의미합니다.",
+    },
+    "tooltip.emotion_reward_updates": {
+        "en": "JSON map of reward signals to how much they change this emotion.",
+        "ko": "보상 신호별로 이 감정을 얼마나 변화시키는지 나타내는 JSON 맵을 의미합니다.",
+    },
+    "tooltip.emotion_terminal_updates": {
+        "en": "JSON map of game-ending outcomes to how much they change this emotion.",
+        "ko": "게임 종료 결과별로 이 감정을 얼마나 변화시키는지 나타내는 JSON 맵을 의미합니다.",
+    },
+    "tooltip.emotion_effects": {
+        "en": "JSON map describing this emotion's effects when it is high or low.",
+        "ko": "이 감정이 높거나 낮을 때의 영향을 설명하는 JSON 맵을 의미합니다.",
+    },
+
     # Replay viewer (reuses the graphical board + log + speed slider)
     "menu.replay": {"en": "Replay", "ko": "리플레이"},
     "replay.title": {"en": "Bang RL - Replay", "ko": "Bang RL - 리플레이"},
@@ -339,6 +431,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ko": "불러온 리플레이가 없습니다. 기록된 에피소드를 열어 감상하세요.",
     },
     "replay.open_file": {"en": "Open replay file", "ko": "리플레이 파일 열기"},
+    "replay.browser": {"en": "Saved replays", "ko": "저장된 리플레이"},
+    "replay.repath": {"en": "Re-point replay folder", "ko": "리플레이 경로 재지정"},
+    "replay.folder_title": {"en": "Choose replay folder", "ko": "리플레이 폴더 선택"},
     "replay.file_filter": {
         "en": "Recorded episode (*.json *.jsonl)",
         "ko": "기록된 에피소드 (*.json *.jsonl)",
