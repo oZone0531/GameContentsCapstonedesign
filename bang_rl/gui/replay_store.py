@@ -31,6 +31,25 @@ from typing import Any
 # Bumped when the record layout changes in a way that affects loaders.
 SCHEMA_VERSION = "1.0"
 
+# ITEM 2 (spectator replay): the all-AI game modes. A replay recorded in one of
+# these has no human seat, so the replay board must render no "나"/"You" seat.
+# Mirrors GameService._SPECTATOR_MODES; kept here (Qt-free) so the replay screen
+# can decide the board layout without importing the service layer.
+SPECTATOR_MODES = frozenset({"random_five", "dummy_five", "main_one_dummy_four"})
+
+
+def is_spectator_record(record: Mapping[str, Any] | None) -> bool:
+    """Return True when ``record`` is an all-AI (spectator) replay.
+
+    Reads the record's ``mode`` and checks it against :data:`SPECTATOR_MODES`.
+    Tolerant of a missing/None record or mode. Pure and Qt-free.
+    """
+
+    if not isinstance(record, Mapping):
+        return False
+    mode = record.get("mode")
+    return isinstance(mode, str) and mode in SPECTATOR_MODES
+
 
 def _json_safe(value: Any) -> Any:
     """Return a deep, JSON-safe copy of ``value`` (dicts/lists/scalars only).
@@ -171,18 +190,119 @@ def _timestamped_filename(session: str | None = None) -> str:
     return f"replay-{stamp}.json"
 
 
+def _sanitize_mode_token(mode: Any) -> str:
+    """Return a filename-safe, lowercased token for a game mode.
+
+    Keeps only alnum / ``-`` / ``_`` (the same rule :func:`_sanitize_replay_name`
+    uses), which strips any path separator so a malformed mode can never escape
+    the replay directory. Returns ``""`` when nothing usable remains, so the
+    caller falls back to the mode-less name. Pure and Qt-free.
+    """
+
+    if mode is None:
+        return ""
+    text = str(mode).strip().lower()
+    return "".join(ch for ch in text if ch.isalnum() or ch in ("-", "_"))
+
+
+def build_replay_filename(
+    mode: str | None,
+    *,
+    session: str | None = None,
+    timestamp: datetime | None = None,
+) -> str:
+    """Build the auto-generated replay filename, encoding the game mode (item 5).
+
+    Returns ``'replay-<mode>-<stamp>.json'`` where ``<mode>`` is the sanitized,
+    lowercased mode token (e.g. ``human_random``, ``random_five``). When ``mode``
+    is None / empty / has no usable characters, falls back to the prior mode-less
+    :func:`_timestamped_filename` behaviour (which still honours ``session``).
+    Pure and Qt-free so it is unit-testable headlessly.
+    """
+
+    stamp = (timestamp or datetime.now()).strftime("%Y%m%d-%H%M%S-%f")
+    token = _sanitize_mode_token(mode)
+    if not token:
+        return _timestamped_filename(session)
+    if session:
+        safe = "".join(ch for ch in str(session) if ch.isalnum() or ch in ("-", "_"))
+        if safe:
+            return f"replay-{token}-{safe}-{stamp}.json"
+    return f"replay-{token}-{stamp}.json"
+
+
+def describe_ai_versions(ai_versions: Any) -> list[tuple[str, str, str, str | None]]:
+    """Return a localization-friendly, Qt-free breakdown of ``ai_versions``.
+
+    ``ai_versions`` is a seat -> descriptor mapping where a descriptor is either
+    the string ``'random'`` / ``'dummy'`` or a dict
+    ``{'kind': 'main', 'version': ..., 'metadata': {...}}`` (see
+    :meth:`bang_rl.gui.game.GameSessionController._derive_ai_versions`).
+
+    Each returned entry is a tuple ``('seat', seat, kind, version)`` where:
+
+    * ``seat`` is the seat key as a string,
+    * ``kind`` is one of ``'random'`` / ``'dummy'`` / ``'main'`` / ``'unknown'``,
+    * ``version`` is the main-AI version string (or None) and is None for the
+      other kinds.
+
+    Entries are sorted by numeric seat when possible so the screen can render
+    ``Seat 0 ... Seat 4`` in order. No localized text is produced here; the
+    screen turns each tuple into user-facing text via ``tr()``. Tolerant of a
+    missing / non-mapping input (returns an empty list). Pure and Qt-free.
+    """
+
+    if not isinstance(ai_versions, Mapping):
+        return []
+
+    def _sort_key(item: tuple[str, Any]) -> tuple[int, int, str]:
+        seat = item[0]
+        try:
+            return (0, int(seat), "")
+        except (TypeError, ValueError):
+            return (1, 0, str(seat))
+
+    entries: list[tuple[str, str, str, str | None]] = []
+    for seat, descriptor in sorted(ai_versions.items(), key=_sort_key):
+        seat_key = str(seat)
+        if isinstance(descriptor, str):
+            kind = descriptor.strip().lower()
+            if kind in ("random", "dummy"):
+                entries.append(("seat", seat_key, kind, None))
+            else:
+                entries.append(("seat", seat_key, "unknown", None))
+        elif isinstance(descriptor, Mapping):
+            kind = str(descriptor.get("kind", "")).strip().lower()
+            if kind == "main":
+                version = descriptor.get("version")
+                entries.append(
+                    ("seat", seat_key, "main", None if version is None else str(version))
+                )
+            elif kind in ("random", "dummy"):
+                entries.append(("seat", seat_key, kind, None))
+            else:
+                entries.append(("seat", seat_key, "unknown", None))
+        else:
+            entries.append(("seat", seat_key, "unknown", None))
+    return entries
+
+
 def save_replay(
     record: Mapping[str, Any],
     directory: str | Path | None = None,
     *,
     filename: str | None = None,
     session: str | None = None,
+    mode: str | None = None,
 ) -> Path:
     """Write ``record`` as JSON into ``directory`` and return the file path.
 
     ``directory`` defaults to :data:`bang_rl.paths.REPLAYS_DIR`. The directory
-    is created if missing. A unique timestamped filename is used when
-    ``filename`` is not given.
+    is created if missing. When ``filename`` is not given the name is generated:
+    if ``mode`` is provided (or the record carries a ``mode``), the auto name
+    encodes it via :func:`build_replay_filename` (item 5); otherwise the prior
+    mode-less :func:`_timestamped_filename` is used. A bad mode is sanitized and
+    can never escape the directory.
     """
 
     if directory is None:
@@ -191,7 +311,11 @@ def save_replay(
         directory = REPLAYS_DIR
     target_dir = Path(directory)
     target_dir.mkdir(parents=True, exist_ok=True)
-    name = filename or _timestamped_filename(session)
+    if filename:
+        name = filename
+    else:
+        effective_mode = mode if mode is not None else record.get("mode")
+        name = build_replay_filename(effective_mode, session=session)
     path = target_dir / name
     with path.open("w", encoding="utf-8") as handle:
         json.dump(record, handle, ensure_ascii=False, indent=2)
@@ -325,9 +449,13 @@ def replay_summary(record: Mapping[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "SCHEMA_VERSION",
+    "SPECTATOR_MODES",
     "build_full_replay_record",
+    "build_replay_filename",
     "build_replay_record",
     "delete_replay",
+    "describe_ai_versions",
+    "is_spectator_record",
     "list_replays",
     "load_replay",
     "rename_replay",

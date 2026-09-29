@@ -149,19 +149,6 @@ _STRINGS: dict[str, dict[str, str]] = {
     "event.role": {"en": "[role: {role}]", "ko": "[역할: {role}]"},
     "event.step": {"en": "[step {step}] ", "ko": "[스텝 {step}] "},
 
-    # Log-row hover: the game moment at which an action was recorded.
-    "log.moment": {
-        "en": "Recorded at step {step}",
-        "ko": "스텝 {step} 시점에 기록됨",
-    },
-    "log.moment_round": {
-        "en": "Recorded at step {step}, round {round}",
-        "ko": "스텝 {step}, 라운드 {round} 시점에 기록됨",
-    },
-    "log.moment_unknown": {
-        "en": "Recorded moment unavailable",
-        "ko": "기록된 시점 정보 없음",
-    },
     # Bang! hit / elimination status shown during the shot animation.
     "board.hit": {
         "en": "Player {player} was hit!",
@@ -483,6 +470,18 @@ _STRINGS: dict[str, dict[str, str]] = {
     # Item 5: browser labels for the two replay formats.
     "replay.format_public": {"en": "Public", "ko": "공개"},
     "replay.format_full": {"en": "Full state", "ko": "전체 상태"},
+
+    # Item 6: read-only info panel shown while a replay plays back. Surfaces the
+    # recorded mode / outcome / seed and the per-seat AI + version breakdown.
+    "replay.info_title": {"en": "Replay info", "ko": "리플레이 정보"},
+    "replay.info_mode": {"en": "Mode: {mode}", "ko": "모드: {mode}"},
+    "replay.info_outcome": {"en": "Outcome: {outcome}", "ko": "결과: {outcome}"},
+    "replay.info_seed": {"en": "Seed: {seed}", "ko": "시드: {seed}"},
+    "replay.info_seat": {"en": "Seat {seat}: {ai}", "ko": "좌석 {seat}: {ai}"},
+    "replay.ai_random": {"en": "Random AI", "ko": "랜덤 AI"},
+    "replay.ai_dummy": {"en": "Dummy AI", "ko": "더미 AI"},
+    "replay.ai_main": {"en": "Main AI {version}", "ko": "메인 AI {version}"},
+    "replay.ai_unknown": {"en": "Unknown AI", "ko": "알 수 없는 AI"},
 
     # Model selection dialog
     "model.title": {"en": "Select inference model", "ko": "추론 모델 선택"},

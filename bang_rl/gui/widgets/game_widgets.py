@@ -225,9 +225,6 @@ if QT_AVAILABLE:
             for event in events:
                 if isinstance(event, Mapping):
                     item = QListWidgetItem(format_event(event))
-                    # Hovering a row reveals the game moment (step / round) at
-                    # which the action was recorded.
-                    item.setToolTip(format_log_moment(event))
                     self.list.addItem(item)
             count = self.list.count()
             if count:
@@ -237,6 +234,10 @@ if QT_AVAILABLE:
 
     class GraphicalBoard(QWidget):
         """Canvas board: five gun-holding circles, the human at the bottom.
+
+        ITEM 2: when constructed with ``human_player=None`` (spectating an
+        all-AI game) there is no human seat, so all five seats fill the ring and
+        every seat is captioned as Player N (no "나"/"You").
 
         Each seat renders as a circle with a small black rectangle 'gun' and a
         name/HP/role caption beneath, honoring the same role-privacy rule as the
@@ -261,9 +262,17 @@ if QT_AVAILABLE:
         _MIN_WIDTH = GRAPHICAL_BOARD_MIN_WIDTH
         _MIN_HEIGHT = GRAPHICAL_BOARD_MIN_HEIGHT
 
-        def __init__(self, parent: QWidget | None = None, *, human_player: int = 0) -> None:
+        def __init__(
+            self,
+            parent: QWidget | None = None,
+            *,
+            human_player: int | None = 0,
+        ) -> None:
             require_qt()
             super().__init__(parent)
+            # ITEM 2: ``human_player=None`` means a spectator (all-AI) board with
+            # no dedicated bottom "you" seat. All five seats are then laid out in
+            # the ring and captioned as Player N, and no seat is interactive.
             self.human_player = human_player
             self._state: Any = None
             self._mask: tuple[int, ...] = (0, 0, 0, 0, 0, 0)
@@ -281,6 +290,19 @@ if QT_AVAILABLE:
             self._anim_timer.timeout.connect(self._advance_shot)
             self.setMinimumSize(self._MIN_WIDTH, self._MIN_HEIGHT)
             self.setMouseTracking(True)
+
+        def set_human_player(self, human_player: int | None) -> None:
+            """Reconfigure which seat (if any) is the human (item 2).
+
+            ``None`` switches the board to spectator layout (no "you" seat).
+            Used by the replay screen when a loaded record is a spectator game.
+            """
+
+            if human_player == self.human_player:
+                return
+            self.human_player = human_player
+            self._hover_seat = None
+            self.update()
 
         def update_state(self, state: Any) -> None:
             self._state = state
@@ -708,11 +730,18 @@ if QT_AVAILABLE:
             visibility: Sequence[int],
             revealed: Sequence[int],
         ) -> None:
-            if player == self.human_player:
+            # ITEM 2: in spectator mode (human_player is None) no seat is the
+            # human, so every seat is captioned as Player N and none shows the
+            # "you" label.
+            if self.human_player is not None and player == self.human_player:
                 name = tr("game.you_name")
             else:
                 name = tr("game.player_name", player=player)
             game_over = self._is_game_over()
+            # ITEM 1: in a spectator session the DTO carries reveal_all_roles so
+            # every seat shows its true role during play. Human sessions leave
+            # this False and keep the sheriff-only-until-terminal privacy.
+            reveal_all = bool(getattr(self._state, "reveal_all_roles", False))
             # Item 7: at game end reveal EVERY seat's role from the terminal
             # state's final_roles (all players are shown once the game is over).
             # During play, and whenever final_roles is absent (a replay snapshot
@@ -726,6 +755,7 @@ if QT_AVAILABLE:
                 final_roles,
                 game_over,
                 human_player=self.human_player,
+                reveal_all=reveal_all,
             )
             role = (
                 hidden_role_label()
@@ -815,23 +845,6 @@ def format_event(event: Mapping[str, Any]) -> str:
     return prefix + " ".join(parts)
 
 
-def format_log_moment(event: Mapping[str, Any]) -> str:
-    """Return a localized 'game moment' string for a log-row hover tooltip.
-
-    Uses the event's ``environment_step`` (and ``round_index`` when present) so
-    hovering a log row reveals exactly when the action was recorded.  Pure and
-    Qt-free so it is localizable and unit-testable in CI.
-    """
-
-    step = event.get("environment_step")
-    if step is None:
-        return tr("log.moment_unknown")
-    round_index = event.get("round_index")
-    if round_index is not None:
-        return tr("log.moment_round", step=int(step), round=int(round_index))
-    return tr("log.moment", step=int(step))
-
-
 def _event_label(event_type: str) -> str:
     known = {
         "bang", "pass", "player_eliminated", "role_revealed",
@@ -863,6 +876,5 @@ __all__ = [
     "GRAPHICAL_BOARD_MIN_WIDTH",
     "OPPONENT_PANEL_MAX_WIDTH",
     "format_event",
-    "format_log_moment",
     "opponent_public_rows",
 ]

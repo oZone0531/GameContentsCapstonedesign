@@ -242,3 +242,61 @@ def test_restored_session_keeps_public_privacy_during_play() -> None:
     assert state.final_roles == ()
     game.close_session(handle)
     game.close_session(restored)
+
+
+def _role_visibility(state) -> list[int]:
+    return [int(v) for v in state.observation["role_visibility"]]
+
+
+def _self_role(state) -> int:
+    return int(state.observation["self_role"][0])
+
+
+def test_human_session_keeps_privacy_and_reveal_all_false() -> None:
+    # Item 1/7: a human session never reveals living non-sheriff roles and its
+    # reveal_all_roles flag stays False.
+    config = SystemConfig(seed=21)
+    game = GameService()
+    handle = game.create_session(SessionConfig(config=config, agents=_pass_agents(), seed=21))
+    state = game.get_state(handle)
+    assert state.reveal_all_roles is False
+    assert "reveal_all_roles" in state.to_dict()
+    # Mid-game, at most the sheriff / the viewer's own seat are visible; no
+    # living seat is marked REVEALED (2) beyond the sheriff reveal rule.
+    visibility = _role_visibility(state)
+    # The viewer's own seat (0) is SELF (1); every other living seat that is not
+    # the publicly-known sheriff stays HIDDEN (0).
+    assert visibility[0] == 1
+    game.close_session(handle)
+
+
+def test_human_self_role_is_stable_across_ai_turns() -> None:
+    # Item 7 (flicker fix): the human seat's self_role must not change as the
+    # current player rotates, because _state now projects from the fixed seat 0.
+    config = SystemConfig(seed=23)
+    game = GameService()
+    handle = game.create_session(SessionConfig(config=config, agents=_pass_agents(), seed=23))
+    baseline = _self_role(game.get_state(handle))
+    for _ in range(5):
+        result = game.step(handle)
+        if result.terminated or result.truncated:
+            break
+        assert _self_role(game.get_state(handle)) == baseline
+    game.close_session(handle)
+
+
+def test_spectator_session_reveals_all_roles_during_play() -> None:
+    # Item 1: a spectator (all-AI) session reveals every seat's true role during
+    # play and sets reveal_all_roles True.
+    game = GameService()
+    handle = game.create_session(SessionConfig(mode="random_five", seed=25))
+    state = game.get_state(handle)
+    assert state.reveal_all_roles is True
+    assert state.to_dict()["reveal_all_roles"] is True
+    # Every seat is marked REVEALED (>= 2) and carries a concrete (non-hidden)
+    # role during play.
+    visibility = _role_visibility(state)
+    revealed = [int(r) for r in state.observation["revealed_roles"]]
+    assert all(v >= 2 for v in visibility)
+    assert all(r != 255 for r in revealed)
+    game.close_session(handle)

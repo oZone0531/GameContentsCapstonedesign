@@ -321,10 +321,102 @@ def test_delete_replay_removes_file_and_tolerates_missing(tmp_path) -> None:
     assert tmp_path.exists()
 
 
+def test_build_replay_filename_encodes_mode(tmp_path) -> None:
+    name = replay_store.build_replay_filename("human_random")
+    assert name.startswith("replay-human_random-")
+    assert name.endswith(".json")
+    assert "human_random" in name
+    # A timestamp component is present between the mode and the suffix.
+    assert len(name) > len("replay-human_random-.json")
+
+
+def test_build_replay_filename_falls_back_when_mode_missing() -> None:
+    for bad in (None, "", "   "):
+        name = replay_store.build_replay_filename(bad)
+        assert name.startswith("replay-")
+        assert name.endswith(".json")
+        # No mode token: the mode-less shape 'replay-<stamp>.json'.
+        assert name.count("-") >= 1
+
+
+def test_build_replay_filename_sanitizes_mode_no_path_leak() -> None:
+    name = replay_store.build_replay_filename("../../evil/mode.json")
+    assert "/" not in name
+    assert "\\" not in name
+    assert ".." not in name
+    assert name.endswith(".json")
+
+
+def test_save_replay_uses_mode_from_record_for_auto_name(tmp_path) -> None:
+    record = replay_store.build_replay_record(
+        mode="random_five",
+        mode_label="Random AI x5",
+        ai_versions={str(seat): "random" for seat in range(5)},
+        winning_team="sheriff_team",
+        winners=[0],
+        human_player=0,
+        seed=1,
+        observations=_observations(),
+        terminated=True,
+    )
+    path = replay_store.save_replay(record, tmp_path)
+    assert "random_five" in path.name
+    assert path.exists()
+
+
+def test_describe_ai_versions_random_five() -> None:
+    entries = replay_store.describe_ai_versions(
+        {str(seat): "random" for seat in range(5)}
+    )
+    assert len(entries) == 5
+    assert all(kind == "random" and version is None for _tag, _seat, kind, version in entries)
+    # Sorted by numeric seat.
+    assert [seat for _tag, seat, _kind, _v in entries] == ["0", "1", "2", "3", "4"]
+
+
+def test_describe_ai_versions_main_carries_version_and_dummies() -> None:
+    entries = replay_store.describe_ai_versions(
+        {
+            "0": "dummy",
+            "1": {"kind": "main", "version": "1.0", "metadata": {"x": 1}},
+            "2": "dummy",
+            "3": "dummy",
+            "4": "dummy",
+        }
+    )
+    kinds = {seat: (kind, version) for _tag, seat, kind, version in entries}
+    assert kinds["1"] == ("main", "1.0")
+    assert kinds["0"] == ("dummy", None)
+    assert kinds["4"] == ("dummy", None)
+
+
+def test_describe_ai_versions_legacy_and_empty_safe() -> None:
+    assert replay_store.describe_ai_versions({}) == []
+    assert replay_store.describe_ai_versions(None) == []
+    # An unknown descriptor is reported as 'unknown', never crashes.
+    entries = replay_store.describe_ai_versions({"0": 123, "1": {"kind": "wat"}})
+    kinds = {seat: kind for _tag, seat, kind, _v in entries}
+    assert kinds["0"] == "unknown"
+    assert kinds["1"] == "unknown"
+
+
 def test_replay_store_i18n_keys_exist_in_both_languages() -> None:
     from bang_rl.gui.i18n import _STRINGS
 
-    for key in ("replay.repath", "replay.folder_title", "replay.browser"):
+    for key in (
+        "replay.repath",
+        "replay.folder_title",
+        "replay.browser",
+        "replay.info_title",
+        "replay.info_mode",
+        "replay.info_outcome",
+        "replay.info_seed",
+        "replay.info_seat",
+        "replay.ai_random",
+        "replay.ai_dummy",
+        "replay.ai_main",
+        "replay.ai_unknown",
+    ):
         assert key in _STRINGS
         assert "en" in _STRINGS[key]
         assert "ko" in _STRINGS[key]

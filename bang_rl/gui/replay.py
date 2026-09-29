@@ -87,13 +87,30 @@ def _as_mapping(episode: Any) -> Mapping[str, Any] | None:
 
 def _int_or_none(value: Any) -> int | None:
     # Recorded observations frequently carry scalar-like fields (e.g.
-    # ``environment_step``) as a 1-element list/tuple such as ``[3]`` because
-    # the public projection stores them as single-element arrays. Unwrap a
-    # single-element sequence before ``int()`` (mirroring ``_current_player``)
-    # so those values are read as scalars instead of collapsing to ``None`` and
-    # dragging every snapshot back to step 0 (item 9 no-log/no-playback bug).
+    # ``environment_step``) as a 1-element sequence such as ``[3]`` because the
+    # public projection (``make_observation_space``) stores them as ``Box``
+    # arrays of shape ``(1,)``. The LIVE GameScreen records ``state.observation``
+    # verbatim, so ``environment_step`` arrives as a ``numpy.ndarray`` (not a
+    # ``list``/``tuple``); a saved-and-reloaded public replay may instead carry
+    # a plain 1-element list. Unwrap BOTH forms (numpy arrays via ``.tolist()``,
+    # plain sequences directly) before ``int()`` so the value is read as a
+    # scalar instead of collapsing to ``None`` and dragging every snapshot back
+    # to step 0 -- the confirmed root cause of hover/click always showing turn 0
+    # (items 3 and 8). Numpy is NOT imported here (this module stays Qt-free and
+    # numpy-free); duck-typing ``.tolist()`` keeps it importable in the sandbox.
     if value is None:
         return None
+    # numpy scalars/arrays and other array-likes expose ``.tolist()`` which
+    # returns a builtin int (scalar) or a builtin list (array) with no numpy
+    # dependency here.
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist) and not isinstance(value, (list, tuple, dict)):
+        try:
+            value = tolist()
+        except Exception:
+            return None
+        if value is None:
+            return None
     if isinstance(value, (list, tuple)):
         if len(value) != 1:
             return None
@@ -450,12 +467,94 @@ class ReplayModel:
         :meth:`full_events` rather than the cursor's (possibly short) current
         log.  This makes hover-preview / click-to-rewind work for every row the
         user actually sees, not just the opening turn's few events.
+
+        ROBUSTNESS (items 3 & 8): the row -> snapshot mapping is computed for the
+        WHOLE log at once (:meth:`_row_to_index_map`) with a monotonic guarantee:
+        a later row never maps to an earlier snapshot, and a row past the first
+        never collapses back to index 0.  When per-event ``environment_step``
+        data lines up with the recorded snapshots this reproduces the exact
+        step-based mapping; when the step data is missing, constant, or ambiguous
+        (so a naive per-event lookup would drag every row to turn 0) it falls
+        back to a positional distribution of rows across the recorded snapshots.
+        Either way a hovered/clicked mid or late row lands on its own moment
+        instead of resetting the board to the opening turn.
         """
 
         events = self.full_events()
-        if row is None or not (0 <= int(row) < len(events)):
+        if row is None:
             return None
-        return self.index_for_event(events[int(row)])
+        try:
+            row_int = int(row)
+        except (TypeError, ValueError):
+            return None
+        if not (0 <= row_int < len(events)):
+            return None
+        return self._row_to_index_map()[row_int]
+
+    def _row_to_index_map(self) -> tuple[int, ...]:
+        """Return a monotonic ``row -> snapshot index`` mapping for the log.
+
+        Each entry is the index of the snapshot representing the game *as of*
+        that log row.  The mapping is non-decreasing (a later row maps to a
+        later-or-equal snapshot) and only the row(s) belonging to the opening
+        turn map to index 0, so a mid/late row can never collapse to turn 0.
+
+        Two signals drive the mapping, preferring the authoritative one:
+
+        * When events carry a usable ``environment_step`` AND the recorded
+          snapshots carry distinct steps, each row resolves to the first
+          snapshot whose step is >= the event's step (clamped monotonically),
+          which matches :meth:`index_for_step`'s intent exactly.
+        * Otherwise (steps missing/constant/ambiguous) rows are spread across
+          the snapshots by position so the mapping stays monotonic and the last
+          row reaches the final snapshot.
+        """
+
+        events = self.full_events()
+        count = len(events)
+        snapshot_count = len(self._snapshots)
+        if count == 0 or snapshot_count == 0:
+            return ()
+        if snapshot_count == 1:
+            return (0,) * count
+
+        snapshot_steps = [snapshot.environment_step for snapshot in self._snapshots]
+        distinct_steps = len(set(snapshot_steps)) > 1
+        event_steps = [_event_step(event) for event in events]
+        usable_event_steps = distinct_steps and all(step is not None for step in event_steps)
+
+        mapping: list[int] = []
+        if usable_event_steps:
+            # Step-driven mapping: the first snapshot at or beyond the event's
+            # step, kept monotonic so duplicated/settled steps never regress.
+            cursor = 0
+            for step in event_steps:
+                target = int(step) if step is not None else snapshot_steps[cursor]
+                while (
+                    cursor + 1 < snapshot_count
+                    and snapshot_steps[cursor] < target
+                ):
+                    cursor += 1
+                mapping.append(cursor)
+            if any(value > 0 for value in mapping):
+                return tuple(mapping)
+            # Every row mapped to 0 despite "usable" steps (e.g. the snapshots'
+            # steps are all >= the events' steps): fall through to positional.
+            mapping = []
+
+        # Positional fallback: distribute the rows across the snapshots so a
+        # later row maps to a later-or-equal snapshot and the final row reaches
+        # the last snapshot. Guarantees no mid/late row collapses to turn 0.
+        if count == 1:
+            return (0,)
+        last_snapshot = snapshot_count - 1
+        last_row = count - 1
+        for row in range(count):
+            index = (row * last_snapshot) // last_row
+            if index > last_snapshot:
+                index = last_snapshot
+            mapping.append(index)
+        return tuple(mapping)
 
     def current_events(self) -> tuple[Mapping[str, Any], ...]:
         """Return the cumulative event log for the current snapshot."""

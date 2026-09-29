@@ -595,6 +595,85 @@ def test_restore_after_export_that_raises_still_targets_correct_turn() -> None:
     assert service.restored[-1]["turn_tag"] == 2
 
 
+# --- Items 3 & 8: a log ROW resolves to its own moment (not turn 0) -------
+
+def _logged_turn_state(turn: int, *, step: int, events: tuple) -> object:
+    """A human-turn state whose observation carries a cumulative event log.
+
+    Mirrors the REAL recorded shape (unlike ``_turn_state``, which omits
+    ``event_sequence``): each event carries an ``environment_step`` and the
+    observation's ``event_sequence`` is the cumulative log up to this turn, so
+    the GameLog row index the GUI hands to the controller resolves through
+    ``ReplayModel.index_for_log_row``.
+    """
+
+    observation = {
+        "healths": (5, max(1, 5 - turn), 5, 5, 5),
+        "alive": (True, True, True, True, True),
+        "role_visibility": (1, 0, 0, 0, 0),
+        "revealed_roles": (0, 255, 255, 255, 255),
+        "current_player_idx": (0,),
+        "environment_step": (step,),
+        "event_sequence": events,
+        "action_mask": (1, 1, 0, 0, 0, 0),
+    }
+    return SimpleNamespace(
+        session_id="session-1",
+        episode_id="episode-1",
+        observation=observation,
+        action_mask=(1, 1, 0, 0, 0, 0),
+        environment_step=step,
+        current_player=0,
+        terminated=False,
+        truncated=False,
+        termination_status="running",
+        winning_team=None,
+        winners=(),
+    )
+
+
+def _logged_three_turn_states() -> list[object]:
+    events = [
+        {"environment_step": 0, "event_type": "game_started"},
+        {"environment_step": 1, "event_type": "bang", "actor_idx": 0, "target_idx": 1},
+        {"environment_step": 2, "event_type": "bang", "actor_idx": 1, "target_idx": 2},
+    ]
+    return [
+        _logged_turn_state(0, step=0, events=tuple(events[:1])),
+        _logged_turn_state(1, step=1, events=tuple(events[:2])),
+        _logged_turn_state(2, step=2, events=tuple(events[:3])),
+    ]
+
+
+def test_time_travel_to_a_late_log_row_previews_that_moment_not_turn_zero() -> None:
+    # Item 3/8 regression: clicking/hovering the LAST visible log row must move
+    # the board to that moment (environment_step 2 here), never reset to turn 0.
+    service = FakeService(_logged_three_turn_states())
+    controller = GameSessionController(service)
+    controller.start(GameMode.HUMAN_RANDOM)
+    controller.submit_human_action(1)  # turn 1 recorded
+    controller.submit_human_action(1)  # turn 2 recorded
+    assert len(controller._replay_observations) == 3
+    # Row 2 is the last log row (the step-2 bang).
+    controller.time_travel_to(2)
+    assert controller.previewing is True
+    assert controller.state.environment_step == 2  # NOT 0
+
+
+def test_restore_to_moment_by_log_row_forks_from_that_row_state() -> None:
+    # Item 8: restoring a mid/late log row forks from that row's authoritative
+    # state, proving the row -> state index mapping does not collapse to 0.
+    service = RestoreService(_logged_three_turn_states())
+    controller = GameSessionController(service)
+    controller.start(GameMode.HUMAN_RANDOM)
+    controller.submit_human_action(1)
+    controller.submit_human_action(1)
+    controller.restore_to_moment(2)
+    assert service.restored  # a fork happened
+    # The fork used the step-2 turn's captured state, not turn 0.
+    assert service.restored[-1]["environment_step"] != 0
+
+
 # --- Item 1 + 3: gun to the visual right, reduced top margin -------------
 
 def test_gun_anchor_sits_on_the_opposite_perpendicular_side() -> None:

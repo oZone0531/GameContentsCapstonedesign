@@ -749,7 +749,13 @@ class GameSessionController:
                 )
             else:
                 record = replay_store.build_replay_record(**common)
-            replay_store.save_replay(record)
+            # Item 5: encode the game mode in the auto-generated filename via
+            # the Qt-free helper. Best-effort/defensive: build_replay_filename
+            # sanitizes the mode so a bad value never crashes the save (and
+            # falls back to the mode-less name).
+            replay_store.save_replay(
+                record, filename=replay_store.build_replay_filename(self.mode.value)
+            )
         except Exception:
             # Never let a replay-save failure crash or interrupt the game.
             return

@@ -63,7 +63,11 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.setWindowTitle(tr("game.title"))
             self.setMinimumWidth(1024)
 
-            self.board = GraphicalBoard(self, human_player=controller.HUMAN_PLAYER)
+            # ITEM 2: a spectator (all-AI) game has no human, so the board is
+            # built with human_player=None and renders no dedicated "나"/"You"
+            # seat; seat 0 is captioned as an ordinary Player like the rest.
+            board_human_player = None if self._spectator else controller.HUMAN_PLAYER
+            self.board = GraphicalBoard(self, human_player=board_human_player)
             self.log = GameLog(self)
             self.status = QLabel(self)
             # Transient hit / elimination status line shown during the shot

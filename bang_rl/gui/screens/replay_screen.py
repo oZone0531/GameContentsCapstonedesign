@@ -105,6 +105,19 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.delete_button.clicked.connect(self._on_delete_clicked)
             self._replay_paths: list[Path] = []
 
+            # Item 6: read-only info panel describing the loaded record (mode,
+            # outcome/winner, seed, and the per-seat AI + version breakdown from
+            # record['ai_versions']). Populated on every load and cleared when no
+            # record is loaded. The Qt-free extraction lives in replay_store; the
+            # panel only localizes the structured entries via tr().
+            self.info_title = QLabel(tr("replay.info_title"), self)
+            self.info_panel = QLabel(self)
+            self.info_panel.setWordWrap(True)
+            self.info_panel.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            self._update_info_panel()
+
             # Auto-play timer; the slider sets its interval. Guarded by _alive so
             # a torn-down screen never renders into deleted C++ objects.
             self._play_timer = QTimer(self)
@@ -147,6 +160,10 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             manage_row.addWidget(self.rename_button)
             manage_row.addWidget(self.delete_button)
             browser_column.addLayout(manage_row)
+            # Item 6: info panel sits below the manage buttons in the left
+            # column, visible during playback without crowding the board.
+            browser_column.addWidget(self.info_title)
+            browser_column.addWidget(self.info_panel)
 
             top = QHBoxLayout()
             top.addLayout(browser_column, 1)
@@ -254,8 +271,18 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self._play_timer.stop()
             self._hover_restore_index = None
             self.model = model
+            # ITEM 2: a spectator (all-AI) replay has no human, so render the
+            # board with no dedicated "나"/"You" seat; every seat is a Player.
+            # The recorded observations already carry all-revealed roles for a
+            # spectator game (the service marked them REVEALED during play), so
+            # dropping the human seat is enough to show all roles here too.
+            if replay_store.is_spectator_record(self._loaded_record):
+                self.board.set_human_player(None)
+            else:
+                self.board.set_human_player(REPLAY_HUMAN_PLAYER)
             self._render_current()
             self._refresh_continue_state()
+            self._update_info_panel()
             self._start_autoplay()
 
         def _refresh_continue_state(self) -> None:
@@ -354,6 +381,7 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 self._loaded_path = None
                 self._render_current()
                 self._refresh_continue_state()
+                self._update_info_panel()
             self._reload_browser()
 
         # -- continue from here (item 5) ---------------------------------
@@ -485,6 +513,52 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             ):
                 self._end_hover_preview()
             return super().eventFilter(source, event)
+
+        # -- info panel (item 6) -----------------------------------------
+        def _ai_descriptor_text(self, kind: str, version: Any) -> str:
+            """Localize one seat's AI kind + version into display text."""
+
+            if kind == "random":
+                return tr("replay.ai_random")
+            if kind == "dummy":
+                return tr("replay.ai_dummy")
+            if kind == "main":
+                shown = "" if version is None else str(version)
+                return tr("replay.ai_main", version=shown).strip()
+            return tr("replay.ai_unknown")
+
+        def _update_info_panel(self) -> None:
+            """Populate the read-only info panel from the loaded record.
+
+            Shows the localized mode label, outcome / winning team, seed and the
+            per-seat AI + version breakdown. Clears to empty text when no record
+            is loaded (before the first load and after a delete clears the
+            board). All extraction stays in the Qt-free replay_store helpers.
+            """
+
+            if not self._alive:
+                return
+            record = self._loaded_record
+            if not isinstance(record, dict):
+                self.info_panel.setText("")
+                return
+            summary = replay_store.replay_summary(record)
+            lines: list[str] = []
+            mode_label = summary.get("mode_label") or summary.get("mode")
+            if mode_label:
+                lines.append(tr("replay.info_mode", mode=str(mode_label)))
+            outcome = summary.get("winning_team") or summary.get("outcome")
+            if outcome:
+                lines.append(tr("replay.info_outcome", outcome=str(outcome)))
+            seed = record.get("seed")
+            if seed is not None:
+                lines.append(tr("replay.info_seed", seed=str(seed)))
+            for _tag, seat, kind, version in replay_store.describe_ai_versions(
+                record.get("ai_versions")
+            ):
+                ai_text = self._ai_descriptor_text(kind, version)
+                lines.append(tr("replay.info_seat", seat=seat, ai=ai_text))
+            self.info_panel.setText("\n".join(lines))
 
         # -- rendering ---------------------------------------------------
         def _render_current(self) -> None:

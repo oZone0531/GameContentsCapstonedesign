@@ -161,6 +161,131 @@ def test_list_valued_steps_do_not_collapse_snapshots_to_step_zero() -> None:
         assert "alive" in snapshot.observation
 
 
+def test_row_mapping_is_monotonic_and_never_collapses_to_zero() -> None:
+    # Items 3 & 8: a later log row must map to a later-or-equal snapshot and a
+    # row past the opening turn must NEVER collapse back to index 0.
+    model = ReplayModel(_observations())
+    full = model.full_events()
+    indices = [model.index_for_log_row(row) for row in range(len(full))]
+    assert all(index is not None for index in indices)
+    # Non-decreasing.
+    assert indices == sorted(indices)
+    # Only opening-turn rows may map to 0; every later row is strictly past 0.
+    assert indices[0] == 0
+    assert all(index > 0 for index in indices[2:])
+    # The last row reaches the final snapshot (the full cumulative board).
+    assert indices[-1] == len(model) - 1
+
+
+def _observations_without_any_step() -> list[dict]:
+    """Per-turn observations that omit ``environment_step`` AND whose events
+    carry no ``environment_step`` either.
+
+    This is the pathological data shape behind the item-3/8 regression: with no
+    usable step signal a naive per-event step lookup drags every row to turn 0.
+    The robust positional fallback must still spread the rows monotonically
+    across the recorded snapshots.
+    """
+
+    events = [
+        {"event_type": "game_started"},
+        {"event_type": "bang", "actor_idx": 0, "target_idx": 1},
+        {"event_type": "bang", "actor_idx": 1, "target_idx": 2},
+        {"event_type": "bang", "actor_idx": 2, "target_idx": 3},
+        {"event_type": "player_eliminated", "eliminated_idx": 3},
+    ]
+
+    def observation(turn: int) -> dict:
+        return {
+            "healths": (5, 5, 5, 5, 5),
+            "alive": (True,) * 5,
+            "current_player_idx": (turn % 5,),
+            "event_sequence": tuple(dict(event) for event in events[: turn + 1]),
+        }
+
+    return [observation(turn) for turn in range(5)]
+
+
+def test_positional_fallback_when_no_step_signal_is_present() -> None:
+    # Regression for items 3 & 8: even with no environment_step anywhere the
+    # row -> snapshot mapping must be monotonic and reach the last snapshot,
+    # so hover/click land on the clicked moment instead of resetting to turn 0.
+    model = ReplayModel(_observations_without_any_step())
+    full = model.full_events()
+    indices = [model.index_for_log_row(row) for row in range(len(full))]
+    assert all(index is not None for index in indices)
+    assert indices == sorted(indices)
+    assert indices[0] == 0
+    assert indices[-1] == len(model) - 1
+    # A mid/late row does not collapse to the opening snapshot.
+    assert model.index_for_log_row(len(full) - 1) != 0
+
+
+def _observations_with_constant_step() -> list[dict]:
+    """Observations whose ``environment_step`` is a constant (all zero).
+
+    Mirrors a recording where the per-turn step never varied, which used to
+    collapse ``index_for_step`` to snapshot 0 for every row.
+    """
+
+    events = [
+        {"environment_step": 0, "event_type": "game_started"},
+        {"environment_step": 0, "event_type": "bang"},
+        {"environment_step": 0, "event_type": "bang"},
+        {"environment_step": 0, "event_type": "player_eliminated"},
+    ]
+
+    def observation(turn: int) -> dict:
+        return {
+            "healths": (5, 5, 5, 5, 5),
+            "alive": (True,) * 5,
+            "current_player_idx": (turn % 5,),
+            "environment_step": (0,),  # constant across every turn
+            "event_sequence": tuple(dict(event) for event in events[: turn + 1]),
+        }
+
+    return [observation(turn) for turn in range(4)]
+
+
+def test_constant_step_does_not_collapse_rows_to_turn_zero() -> None:
+    model = ReplayModel(_observations_with_constant_step())
+    full = model.full_events()
+    indices = [model.index_for_log_row(row) for row in range(len(full))]
+    assert indices == sorted(indices)
+    assert indices[-1] == len(model) - 1
+    assert model.index_for_log_row(len(full) - 1) != 0
+
+
+def test_multiple_events_in_one_turn_map_to_that_turns_snapshot() -> None:
+    # A single turn can emit several events (e.g. a bang plus the elimination
+    # it caused). Every such row must map to that turn's snapshot, and the last
+    # one must reach the final snapshot rather than an earlier turn.
+    events = [
+        {"environment_step": 0, "event_type": "game_started"},
+        {"environment_step": 1, "event_type": "bang", "actor_idx": 0, "target_idx": 1},
+        {"environment_step": 2, "event_type": "bang", "actor_idx": 1, "target_idx": 2},
+        {"environment_step": 2, "event_type": "player_eliminated", "eliminated_idx": 2},
+    ]
+
+    def observation(step: int) -> dict:
+        return {
+            "healths": (5, 5, 5, 5, 5),
+            "alive": (True,) * 5,
+            "current_player_idx": (step % 5,),
+            "environment_step": (step,),
+            "event_sequence": tuple(
+                dict(event) for event in events if event["environment_step"] <= step
+            ),
+        }
+
+    model = ReplayModel([observation(step) for step in range(3)])
+    full = model.full_events()
+    # Both step-2 rows resolve to the last snapshot (index 2), not an earlier one.
+    assert model.index_for_log_row(2) == 2
+    assert model.index_for_log_row(3) == 2
+    assert model.index_for_log_row(len(full) - 1) == len(model) - 1
+
+
 def test_board_keys_carry_forward_when_a_later_observation_omits_them() -> None:
     # Item 4: if a recorded observation omits board keys, the snapshot inherits
     # the last-known value so a hovered moment renders a full board, not empty.

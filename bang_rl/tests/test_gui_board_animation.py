@@ -1,16 +1,15 @@
 """Headless-pure tests for the FEAT-004 graphical-board effects.
 
 None of these import PyQt6: they exercise the pure ``board_layout`` helpers
-(HP-based colour, muzzle/gun-angle geometry, new-event diff) and the
-``format_log_moment`` log-hover text, all of which live outside the
-``if QT_AVAILABLE:`` gates so they run in CI without the optional ``[gui]``
-extra.
+(HP-based colour, muzzle/gun-angle geometry, new-event diff), all of which live
+outside the ``if QT_AVAILABLE:`` gates so they run in CI without the optional
+``[gui]`` extra.
 """
 from __future__ import annotations
 
 import math
 
-from bang_rl.gui.i18n import LANGUAGES, current_language, set_language
+from bang_rl.gui.i18n import LANGUAGES
 from bang_rl.gui.i18n import _STRINGS
 from bang_rl.gui.widgets.board_layout import (
     circle_radius,
@@ -24,7 +23,6 @@ from bang_rl.gui.widgets.board_layout import (
     seat_fill_color,
     seat_positions,
 )
-from bang_rl.gui.widgets.game_widgets import format_log_moment
 
 
 # -- HP-based circle colour -------------------------------------------------
@@ -192,45 +190,10 @@ def test_new_animation_events_handles_none_and_reset() -> None:
     assert new_animation_events((_bang(1, 0, 1), _bang(2, 1, 2)), current) == [current[0]]
 
 
-# -- log-moment hover text --------------------------------------------------
-
-def test_format_log_moment_uses_step_in_both_languages() -> None:
-    original = current_language()
-    try:
-        set_language("en")
-        assert format_log_moment({"environment_step": 7}) == "Recorded at step 7"
-        set_language("ko")
-        assert format_log_moment({"environment_step": 7}) == "스텝 7 시점에 기록됨"
-    finally:
-        set_language(original)
-
-
-def test_format_log_moment_includes_round_when_present() -> None:
-    original = current_language()
-    try:
-        set_language("en")
-        text = format_log_moment({"environment_step": 7, "round_index": 2})
-        assert "step 7" in text and "round 2" in text
-        set_language("ko")
-        text_ko = format_log_moment({"environment_step": 7, "round_index": 2})
-        assert "7" in text_ko and "2" in text_ko
-    finally:
-        set_language(original)
-
-
-def test_format_log_moment_unknown_when_no_step() -> None:
-    original = current_language()
-    try:
-        set_language("en")
-        assert format_log_moment({}) == "Recorded moment unavailable"
-    finally:
-        set_language(original)
-
-
 # -- i18n key presence ------------------------------------------------------
 
 def test_new_i18n_keys_exist_in_both_languages() -> None:
-    keys = ("log.moment", "log.moment_round", "log.moment_unknown", "board.hit", "board.eliminated")
+    keys = ("board.hit", "board.eliminated")
     for key in keys:
         assert key in _STRINGS, f"missing key {key}"
         for language in LANGUAGES:
@@ -238,7 +201,7 @@ def test_new_i18n_keys_exist_in_both_languages() -> None:
 
 
 def test_no_em_dash_in_new_board_strings() -> None:
-    keys = ("log.moment", "log.moment_round", "log.moment_unknown", "board.hit", "board.eliminated")
+    keys = ("board.hit", "board.eliminated")
     for key in keys:
         for text in _STRINGS[key].values():
             assert "\u2014" not in text

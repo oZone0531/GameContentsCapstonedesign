@@ -55,6 +55,21 @@ _OPPONENT_SLOTS = (
     (0.84, 0.56),  # right-lower
 )
 
+# ITEM 2 (spectator layout): when there is no human seat (spectating an all-AI
+# game) none of the five seats should sit in the dedicated bottom human slot,
+# because that slot visually implies "you". Instead all five seats are placed
+# evenly around the ring so every AI reads as an equal peer. These normalized
+# slots reuse the four opponent positions plus a bottom-centre slot that lines
+# up with where the human used to sit, giving a balanced five-seat spread with
+# no seat flagged as the human.
+_SPECTATOR_SLOTS = (
+    (0.16, 0.56),  # left-lower
+    (0.24, 0.14),  # left-upper
+    (0.76, 0.14),  # right-upper
+    (0.84, 0.56),  # right-lower
+    (0.5, 0.70),   # bottom-centre (no longer the "you" seat)
+)
+
 
 def circle_radius(width: float, height: float) -> float:
     """Return the seat-circle radius for a board of ``width`` x ``height``."""
@@ -67,7 +82,7 @@ def seat_positions(
     width: float,
     height: float,
     *,
-    human_player: int = 0,
+    human_player: int | None = 0,
     player_count: int = PLAYER_COUNT,
 ) -> dict[int, tuple[float, float]]:
     """Map each player index to a ``(center_x, center_y)`` on the board.
@@ -75,11 +90,21 @@ def seat_positions(
     The ``human_player`` seat is always placed at the bottom-centre; the other
     players fill the surrounding slots in ascending index order.  Returns a
     dict keyed by player index so callers never rely on list ordering.
+
+    ITEM 2 (spectator mode): passing ``human_player=None`` means there is no
+    human seat (spectating an all-AI game), so all five seats are laid out in
+    the ring via ``_SPECTATOR_SLOTS`` and none occupies the dedicated bottom
+    "you" slot. Existing callers that pass a seat index keep the original
+    human-at-bottom geometry unchanged.
     """
 
     width = float(width)
     height = float(height)
     positions: dict[int, tuple[float, float]] = {}
+    if human_player is None:
+        for player, slot in zip(range(player_count), _SPECTATOR_SLOTS):
+            positions[player] = (slot[0] * width, slot[1] * height)
+        return positions
     positions[human_player] = (_HUMAN_SLOT[0] * width, _HUMAN_SLOT[1] * height)
     others = [player for player in range(player_count) if player != human_player]
     for player, slot in zip(others, _OPPONENT_SLOTS):
@@ -93,7 +118,7 @@ def seat_at_point(
     width: float,
     height: float,
     *,
-    human_player: int = 0,
+    human_player: int | None = 0,
     player_count: int = PLAYER_COUNT,
 ) -> int | None:
     """Return the player index whose circle contains ``(x, y)`` or ``None``."""
@@ -223,13 +248,14 @@ def muzzle_point(
     width: float,
     height: float,
     *,
-    human_player: int = 0,
+    human_player: int | None = 0,
     player_count: int = PLAYER_COUNT,
 ) -> tuple[float, float] | None:
     """Return the point on the shooter's circle edge facing the target.
 
     Also usable as the origin of a FEAT-004 shot animation.  Returns ``None``
-    when either seat is missing or the two seats coincide.
+    when either seat is missing or the two seats coincide.  ``human_player`` may
+    be ``None`` in spectator mode; it is forwarded to :func:`seat_positions`.
     """
 
     result = muzzle_point_and_angle(
@@ -249,7 +275,7 @@ def gun_angle(
     width: float,
     height: float,
     *,
-    human_player: int = 0,
+    human_player: int | None = 0,
     player_count: int = PLAYER_COUNT,
 ) -> float | None:
     """Return the gun angle (radians) from ``shooter`` toward ``target``."""
@@ -270,7 +296,7 @@ def facing_angle(
     width: float,
     height: float,
     *,
-    human_player: int = 0,
+    human_player: int | None = 0,
     player_count: int = PLAYER_COUNT,
 ) -> float:
     """Return the default facing angle (radians) for ``player``.
@@ -301,7 +327,7 @@ def gun_anchor_and_angle(
     height: float,
     *,
     facing: float,
-    human_player: int = 0,
+    human_player: int | None = 0,
     player_count: int = PLAYER_COUNT,
 ) -> tuple[tuple[float, float], float] | None:
     """Return ``((anchor_x, anchor_y), angle)`` for the gun a character holds.
@@ -395,13 +421,21 @@ def role_for_display(
     final_roles: Sequence[int] | None,
     game_over: bool,
     *,
-    human_player: int = 0,
+    human_player: int | None = 0,
+    reveal_all: bool = False,
 ) -> int:
     """Return the role index to display beneath ``player`` (255 == hidden).
 
     The single source of truth for item 7's "reveal all at end" decision, kept
     Qt-free so it is unit-testable headlessly:
 
+    * ITEM 1 (spectator reveal): when ``reveal_all`` is True (only for a
+      spectator, all-AI session where there is no human whose hidden info must
+      be protected) every seat shows its true role from the public
+      ``revealed_roles`` during play, independent of ``role_visibility`` and
+      ``game_over``.  It falls back to ``final_roles`` and then to hidden only
+      when ``revealed_roles`` genuinely lacks the seat.  ``reveal_all`` defaults
+      False so the human-game behaviour below is byte-for-byte unchanged.
     * The human's own seat always shows its real role from ``self_role``.
     * When the game is over AND a non-empty ``final_roles`` is supplied (only
       the terminal :class:`PublicGameState` carries it), every seat shows its
@@ -411,10 +445,32 @@ def role_for_display(
       hidden.  No living role ever leaks mid-game.
     """
 
-    if player == int(human_player):
+    finals = list(final_roles or ())
+
+    if reveal_all:
+        # Spectator mode: every seat's true role is public. Prefer the seat's
+        # entry in the public revealed_roles projection (built by the service
+        # from the authoritative env.state.roles for spectator sessions), fall
+        # back to final_roles at terminal, and only then hide if truly absent.
+        revealed = observation.get("revealed_roles")
+        revealed_values = list(revealed) if revealed is not None else []
+        if 0 <= player < len(revealed_values):
+            try:
+                index = int(revealed_values[player])
+            except (TypeError, ValueError):
+                index = HIDDEN_ROLE_SENTINEL
+            if index != HIDDEN_ROLE_SENTINEL:
+                return index
+        if finals and 0 <= player < len(finals):
+            try:
+                return int(finals[player])
+            except (TypeError, ValueError):
+                return HIDDEN_ROLE_SENTINEL
+        return HIDDEN_ROLE_SENTINEL
+
+    if human_player is not None and player == int(human_player):
         return _self_role_index(observation, human_player)
 
-    finals = list(final_roles or ())
     if game_over and finals and 0 <= player < len(finals):
         try:
             return int(finals[player])

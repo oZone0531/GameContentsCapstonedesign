@@ -161,6 +161,12 @@ class PublicGameState:
     # Empty during play so no living role ever leaks. Never persisted to a
     # recorded observation or replay record (replays stay public-projection).
     final_roles: tuple[int, ...] = ()
+    # Item 1: True only for spectator (all-AI) sessions, where there is no human
+    # whose hidden info must be protected, so every seat's true role is revealed
+    # DURING play. Defaults False so a human session keeps the sheriff-only-
+    # until-terminal privacy rule unchanged. The GUI reads this to pass
+    # reveal_all into board_layout.role_for_display.
+    reveal_all_roles: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -176,6 +182,7 @@ class PublicGameState:
             "winning_team": self.winning_team,
             "winners": list(self.winners),
             "final_roles": list(self.final_roles),
+            "reveal_all_roles": self.reveal_all_roles,
         }
 
 
@@ -575,7 +582,18 @@ class GameService:
     @staticmethod
     def _state(session: _Session) -> PublicGameState:
         env = session.environment
-        observation = _json_value(env.observe())
+        # Item 7 (flicker fix) + item 1 (spectator reveal): project the public
+        # observation from a STABLE viewer, not from state.agent_selection (the
+        # current player). env.observe() with no argument defaults the viewer to
+        # whoever's turn it is, so self_role and the SELF/REVEALED visibility
+        # bits (which the GUI reads for seat 0) rotated with the current player
+        # and made the human seat's role text flicker frame-to-frame. Always
+        # project from the fixed human seat (index 0) so self_role/visibility are
+        # seat-0-relative every turn. For a spectator session index 0 is also a
+        # stable, arbitrary geometry viewer and all roles are revealed below.
+        mode = getattr(session.handle, "mode", None)
+        is_spectator = mode in GameService._SPECTATOR_MODES
+        observation = _json_value(env.observe("player_0"))
         selected = getattr(env.agent_selection, "index", None)
         status = "normal" if bool(env.state.terminated) else "truncated" if bool(env.state.truncated) else "running"
         # Surface the winning faction as a stable string id (e.g. "sheriff_team")
@@ -598,6 +616,23 @@ class GameService:
             true_roles = getattr(getattr(env, "state", None), "roles", None)
             if true_roles is not None:
                 final_roles = tuple(int(getattr(role, "value", role)) for role in true_roles)
+        # Item 1: for a SPECTATOR (all-AI) session there is no human whose
+        # hidden role must be protected, so reveal every living seat's true role
+        # DURING play. Rewrite the public observation's revealed_roles from the
+        # authoritative env.state.roles (the same guarded private read used for
+        # final_roles) and mark every seat REVEALED (visibility >= 2). This is a
+        # strict superset of the sheriff/eliminated reveal, so it never hides
+        # anything the public projection already showed. Human sessions never
+        # take this path, so their sheriff-only-until-terminal privacy is
+        # unchanged.
+        reveal_all_roles = bool(is_spectator)
+        if reveal_all_roles:
+            true_roles = getattr(getattr(env, "state", None), "roles", None)
+            if true_roles is not None and isinstance(observation, dict):
+                roles = [int(getattr(role, "value", role)) for role in true_roles]
+                observation["revealed_roles"] = list(roles)
+                # RoleVisibility.REVEALED == 2; keep every seat visible.
+                observation["role_visibility"] = [2 for _ in roles]
         return PublicGameState(
             session.handle.session_id,
             env.state.episode_id,
@@ -611,6 +646,7 @@ class GameService:
             winning_team,
             winners,
             final_roles,
+            reveal_all_roles,
         )
 
     def get_state(self, handle: SessionHandle | str) -> PublicGameState:
