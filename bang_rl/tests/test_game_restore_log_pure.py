@@ -67,6 +67,13 @@ class FakeService:
         return self.handle
 
     def get_state(self, handle):
+        # After a restore_session fork the controller calls get_state(handle) on
+        # the forked handle; return the forked state (carrying the cumulative
+        # event_sequence) so the on-screen render path can be asserted.
+        if getattr(handle, "session_id", None) == "forked":
+            forked = getattr(self, "_forked_state", None)
+            if forked is not None:
+                return forked
         return self.states[self._cursor]
 
     def step(self, handle, action=None):
@@ -80,7 +87,17 @@ class FakeService:
         self.closed.append(handle)
 
     def full_state(self, handle):
-        return {"episode_id": "e", "environment_step": self._cursor}
+        # Mirror the real GameService.get_full_state: env.state.to_dict() carries
+        # the CUMULATIVE event_log up to the current turn (the environment
+        # accumulates state.event_log + new events every step). Recording the
+        # cumulative prefix here lets a later restore_session rebuild a forked
+        # observation whose event_sequence spans game start .. that turn, exactly
+        # like EnvironmentState.from_dict + env.load_state does in production.
+        return {
+            "episode_id": "e",
+            "environment_step": self._cursor,
+            "event_log": [dict(event) for event in _EVENTS[: self._cursor + 1]],
+        }
 
     def export_agent_internals(self, handle):
         return {
@@ -91,7 +108,20 @@ class FakeService:
     def restore_session(self, state_dict, *, internals=None):
         self.restored.append(state_dict)
         self.restored_internals.append(internals)
+        # Fork a live session whose PUBLIC observation carries the cumulative
+        # event_sequence restored from the state dict's event_log (this is what
+        # the real GameService does: load_state(EnvironmentState.from_dict(...))
+        # then _state projects env.state.to_public(0).to_observation_dict(),
+        # whose event_sequence is the full public log up to the moment). This is
+        # the log the on-screen GameScreen._render feeds to GameLog.update_state.
+        events = tuple(dict(event) for event in state_dict.get("event_log", ()))
+        step = int(state_dict.get("environment_step", 0))
+        forked = _logged_state(step, step=step, events=events)
+        self._forked_state = forked
         return SimpleNamespace(session_id="forked")
+
+    def _forked_get_state(self):
+        return getattr(self, "_forked_state", None)
 
 
 def _logged_state(turn: int, *, step: int, events: tuple) -> Any:
@@ -181,6 +211,79 @@ def test_clicking_mid_row_preserves_earlier_log_history() -> None:
     # not shrink below the game start + first bang the user had already seen.
     assert after[0] == "game_started"
     assert len(after) >= 2
+
+
+def _snapshot_state_log_event_types(snapshot: Any) -> list[str]:
+    """Return the event_type list of the RENDERED (on-screen) log after resume.
+
+    GameScreen._render feeds ``snapshot.state`` to GameLog.update_state, which
+    reads ``observation['event_sequence']`` -- so this mirrors exactly what the
+    user sees on screen after a log-click resume, NOT the controller buffer the
+    other item-3 test checks.
+    """
+
+    state = snapshot.state
+    assert state is not None
+    observation = state.observation
+    events = observation.get("event_sequence") or ()
+    return [str(event.get("event_type")) for event in events]
+
+
+def test_resume_render_snapshot_preserves_full_prior_log() -> None:
+    # Item 3 (review issue 1): the ON-SCREEN log after a resume is rendered from
+    # the FORKED service state's observation event_sequence (what
+    # GameScreen._render feeds to GameLog.update_state), not from the controller
+    # buffer. Because the recorded per-turn full_state carries the CUMULATIVE
+    # event_log and restore_session forks a public observation from it, the
+    # rendered log after clicking a mid row still contains every event from game
+    # start through the clicked moment (the earlier entries are NOT deleted).
+    service = FakeService(_three_turn_states())
+    controller = GameSessionController(service)
+    _drive(controller)
+    # advance_ai=False so the returned snapshot IS the forked-moment state (no
+    # follow-on AI stepping mutates it) -- exactly what the screen renders first.
+    snapshot = controller.restore_to_moment(1, advance_ai=False)
+    rendered = _snapshot_state_log_event_types(snapshot)
+    # The forked observation's log spans the game start through the clicked
+    # (step-1) bang: the earlier history survives the resume on screen.
+    assert rendered[0] == "game_started"
+    assert "bang" in rendered
+    assert len(rendered) >= 2
+
+
+def test_recorded_full_state_carries_cumulative_event_log() -> None:
+    # Item 3 (review issue 1): each recorded authoritative state dict carries the
+    # CUMULATIVE event_log up to its turn, so restoring from ANY row rebuilds a
+    # forked observation whose event_sequence includes the earliest events. This
+    # is the invariant the on-screen-log preservation rests on.
+    controller = GameSessionController(FakeService(_three_turn_states()))
+    _drive(controller)
+    states = controller._replay_states
+    assert len(states) == 3
+    # The last recorded state's cumulative log holds every event; earlier ones
+    # hold a growing prefix, and each includes the game start.
+    for turn, state_dict in enumerate(states):
+        log = state_dict["event_log"]
+        assert log[0]["event_type"] == "game_started"
+        assert len(log) == turn + 1
+
+
+def test_internals_snapshot_is_no_op_for_public_only_line() -> None:
+    # Review issue 3: _record_internals_snapshot is self-enforcing -- for a
+    # public-only line (_save_full_replay False) it appends nothing, so the
+    # internals buffer stays empty in lock-step with _replay_states and AI
+    # internals never leak into a public/training line.
+    controller = GameSessionController(FakeService(_three_turn_states()))
+    controller.start(GameMode.HUMAN_RANDOM)
+    # Force the controller onto a public-only line and re-run the capture path.
+    controller._save_full_replay = False
+    controller._replay_internals = []
+    controller._replay_states = []
+    controller._record_internals_snapshot()
+    assert controller._replay_internals == []
+    controller._record_full_state()
+    assert controller._replay_states == []
+    assert controller._replay_internals == []
 
 
 def test_restore_passes_matching_internals_to_the_service() -> None:

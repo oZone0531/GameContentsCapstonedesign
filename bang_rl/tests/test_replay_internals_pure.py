@@ -81,6 +81,26 @@ def _internals() -> list:
     return [turn0, None, turn1]
 
 
+def _main_internals_captured() -> dict:
+    # A main-AI descriptor where an active inference stream buffer WAS captured.
+    return {
+        "health": [5, 5, 5, 5, 5],
+        "seats": {
+            "0": {
+                "kind": "main",
+                "captured": True,
+                "module_states": {"intent": [[0.1, 0.9]], "emotion": [[0.5]]},
+            }
+        },
+    }
+
+
+def _main_internals_empty() -> dict:
+    # A main-AI descriptor where get_state() returned None on every module, so
+    # nothing was captured (the honest best-effort no-op case).
+    return {"health": [5, 5, 5, 5, 5], "seats": {"0": {"kind": "main", "captured": False}}}
+
+
 def _common() -> dict:
     return dict(
         mode="human_dummy",
@@ -155,6 +175,37 @@ def test_replay_summary_has_internals_false_for_public_and_stateonly() -> None:
     assert replay_store.replay_summary(public)["has_internals"] is False
     state_only = replay_store.build_full_replay_record(states=_states(), **_common())
     assert replay_store.replay_summary(state_only)["has_internals"] is False
+
+
+# -- review issue 2: main-AI capture is best-effort (captured flag) ---------
+def test_main_ai_captured_flag_round_trips_true_when_buffer_present(tmp_path) -> None:
+    # A main-AI seat records captured=True only when an active inference stream
+    # buffer was present; the module_states survive the JSON round-trip so a
+    # resume can reapply them (set_state) on the forked main agent.
+    record = replay_store.build_full_replay_record(
+        states=[_states()[0]], internals=[_main_internals_captured()], **_common()
+    )
+    path = replay_store.save_replay(record, tmp_path)
+    loaded = replay_store.load_replay(path)
+    seat = loaded["internals"][0]["seats"]["0"]
+    assert seat["kind"] == "main"
+    assert seat["captured"] is True
+    assert seat["module_states"]["intent"] == [[0.1, 0.9]]
+
+
+def test_main_ai_captured_false_when_no_stream_buffer(tmp_path) -> None:
+    # The honest best-effort no-op: get_state() returned None for every module,
+    # so captured is False and there are no module_states to restore. A resume
+    # then simply keeps the freshly built main agent (documented limitation).
+    record = replay_store.build_full_replay_record(
+        states=[_states()[0]], internals=[_main_internals_empty()], **_common()
+    )
+    path = replay_store.save_replay(record, tmp_path)
+    loaded = replay_store.load_replay(path)
+    seat = loaded["internals"][0]["seats"]["0"]
+    assert seat["kind"] == "main"
+    assert seat["captured"] is False
+    assert "module_states" not in seat
 
 
 # -- item 5: a hovered mid / late row resolves to a full-board snapshot -----

@@ -144,9 +144,11 @@ class GameSessionController:
         # Item 4: authoritative per-turn AI-internals snapshots (every player's
         # HP plus each dummy / main AI's emotion state and current role belief /
         # guess), captured from the service (when it exposes them) so a moment
-        # can be restored with AI internals intact. Index-parallel to
-        # _replay_observations and _replay_states (one per turn; a None
-        # placeholder on export miss keeps the three buffers aligned).
+        # can be restored with AI internals. Dummy internals round-trip fully;
+        # the main AI is best-effort (only an active inference stream buffer is
+        # captured, when present). Index-parallel to _replay_observations and
+        # _replay_states (one per turn; a None placeholder on export miss keeps
+        # the three buffers aligned).
         self._replay_internals: list[dict[str, Any] | None] = []
         self._replay_saved = False
         # Item 5/6: human-played and AI-spectator games persist the FULL
@@ -499,8 +501,9 @@ class GameSessionController:
             # absent state. Fall back to the read-only review.
             return self.time_travel_to(moment)
         # Item 4: pass the matching per-turn AI internals (HP + emotion / belief)
-        # so the forked session continues with AI internals intact. Guard for a
-        # None placeholder / length mismatch exactly like the state buffer, and
+        # so the forked session continues with recorded AI internals (dummy
+        # seats in full; the main AI best-effort). Guard for a None placeholder /
+        # length mismatch exactly like the state buffer, and
         # only pass ``internals`` when the restorer accepts it (older restorers
         # take only the state dict), so a resume never fails on an extra kwarg.
         internals = self._moment_internals(index)
@@ -821,9 +824,11 @@ class GameSessionController:
 
         Item 4: for human / spectator games we persist every player's HP plus
         each dummy / main AI's internal emotion state and current role belief /
-        guess so a moment can later be restored with AI internals intact (and so
-        every player's HP is always present in the per-step record even when a
-        seat has no AI internals). The service exposes this via
+        guess so a moment can later be restored with AI internals (dummy seats
+        round-trip in full; the main AI is best-effort, capturing only an active
+        inference stream buffer when present), and so every player's HP is always
+        present in the per-step record even when a seat has no AI internals. The
+        service exposes this via
         ``export_agent_internals`` (added in this feature).
 
         INDEX-PARALLEL INVARIANT: this runs exactly once per appended
@@ -832,8 +837,22 @@ class GameSessionController:
         missing exporter, a raise, or a non-mapping result appends a ``None``
         placeholder rather than nothing, so a single transient miss can never
         permanently offset every later index. Never raises. Qt-free.
+
+        PRIVACY (self-enforcing): AI internals are FULL-replay-only data (they
+        carry hidden emotion / belief state), so this bails out entirely for a
+        public-only line rather than relying on its sole caller
+        (:meth:`_record_full_state`) having already returned. Because the buffer
+        is only ever consulted for full-replay saves / restores, doing nothing
+        for a public line is correct and keeps the privacy invariant local to
+        this method instead of caller-dependent. The index-parallel invariant is
+        preserved: for a full-replay line every miss still appends a ``None``
+        placeholder; for a public line the buffer stays empty in lock-step with
+        ``_replay_states`` (which is also a no-op there), so the three buffers
+        remain one-to-one on the only path (full-replay) that consults them.
         """
 
+        if not self._save_full_replay:
+            return
         internals: Any = None
         if self.handle is not None and self.service is not None:
             exporter = getattr(self.service, "export_agent_internals", None)

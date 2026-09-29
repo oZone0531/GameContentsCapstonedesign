@@ -677,10 +677,19 @@ class GameService:
         """Return a JSON-safe per-seat snapshot of each AI seat's internal state.
 
         Item 4: for human-played and AI-spectator games the GUI controller
-        records this per turn so a moment can later be resumed with each dummy /
-        main AI's emotion state and current role belief / guess intact (and so
-        every player's HP is always present in the per-step record even when a
-        seat has no AI internals).
+        records this per turn so a moment can later be resumed with AI internal
+        state, and so every player's HP is always present in the per-step record
+        even when a seat has no AI internals. The fidelity of that resume
+        differs by seat type: a DummyAgent seat round-trips its FULL internal
+        state (emotion module + role beliefs / guess via ``state_dict`` /
+        ``load_state_dict``), while the Main-AI seat is BEST-EFFORT only. The
+        Main-AI inference modules expose ``get_state`` / ``set_state`` for their
+        stream buffers, but ``get_state`` returns ``None`` when no active stream
+        buffer is held, so the main-AI descriptor records an active inference
+        stream buffer only when one is present (see the ``captured`` flag on the
+        main descriptor); it does NOT reconstruct the main AI's full inference
+        state. Do not read the "resume with AI internals" wording as a promise
+        that the main AI resumes byte-for-byte.
 
         The returned mapping has two top-level keys:
 
@@ -736,7 +745,13 @@ class GameService:
         if isinstance(agent, HumanAgent):
             return {"kind": "human"}
         # Main-AI (_ArtifactAgent): no single state_dict. Capture the inference
-        # modules' stateful stream buffers where available, best effort.
+        # modules' stateful stream buffers where available, best effort. This is
+        # genuinely opportunistic: an inference module's ``get_state()`` returns
+        # ``None`` when it holds no active stream buffer, so ``module_states``
+        # can legitimately be empty and a later restore is then a no-op for that
+        # seat. Record a ``captured`` boolean so a caller (and a resume) can tell
+        # whether any non-empty main-AI internal state was actually recorded,
+        # rather than silently assuming it was.
         artifact = getattr(agent, "artifact", None)
         if artifact is not None:
             descriptor: dict[str, Any] = {"kind": "main"}
@@ -751,6 +766,7 @@ class GameService:
                         value = None
                     if value is not None:
                         module_states[module_name] = GameService._json_safe_state(value)
+            descriptor["captured"] = bool(module_states)
             if module_states:
                 descriptor["module_states"] = module_states
             return descriptor
@@ -826,11 +842,13 @@ class GameService:
             mode=resolved_mode, config=system_config, seed=resolved_seed, artifact_path=artifact_path
         )
         agents = self._build_agents(options, system_config, seed_manager, artifact)
-        # Item 4: optionally restore each AI seat's internal state (dummy
-        # emotion / role belief, main-AI stream buffers) so a resumed session
-        # continues with AI internals intact rather than fresh agents. Every
-        # step here is defensive: a missing / malformed entry leaves that seat's
-        # freshly built agent untouched.
+        # Item 4: optionally restore each AI seat's internal state so a resumed
+        # session continues with recorded AI internals rather than fresh agents.
+        # A DummyAgent seat is restored in full (emotion / role belief); the
+        # Main-AI seat is best-effort (only an active inference stream buffer is
+        # reapplied, when one was captured). Every step here is defensive: a
+        # missing / malformed entry leaves that seat's freshly built agent
+        # untouched.
         if internals is not None:
             agents = self._restore_agent_internals(agents, internals)
         owned_loggers: tuple[StructuredLogger, ...] = ()
@@ -872,10 +890,14 @@ class GameService:
 
         Item 4: ``internals`` is the mapping produced by
         :meth:`export_agent_internals` (``{"health": [...], "seats": {seat: descriptor}}``).
-        Each DummyAgent seat is restored via ``load_state_dict`` and each main-AI
-        seat via its inference modules' ``set_state``, so a resumed session keeps
-        AI emotion / belief intact. Defensive: any per-seat failure is swallowed
-        so a resume never raises and simply keeps that seat's fresh agent.
+        A DummyAgent seat is restored in FULL via ``load_state_dict`` (emotion +
+        role belief / guess), so a resumed dummy keeps its internal state. A
+        main-AI seat is BEST-EFFORT: its inference modules' ``set_state`` is only
+        called for a captured active stream buffer, so when no buffer was
+        recorded (``get_state`` returned ``None`` at capture, i.e. ``captured``
+        is False / ``module_states`` absent) the main seat simply keeps its
+        freshly built agent. Defensive: any per-seat failure is swallowed so a
+        resume never raises and simply keeps that seat's fresh agent.
         """
 
         if not isinstance(internals, Mapping):

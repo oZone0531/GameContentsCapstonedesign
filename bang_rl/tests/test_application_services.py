@@ -264,6 +264,52 @@ def test_export_agent_internals_random_seats_are_minimal() -> None:
     game.close_session(handle)
 
 
+class _StubInferenceModule:
+    """Minimal main-AI inference module exposing get_state (item-4 review)."""
+
+    def __init__(self, state):
+        self._state = state
+
+    def get_state(self):
+        return self._state
+
+
+class _StubArtifact:
+    def __init__(self, intent_state, emotion_state):
+        self.intent = _StubInferenceModule(intent_state)
+        self.emotion = _StubInferenceModule(emotion_state)
+
+
+class _StubArtifactAgent:
+    def __init__(self, artifact):
+        self.artifact = artifact
+
+
+def test_main_ai_descriptor_records_captured_true_when_buffer_present() -> None:
+    # Review issue 2: the main-AI descriptor is best-effort. When the inference
+    # modules hold an active stream buffer, captured is True and module_states
+    # carries the JSON-safe buffers.
+    agent = _StubArtifactAgent(
+        _StubArtifact(intent_state=np.asarray([0.1, 0.9]), emotion_state=[[0.5]])
+    )
+    descriptor = GameService._agent_internal_descriptor(agent)
+    assert descriptor["kind"] == "main"
+    assert descriptor["captured"] is True
+    assert descriptor["module_states"]["intent"] == [0.1, 0.9]
+    assert descriptor["module_states"]["emotion"] == [[0.5]]
+
+
+def test_main_ai_descriptor_records_captured_false_when_no_buffer() -> None:
+    # The honest no-op case: get_state() returns None on every module, so
+    # captured is False and there are no module_states (documented limitation:
+    # a resume then keeps the freshly built main agent).
+    agent = _StubArtifactAgent(_StubArtifact(intent_state=None, emotion_state=None))
+    descriptor = GameService._agent_internal_descriptor(agent)
+    assert descriptor["kind"] == "main"
+    assert descriptor["captured"] is False
+    assert "module_states" not in descriptor
+
+
 def test_restore_session_with_internals_keeps_dummy_state() -> None:
     # Item 4: restoring with a captured internals mapping resumes each dummy
     # seat's serialized state rather than a fresh agent. The restore is
