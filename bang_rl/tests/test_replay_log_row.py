@@ -108,3 +108,85 @@ def test_empty_model_full_events_is_empty() -> None:
     model = ReplayModel([])
     assert model.full_events() == ()
     assert model.index_for_log_row(0) is None
+
+
+def _observations_with_list_steps() -> list[dict]:
+    """Observations whose environment_step is a 1-element list (item 9 bug).
+
+    The public projection stores scalar fields as single-element arrays, so the
+    recorded observations carry ``environment_step`` as ``[n]``. The old
+    ``_int_or_none`` returned ``None`` for those, collapsing every snapshot to
+    step 0 (no visible log, no playback). The fix unwraps a 1-element sequence.
+    """
+
+    def obs(step: int, current: int, events: list[dict]) -> dict:
+        return {
+            "healths": [5, 5, 5, 5, 5],
+            "alive": [True] * 5,
+            "current_player_idx": [current],
+            "environment_step": [step],  # 1-element list, NOT a scalar
+            "event_sequence": [dict(event) for event in events],
+        }
+
+    events = [
+        {"environment_step": [0], "event_type": "game_started"},
+        {"environment_step": [1], "event_type": "bang", "actor_idx": 0, "target_idx": 1},
+        {"environment_step": [2], "event_type": "bang", "actor_idx": 1, "target_idx": 0},
+    ]
+    return [
+        obs(0, 0, events[:1]),
+        obs(1, 1, events[:2]),
+        obs(2, 2, events[:3]),
+    ]
+
+
+def test_list_valued_steps_do_not_collapse_snapshots_to_step_zero() -> None:
+    # Regression for item 9: a saved public replay whose steps are 1-element
+    # lists must still reconstruct into distinct per-turn snapshots with a
+    # growing cumulative log and a working row -> snapshot mapping.
+    model = ReplayModel(_observations_with_list_steps())
+    assert len(model) == 3
+    # Snapshots resolved distinct steps (not all 0).
+    assert [snap.environment_step for snap in model.snapshots] == [0, 1, 2]
+    # The cumulative log grows and full_events is the complete log.
+    assert len(model.full_events()) == 3
+    # Each visible log row maps to a full-board snapshot at that moment.
+    for row in range(len(model.full_events())):
+        index = model.index_for_log_row(row)
+        assert index is not None
+        snapshot = model.snapshot_at(index)
+        assert snapshot is not None
+        # Item 4: a hovered moment renders a COMPLETE board.
+        assert "healths" in snapshot.observation
+        assert "alive" in snapshot.observation
+
+
+def test_board_keys_carry_forward_when_a_later_observation_omits_them() -> None:
+    # Item 4: if a recorded observation omits board keys, the snapshot inherits
+    # the last-known value so a hovered moment renders a full board, not empty.
+    observations = [
+        {
+            "healths": [5, 5, 5, 5, 5],
+            "alive": [True] * 5,
+            "current_player_idx": [0],
+            "environment_step": [0],
+            "event_sequence": [{"environment_step": [0], "event_type": "game_started"}],
+        },
+        {
+            # This turn omits healths/alive entirely.
+            "current_player_idx": [1],
+            "environment_step": [1],
+            "event_sequence": [
+                {"environment_step": [0], "event_type": "game_started"},
+                {"environment_step": [1], "event_type": "bang"},
+            ],
+        },
+    ]
+    model = ReplayModel(observations)
+    second = model.snapshot_at(1)
+    assert second is not None
+    # The board keys carried forward from the first turn.
+    assert tuple(second.observation["healths"]) == (5, 5, 5, 5, 5)
+    assert tuple(second.observation["alive"]) == (True,) * 5
+    # But the per-turn identity keys reflect THIS turn, not the previous one.
+    assert second.environment_step == 1

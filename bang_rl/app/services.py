@@ -497,8 +497,19 @@ class GameService:
             "human_vs_dummy": "human_dummy",
             "human_vs_main": "human_main_dummy",
             "human_main": "human_main_dummy",
+            # Item 6: all-AI spectator modes and their GUI-string variants.
+            "random_ai_5": "random_five",
+            "random5": "random_five",
+            "dummy_ai_5": "dummy_five",
+            "dummy5": "dummy_five",
+            "main_1_dummy_4": "main_one_dummy_four",
         }
         return aliases.get(normalized, normalized)
+
+    # Modes the human plays a seat in (seat 0 is a HumanAgent).
+    _HUMAN_MODES = frozenset({"human_random", "human_dummy", "human_main_dummy"})
+    # Item 6: all-AI spectator modes; every seat is AI-driven.
+    _SPECTATOR_MODES = frozenset({"random_five", "dummy_five", "main_one_dummy_four"})
 
     def _build_agents(self, options: SessionConfig, config: SystemConfig, seeds: SeedManager, artifact: Any) -> tuple[Any, ...]:
         if options.agents is not None:
@@ -510,22 +521,43 @@ class GameService:
                 raise ValueError("agents must provide exactly five non-null player agents")
             return values
         mode = self._normalize_mode(options.mode)
-        if mode not in {"human_random", "human_dummy", "human_main_dummy"}:
-            raise ValueError("unsupported game mode; use human_random, human_dummy, or human_main_dummy")
-        values: list[Any] = [HumanAgent("player_0", seed=seeds.agent_seed("player_0"))]
+        if mode not in (self._HUMAN_MODES | self._SPECTATOR_MODES):
+            raise ValueError(
+                "unsupported game mode; use human_random, human_dummy, human_main_dummy, "
+                "random_five, dummy_five, or main_one_dummy_four"
+            )
+
+        def _dummy(index: int) -> Any:
+            return DummyAgent(
+                f"player_{index}", seed=seeds.agent_seed(f"player_{index}"), player_idx=index,
+                policy_config=config.preset.intent_policy,
+                emotion_config=config.preset.emotion,
+                action_mode=options.action_mode,
+            )
+
+        # Item 6: all-AI spectator compositions -- every one of the five seats
+        # is AI-driven so the human only watches.
+        if mode == "random_five":
+            return tuple(
+                RandomAgent(f"player_{index}", seed=seeds.agent_seed(f"player_{index}")) for index in range(5)
+            )
+        if mode == "dummy_five":
+            return tuple(_dummy(index) for index in range(5))
+        if mode == "main_one_dummy_four":
+            if artifact is None:
+                raise ValueError("main_one_dummy_four mode requires an inference artifact")
+            values: list[Any] = [_ArtifactAgent(artifact, "player_0", seeds.agent_seed("player_0"))]
+            values.extend(_dummy(index) for index in range(1, 5))
+            return tuple(values)
+
+        # Human-played compositions: seat 0 is the human, seats 1..4 are AI.
+        values = [HumanAgent("player_0", seed=seeds.agent_seed("player_0"))]
         for index in range(1, 5):
             agent_seed = seeds.agent_seed(f"player_{index}")
             if mode == "human_random":
                 values.append(RandomAgent(f"player_{index}", seed=agent_seed))
             elif mode == "human_dummy" or (mode == "human_main_dummy" and index != 1):
-                values.append(
-                    DummyAgent(
-                        f"player_{index}", seed=agent_seed, player_idx=index,
-                        policy_config=config.preset.intent_policy,
-                        emotion_config=config.preset.emotion,
-                        action_mode=options.action_mode,
-                    )
-                )
+                values.append(_dummy(index))
             else:
                 if artifact is None:
                     raise ValueError("human_main_dummy mode requires an inference artifact")
@@ -583,6 +615,98 @@ class GameService:
 
     def get_state(self, handle: SessionHandle | str) -> PublicGameState:
         return self._state(self._session(handle))
+
+    def get_full_state(self, handle: SessionHandle | str) -> dict[str, Any]:
+        """Return the authoritative :class:`EnvironmentState` as a JSON-safe dict.
+
+        Item 5/6: the GUI controller records this per turn for human and
+        AI-spectator games so a moment can later be restored to a live,
+        continuable session (rewind-and-continue). Unlike :meth:`get_state`
+        this intentionally exposes the full reproduction state (hidden roles,
+        deck, seat order); it is therefore ONLY persisted into the ``full``
+        replay format for human-played and spectator games, never into the
+        public training-safe format.
+        """
+
+        session = self._session(handle)
+        return _json_value(session.environment.state.to_dict())
+
+    # The controller probes these method names for the authoritative state
+    # export; expose the same behaviour under each so either name works.
+    full_state = get_full_state
+    authoritative_state = get_full_state
+    export_state = get_full_state
+
+    def restore_session(
+        self,
+        state_dict: Mapping[str, Any],
+        *,
+        mode: str | None = None,
+        seed: int | None = None,
+        artifact_path: str | Path | None = None,
+        config: SystemConfig | Mapping[str, Any] | None = None,
+    ) -> SessionHandle:
+        """Rebuild a live, continuable session from an authoritative state dict.
+
+        Item 5: constructs a fresh :class:`BangEnvironment`, applies
+        ``load_state(EnvironmentState.from_dict(state_dict))`` so the game
+        resumes from exactly the recorded moment, rebuilds the agents for the
+        (optional) mode, registers the session, and returns a
+        :class:`SessionHandle`. When ``mode`` is omitted it defaults to the
+        human-vs-random composition so the human can continue playing seat 0.
+        The GUI controller calls this with only the state dict, so every keyword
+        is optional. Privacy is unchanged: the returned handle still projects
+        public state via :meth:`get_state` (``final_roles`` only at terminal).
+        """
+
+        from bang_rl.env import EnvironmentState
+
+        restored_state = EnvironmentState.from_dict(dict(state_dict))
+        system_config = _mapping_config(config)
+        resolved_seed = restored_state.seed if seed is None else int(seed)
+        resolved_mode = self._normalize_mode(mode) if mode is not None else "human_random"
+        snapshot = TrainingJob.start(system_config, mode="game", seed=resolved_seed).snapshot
+        seed_manager = SeedManager(resolved_seed, snapshot=snapshot)
+        seed_manager.seed_all()
+        session_id = _id("session")
+        episode_id = restored_state.episode_id or f"{session_id}-episode-0"
+        artifact = None
+        if artifact_path is not None:
+            artifact = self.compatibility_service.load(artifact_path, config=system_config)
+        options = SessionConfig(
+            mode=resolved_mode, config=system_config, seed=resolved_seed, artifact_path=artifact_path
+        )
+        agents = self._build_agents(options, system_config, seed_manager, artifact)
+        owned_loggers: tuple[StructuredLogger, ...] = ()
+        if self.logger is None:
+            streams = [io.StringIO() for _ in range(4)]
+            env_logger = StructuredLogger(LogChannel.INVALID_ACTION, stream=streams[0], component="app-environment")
+            event_logger = StructuredLogger(LogChannel.EPISODE_EVENTS, stream=streams[1], component="app-episode-events")
+            termination_logger = StructuredLogger(LogChannel.TERMINATION, stream=streams[2], component="app-termination")
+            diagnostics_logger = StructuredLogger(LogChannel.PRIVILEGED_DIAGNOSTICS, stream=streams[3], component="app-diagnostics")
+            owned_loggers = (env_logger, event_logger, termination_logger, diagnostics_logger)
+        else:
+            env_logger = event_logger = termination_logger = diagnostics_logger = self.logger
+        environment = BangEnvironment(
+            episode_id=episode_id,
+            seed=seed_manager.environment_seed(episode_id),
+            config=system_config.env,
+            logger=env_logger,
+            event_logger=event_logger,
+            termination_logger=termination_logger,
+            diagnostics_logger=diagnostics_logger,
+            diagnostics_metadata={"run_id": session_id, "job_id": snapshot.job_id, "config_version": system_config.config_version},
+        )
+        # Apply the authoritative recorded state so play resumes from the moment.
+        environment.load_state(restored_state)
+        handle = SessionHandle(session_id, resolved_mode, resolved_seed, snapshot)
+        with self._lock:
+            self._sessions[session_id] = _Session(handle, system_config, environment, agents, artifact, owned_loggers)
+        self._log("game_session_restored", session_id=session_id, mode=handle.mode, seed=resolved_seed, job_id=snapshot.job_id)
+        return handle
+
+    # The controller also probes ``create_session_from_state``; expose the same.
+    create_session_from_state = restore_session
 
     def step(self, handle: SessionHandle | str, action: Any | None = None) -> StepResult:
         session = self._session(handle)

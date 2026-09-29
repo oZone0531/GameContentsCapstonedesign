@@ -34,6 +34,10 @@ _STRINGS: dict[str, dict[str, str]] = {
     "mode.human_random": {"en": "Human 1 vs Random AI 4", "ko": "사람 1 vs 랜덤 AI 4"},
     "mode.human_dummy": {"en": "Human 1 vs Dummy AI 4", "ko": "사람 1 vs 더미 AI 4"},
     "mode.human_main_dummy": {"en": "Human 1 vs Main AI 1 + Dummy AI 3", "ko": "사람 1 vs 메인 AI 1 + 더미 AI 3"},
+    # Item 6: all-AI spectator modes.
+    "mode.random_five": {"en": "Random AI x5", "ko": "랜덤 AI 5명"},
+    "mode.dummy_five": {"en": "Dummy AI x5", "ko": "더미 AI 5명"},
+    "mode.main_one_dummy_four": {"en": "Main AI 1 vs Dummy AI 4", "ko": "메인 AI 1 vs 더미 AI 4"},
 
     # Game screen
     "game.title": {"en": "Bang RL — Game", "ko": "Bang RL — 게임"},
@@ -99,6 +103,18 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Reviewing step {step} of the finished game (read-only).",
         "ko": "종료된 게임의 스텝 {step} 시점을 보는 중입니다 (읽기 전용).",
     },
+    "game.spectator_no_actions": {
+        "en": "Spectator mode: you are watching the AI play and cannot take actions.",
+        "ko": "관전 모드: AI의 플레이를 지켜보는 중이며 조작할 수 없습니다.",
+    },
+    # Item 6: spectator hint shown in place of the click hint.
+    "game.spectating": {
+        "en": "Spectating - AI players only",
+        "ko": "관전 중 - AI만 플레이합니다",
+    },
+    # Item 7: buttons shown under the winner banner when a game is over.
+    "game.restart": {"en": "Restart", "ko": "재시작"},
+    "game.return_menu": {"en": "Return to menu", "ko": "메뉴로 돌아가기"},
 
     # Winning factions (game-over message)
     "faction.sheriff_team": {"en": "Sheriff team", "ko": "보안관 팀"},
@@ -438,6 +454,35 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Recorded episode (*.json *.jsonl)",
         "ko": "기록된 에피소드 (*.json *.jsonl)",
     },
+    # Item 10: rename / delete a saved replay from the browser.
+    "replay.rename": {"en": "Rename", "ko": "이름 바꾸기"},
+    "replay.delete": {"en": "Delete", "ko": "삭제"},
+    "replay.rename_prompt": {
+        "en": "Enter a new name for this replay:",
+        "ko": "이 리플레이의 새 이름을 입력하세요:",
+    },
+    "replay.rename_title": {"en": "Rename replay", "ko": "리플레이 이름 바꾸기"},
+    "replay.delete_confirm": {
+        "en": "Delete this replay permanently? This cannot be undone.",
+        "ko": "이 리플레이를 영구적으로 삭제하시겠습니까? 되돌릴 수 없습니다.",
+    },
+    "replay.delete_title": {"en": "Delete replay", "ko": "리플레이 삭제"},
+    "replay.select_first": {
+        "en": "Select a replay in the list first.",
+        "ko": "먼저 목록에서 리플레이를 선택하세요.",
+    },
+    # Item 5: continue a live game from the chosen full-state moment.
+    "replay.continue_from_here": {
+        "en": "Continue from here",
+        "ko": "여기서부터 이어하기",
+    },
+    "replay.continue_public_disabled": {
+        "en": "Only full replays can be resumed. Public (training) replays store observations only.",
+        "ko": "전체 상태 리플레이만 이어서 플레이할 수 있습니다. 공개(학습용) 리플레이는 관측 정보만 저장합니다.",
+    },
+    # Item 5: browser labels for the two replay formats.
+    "replay.format_public": {"en": "Public", "ko": "공개"},
+    "replay.format_full": {"en": "Full state", "ko": "전체 상태"},
 
     # Model selection dialog
     "model.title": {"en": "Select inference model", "ko": "추론 모델 선택"},

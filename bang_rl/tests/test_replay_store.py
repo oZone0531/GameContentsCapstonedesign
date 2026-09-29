@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from bang_rl.gui import replay_store
 from bang_rl.gui.replay import ReplayModel
 
@@ -127,6 +129,98 @@ def test_build_handles_truncated_game() -> None:
     assert record["human_won"] is False
 
 
+def test_public_record_is_tagged_public_with_no_states() -> None:
+    record = replay_store.build_replay_record(
+        mode="human_random",
+        mode_label="Human 1 vs Random AI 4",
+        ai_versions={},
+        winning_team="sheriff_team",
+        winners=[0],
+        human_player=0,
+        seed=7,
+        observations=_observations(),
+        terminated=True,
+    )
+    assert record["replay_format"] == "public"
+    assert "states" not in record
+
+
+def _states() -> list[dict]:
+    """Three authoritative EnvironmentState-style dicts (one per turn)."""
+
+    return [
+        {
+            "episode_id": "e",
+            "seed": 7,
+            "roles": [0, 1, 2, 3, 4],
+            "health": [5, 4, 4, 4, 4],
+            "alive": [True, True, True, True, True],
+            "agent_selection": 0,
+            "environment_step": step,
+        }
+        for step in range(3)
+    ]
+
+
+def test_build_full_replay_record_carries_states_and_public_observations() -> None:
+    record = replay_store.build_full_replay_record(
+        mode="dummy_five",
+        mode_label="Dummy AI x5",
+        ai_versions={str(seat): "dummy" for seat in range(5)},
+        winning_team="sheriff_team",
+        winners=[0],
+        human_player=0,
+        seed=7,
+        states=_states(),
+        observations=_observations(),
+        terminated=True,
+        truncated=False,
+    )
+    assert record["replay_format"] == "full"
+    assert record["seed"] == 7
+    assert len(record["states"]) == 3
+    # A full record ALSO carries the public observations so it renders like a
+    # public replay on the board/log.
+    assert len(record["observations"]) == 3
+    model = ReplayModel(record)
+    assert len(model) == 3
+
+
+def test_full_record_round_trips_and_summary_reports_format(tmp_path) -> None:
+    record = replay_store.build_full_replay_record(
+        mode="main_one_dummy_four",
+        mode_label="Main AI 1 vs Dummy AI 4",
+        ai_versions={"0": {"kind": "main"}},
+        winning_team="outlaw_team",
+        winners=[1],
+        human_player=0,
+        seed=3,
+        states=_states(),
+        observations=_observations(),
+        terminated=True,
+    )
+    path = replay_store.save_replay(record, tmp_path)
+    loaded = replay_store.load_replay(path)
+    assert loaded == record
+    summary = replay_store.replay_summary(loaded)
+    assert summary["replay_format"] == "full"
+    assert summary["has_full_state"] is True
+    # A public record's summary reports 'public'.
+    public = replay_store.build_replay_record(
+        mode="human_random",
+        mode_label="Human 1 vs Random AI 4",
+        ai_versions={},
+        winning_team=None,
+        winners=[],
+        human_player=0,
+        seed=1,
+        observations=_observations(),
+        terminated=True,
+    )
+    assert replay_store.replay_summary(public)["replay_format"] == "public"
+    assert replay_store.replay_summary(public)["has_full_state"] is False
+
+
 def test_save_and_load_round_trip(tmp_path) -> None:
     record = replay_store.build_replay_record(
         mode="human_random",
@@ -169,6 +263,62 @@ def test_list_replays_newest_first(tmp_path) -> None:
 
 def test_list_replays_missing_directory_returns_empty(tmp_path) -> None:
     assert replay_store.list_replays(tmp_path / "does-not-exist") == []
+
+
+def test_rename_replay_preserves_suffix_and_sanitizes(tmp_path) -> None:
+    record = replay_store.build_replay_record(
+        mode="human_random",
+        mode_label="Human 1 vs Random AI 4",
+        ai_versions={},
+        winning_team=None,
+        winners=[],
+        human_player=0,
+        seed=None,
+        observations=_observations(),
+        terminated=True,
+    )
+    path = replay_store.save_replay(record, tmp_path, filename="replay-orig.json")
+    # A name without a suffix keeps the source's .json suffix; spaces become _.
+    renamed = replay_store.rename_replay(path, "My Cool Game")
+    assert renamed.name == "My_Cool_Game.json"
+    assert renamed.parent == tmp_path
+    assert renamed.exists()
+    assert not path.exists()
+    # A supplied .jsonl suffix is preserved as-is.
+    renamed2 = replay_store.rename_replay(renamed, "next.jsonl")
+    assert renamed2.name == "next.jsonl"
+
+
+def test_rename_replay_defends_against_path_traversal(tmp_path) -> None:
+    path = replay_store.save_replay({}, tmp_path, filename="replay-x.json")
+    result = replay_store.rename_replay(path, "../../escape")
+    # The directory component is stripped so the file stays inside tmp_path.
+    assert result.parent == tmp_path
+    assert result.name == "escape.json"
+
+
+def test_rename_replay_rejects_existing_target(tmp_path) -> None:
+    a = replay_store.save_replay({}, tmp_path, filename="a.json")
+    replay_store.save_replay({}, tmp_path, filename="b.json")
+    with pytest.raises(FileExistsError):
+        replay_store.rename_replay(a, "b.json")
+
+
+def test_rename_replay_missing_source_raises(tmp_path) -> None:
+    with pytest.raises(FileNotFoundError):
+        replay_store.rename_replay(tmp_path / "missing.json", "new.json")
+
+
+def test_delete_replay_removes_file_and_tolerates_missing(tmp_path) -> None:
+    path = replay_store.save_replay({}, tmp_path, filename="doomed.json")
+    assert path.exists()
+    replay_store.delete_replay(path)
+    assert not path.exists()
+    # A second delete (missing file) is a tolerated no-op.
+    replay_store.delete_replay(path)
+    # Deleting a directory is refused (only regular files are removed).
+    replay_store.delete_replay(tmp_path)
+    assert tmp_path.exists()
 
 
 def test_replay_store_i18n_keys_exist_in_both_languages() -> None:

@@ -36,11 +36,13 @@ try:  # pragma: no cover - availability depends on the host environment
         QGroupBox,
         QHBoxLayout,
         QHeaderView,
+        QInputDialog,
         QLabel,
         QLineEdit,
         QListWidget,
         QListWidgetItem,
         QMainWindow,
+        QMessageBox,
         QPlainTextEdit,
         QProgressBar,
         QPushButton,
@@ -66,8 +68,9 @@ except ImportError as exc:  # pragma: no cover - exercised when Qt is absent
     QBrush = QColor = QFontMetrics = QPainter = QPen = QPolygonF = None
     QComboBox = None
     QCheckBox = QDialog = QDialogButtonBox = QDoubleSpinBox = QFileDialog = None
-    QFormLayout = QGroupBox = QHBoxLayout = QHeaderView = QLabel = QLineEdit = None
-    QListWidget = QListWidgetItem = QMainWindow = QPlainTextEdit = None
+    QFormLayout = QGroupBox = QHBoxLayout = QHeaderView = QInputDialog = None
+    QLabel = QLineEdit = None
+    QListWidget = QListWidgetItem = QMainWindow = QMessageBox = QPlainTextEdit = None
     QProgressBar = QPushButton = QScrollArea = QSlider = QSpinBox = None
     QStackedWidget = QTableWidget = QTableWidgetItem = QTabWidget = None
     QVBoxLayout = QWidget = None
@@ -101,11 +104,13 @@ __all__ = [
     "QGroupBox",
     "QHBoxLayout",
     "QHeaderView",
+    "QInputDialog",
     "QLabel",
     "QLineEdit",
     "QListWidget",
     "QListWidgetItem",
     "QMainWindow",
+    "QMessageBox",
     "QPainter",
     "QPen",
     "QPlainTextEdit",

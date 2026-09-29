@@ -165,3 +165,80 @@ def test_application_service_has_no_gui_imports() -> None:
     text = source.read_text(encoding="utf-8").lower()
     assert "pyqt" not in text
     assert "pyqtgraph" not in text
+
+
+# --- FEAT-003: spectator all-AI modes + full-state export/restore -------------
+
+
+def test_spectator_modes_build_all_five_ai_seats() -> None:
+    from bang_rl.agents import DummyAgent, HumanAgent, RandomAgent
+
+    game = GameService()
+    random_handle = game.create_session(SessionConfig(mode="random_five", seed=5))
+    random_session = game._session(random_handle)
+    assert len(random_session.agents) == 5
+    assert all(isinstance(agent, RandomAgent) for agent in random_session.agents)
+    # No seat is a human in a spectator game.
+    assert not any(isinstance(agent, HumanAgent) for agent in random_session.agents)
+    game.close_session(random_handle)
+
+    dummy_handle = game.create_session(SessionConfig(mode="dummy_five", seed=5))
+    dummy_session = game._session(dummy_handle)
+    assert all(isinstance(agent, DummyAgent) for agent in dummy_session.agents)
+    game.close_session(dummy_handle)
+
+
+def test_main_one_dummy_four_requires_artifact() -> None:
+    game = GameService()
+    with pytest.raises(ValueError, match="artifact"):
+        game.create_session(SessionConfig(mode="main_one_dummy_four", seed=5))
+
+
+def test_mode_aliases_normalize_to_spectator_modes() -> None:
+    assert GameService._normalize_mode("random_ai_5") == "random_five"
+    assert GameService._normalize_mode("dummy_ai_5") == "dummy_five"
+    assert GameService._normalize_mode("main_1_dummy_4") == "main_one_dummy_four"
+    # The canonical enum values normalize to themselves.
+    assert GameService._normalize_mode("random_five") == "random_five"
+
+
+def test_get_full_state_and_restore_session_round_trip() -> None:
+    config = SystemConfig(seed=11)
+    game = GameService()
+    handle = game.create_session(SessionConfig(config=config, agents=_pass_agents(), seed=11))
+    # Advance a couple of turns so the state is mid-game.
+    game.step(handle)
+    game.step(handle)
+    full = game.get_full_state(handle)
+    assert isinstance(full, dict)
+    assert "agent_selection" in full and "environment_step" in full
+    live_state = game.get_state(handle)
+
+    # Restore a NEW live session from the exported authoritative state.
+    restored = game.restore_session(full, mode="human_random", seed=11, config=config)
+    restored_state = game.get_state(restored)
+    # The restored session resumes at the same environment step / current turn.
+    assert restored_state.environment_step == live_state.environment_step
+    assert restored_state.current_player == live_state.current_player
+    # Restore is also reachable under the create_session_from_state alias with a
+    # single positional argument (the controller calls it this way).
+    forked = game.create_session_from_state(full)
+    assert game.get_state(forked).environment_step == live_state.environment_step
+    game.close_session(handle)
+    game.close_session(restored)
+    game.close_session(forked)
+
+
+def test_restored_session_keeps_public_privacy_during_play() -> None:
+    config = SystemConfig(seed=13)
+    game = GameService()
+    handle = game.create_session(SessionConfig(config=config, agents=_pass_agents(), seed=13))
+    game.step(handle)
+    full = game.get_full_state(handle)
+    restored = game.restore_session(full, config=config)
+    state = game.get_state(restored)
+    # Public projection stays private mid-game: no living roles are leaked.
+    assert "roles" not in state.observation
+    assert state.final_roles == ()
+    game.close_session(handle)
+    game.close_session(restored)

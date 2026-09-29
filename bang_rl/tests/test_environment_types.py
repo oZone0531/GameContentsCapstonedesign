@@ -205,3 +205,15 @@ def test_public_and_privileged_state_round_trip() -> None:
     assert EnvironmentState.from_dict(state.to_dict()) == state
     public = state.to_public(viewer_idx=state.agent_selection)
     assert type(public).from_dict(public.to_dict()) == public
+
+
+def test_initial_state_always_starts_on_the_sheriff_seat() -> None:
+    # Item 2: the game must always start on the Sheriff's seat (then proceed
+    # clockwise via the environment's ascending-seat advance).
+    for seed in (0, 1, 7, 42, 99, 314159, 271828):
+        state = EnvironmentState.initial("turn-order", seed)
+        sheriff_seat = state.roles.index(Role.SHERIFF)
+        assert state.agent_selection == sheriff_seat
+        assert state.agent_selection == state.sheriff_idx
+        # The canonical turn order is preserved (ascending == clockwise).
+        assert state.fixed_turn_order == (0, 1, 2, 3, 4)

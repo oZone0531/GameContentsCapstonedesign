@@ -86,8 +86,20 @@ def _as_mapping(episode: Any) -> Mapping[str, Any] | None:
 
 
 def _int_or_none(value: Any) -> int | None:
+    # Recorded observations frequently carry scalar-like fields (e.g.
+    # ``environment_step``) as a 1-element list/tuple such as ``[3]`` because
+    # the public projection stores them as single-element arrays. Unwrap a
+    # single-element sequence before ``int()`` (mirroring ``_current_player``)
+    # so those values are read as scalars instead of collapsing to ``None`` and
+    # dragging every snapshot back to step 0 (item 9 no-log/no-playback bug).
     if value is None:
         return None
+    if isinstance(value, (list, tuple)):
+        if len(value) != 1:
+            return None
+        value = value[0]
+        if value is None:
+            return None
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -266,12 +278,34 @@ class ReplayModel:
                     longest = sequence
             aggregated = list(longest)
         snapshots: list[ReplaySnapshot] = []
+        # Carry the last-known board keys forward (item 4): a hovered/clicked
+        # moment must render a COMPLETE board even when an individual recorded
+        # observation omitted, say, healths/alive. ``carried`` accumulates the
+        # most recent value seen for each board key so an early snapshot missing
+        # a key inherits the previous turn's value instead of rendering empty.
+        # Per-turn identity keys must NOT be inherited: they describe the
+        # specific turn, not the board contents, so a later turn that omits them
+        # falls back to its own turn index rather than an earlier value.
+        carry_forward = tuple(
+            key
+            for key in _OBSERVATION_KEYS
+            if key not in ("environment_step", "current_player_idx")
+        )
+        carried: dict[str, Any] = {}
         for turn, observation in enumerate(observations):
             if not isinstance(observation, Mapping):
                 continue
+            merged = dict(carried)
+            # Preserve non-board keys the snapshot builder reads (action_mask,
+            # terminated/truncated) straight from the raw observation.
+            for key, value in observation.items():
+                merged[key] = value
             snapshots.append(
-                cls._snapshot_from_observation(observation, turn=turn, events=aggregated)
+                cls._snapshot_from_observation(merged, turn=turn, events=aggregated)
             )
+            for key in carry_forward:
+                if key in observation:
+                    carried[key] = observation[key]
         return snapshots
 
     @classmethod

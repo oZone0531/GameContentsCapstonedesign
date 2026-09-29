@@ -124,13 +124,17 @@ class EnvironmentState:
     @classmethod
     def initial(cls, episode_id: str, seed: int) -> "EnvironmentState":
         roles = assign_roles(seed)
+        # ITEM 2: the game must always start on the Sheriff's seat and then
+        # proceed clockwise. _next_alive() in environment.py advances by
+        # (start + offset) % PLAYER_COUNT over ascending seats (== clockwise),
+        # so starting on the Sheriff yields Sheriff-first, clockwise play.
         return cls(
             episode_id=str(episode_id),
             seed=int(seed),
             roles=roles,
             health=initial_health(roles),
             alive=tuple(True for _ in range(PLAYER_COUNT)),
-            agent_selection=0,
+            agent_selection=roles.index(Role.SHERIFF),
         )
 
     # -- privileged serialization -----------------------------------------

@@ -96,6 +96,13 @@ Environment and agent code communicate through canonical Observation/Action data
 - MainAgent learning counts Environment Steps and MainAgent transitions separately. GUI progress is MainAgent transitions; PPO updates are a third unit.
 - Canonical Phase 1 data is Parquet. Phase 2/3 normal-only tensor caches are derived NPZ shards. Truncated episodes remain in the canonical dataset and logs but are excluded from ML caches and PPO updates. Splits are episode-level 80/10/10 by default.
 - EmotionInference predicts continuous `[0,1]` values with Sigmoid and MSE against the DummyAgent’s behavior-immediately-before-action state. Outputs are displayed as “estimated emotion”; they are not claims about human psychology.
+- Turn order always starts with the Sheriff and proceeds clockwise across the seats regardless of seat index.
+
+### GUI game modes and replay formats
+
+The optional GUI offers human-play modes (Human vs Random/Dummy/Main AI) plus three spectator modes where all five seats are AI and the human only watches: Random AI x5, Dummy AI x5, and Main AI 1 vs Dummy AI 4. In a spectator mode the human cannot BANG or PASS; only the AI-turn-speed slider and the log view (including hover-to-inspect) are available.
+
+Replays are stored in two formats. The public format keeps observation-only records for AI-training datasets and never exposes living non-sheriff, non-self roles. The full format is written for human-played and spectator games and additionally stores the authoritative reproduction state (hidden roles, deck and seat order, seed, and whose turn it is) so a moment can be resumed with a "Continue from here" action. Both formats render the same board and log; only full-format replays can be resumed. The replay browser can also rename and delete saved replays.
 
 ## Artifacts and compatibility
 

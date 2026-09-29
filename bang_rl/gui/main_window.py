@@ -111,6 +111,9 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self._settings_screen: SettingsScreen | None = None
             self._replay_screen: ReplayScreen | None = None
             self._selection: ModelSelection | None = None
+            # Item 7: remember the last started game so Restart re-runs it.
+            self._last_mode: GameMode | None = None
+            self._last_artifact: str | None = None
             # An in-memory replay episode may be supplied by an embedder; when
             # set it is used instead of prompting for a file.
             self.replay_episode: Any = None
@@ -143,9 +146,21 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
         def _show_menu(self) -> None:
             menu = QWidget(self)
             layout = QVBoxLayout(menu)
+            # Item 8: the title is the largest element at the top, with the
+            # buttons evenly spaced below. A stretch above the title and below
+            # the last button balances the whole group vertically.
+            layout.setSpacing(16)
+            layout.addStretch(1)
             title = QLabel(tr("app.title"), menu)
+            title_font = title.font()
+            # Clearly bigger than the menu buttons (~2x the button font).
+            title_font.setPointSize(MENU_BUTTON_FONT_POINT_SIZE * 2)
+            title_font.setBold(True)
+            title.setFont(title_font)
+            title.setAlignment(Qt.AlignmentFlag.AlignCenter)
             layout.addWidget(title)
             layout.setAlignment(title, Qt.AlignmentFlag.AlignHCenter)
+            layout.addSpacing(8)
             mode_select = GameModeSelect(self._select_mode, menu)
             layout.addWidget(mode_select)
             layout.setAlignment(mode_select, Qt.AlignmentFlag.AlignHCenter)
@@ -165,6 +180,7 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             exit_button.clicked.connect(self.close)
             layout.addWidget(exit_button)
             self._style_menu_button(exit_button, layout)
+            layout.addStretch(1)
             self._set_screen(menu)
 
         def _show_training(self) -> None:
@@ -206,6 +222,7 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 parent=self,
                 on_back=self._show_menu,
                 replay_directory=REPLAYS_DIR,
+                on_continue=self.on_continue,
             )
             self._set_screen(self._replay_screen)
 
@@ -245,7 +262,9 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             # Clear any prior Main-AI metadata so a non-Main mode does not carry
             # a stale AI version into its saved replay.
             self.controller.set_ai_metadata(None)
-            if mode is GameMode.HUMAN_MAIN_DUMMY:
+            # Item 6: both the human Main-AI mode and the Main-AI spectator mode
+            # need a compatible .bangmodel, chosen through the same dialog.
+            if mode in (GameMode.HUMAN_MAIN_DUMMY, GameMode.MAIN_ONE_DUMMY_FOUR):
                 self._selection = self._selection or ModelSelection()
                 options = self._selection.discover(self.artifact_paths, config=self.config)
                 dialog = ModelSelectionDialog(options, self)
@@ -255,6 +274,16 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 # Record the chosen artifact's metadata (incl. version) so the
                 # auto-saved replay captures which AI version was used.
                 self.controller.set_ai_metadata(dialog.selected_option.metadata)
+            self._start_game(mode, artifact_path)
+
+        def _start_game(self, mode: GameMode, artifact_path: str | None) -> None:
+            """Start ``mode`` on the shared controller and open a GameScreen.
+
+            Shared by the mode menu and the item-7 Restart button. The last
+            started mode/artifact are remembered so Restart can re-run the same
+            game (spectator or human).
+            """
+
             # Detach any callback still bound to a previously-shown (and now
             # torn-down) GameScreen so controller.start()'s internal publish
             # cannot render into deleted C++ widgets.
@@ -269,10 +298,77 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 message = str(exc) or tr("game.error_generic")
                 self.statusBar().showMessage(message, 0)
                 return
+            self._last_mode = mode
+            self._last_artifact = artifact_path
             # GameScreen.__init__ re-binds controller.on_update to its own
             # _render and renders the current snapshot itself, so building it
-            # after start() keeps the callback pointed at a live screen.
-            self._game_screen = GameScreen(self.controller, self, on_back=self._show_menu)
+            # after start() keeps the callback pointed at a live screen. Item 7
+            # wires the Restart / Return-to-menu callbacks the screen shows when
+            # a game is over.
+            self._game_screen = GameScreen(
+                self.controller, self, on_back=self._show_menu, on_restart=self.on_restart
+            )
+            self._set_screen(self._game_screen)
+
+        def on_restart(self) -> None:
+            """Item 7: restart the last game in the SAME mode + rebuild screen."""
+
+            mode = getattr(self, "_last_mode", None)
+            if mode is None:
+                self._show_menu()
+                return
+            self._start_game(mode, getattr(self, "_last_artifact", None))
+
+        def on_continue(self, state_dict: Any, *, mode: Any, seed: int | None = None, artifact_path: str | None = None) -> None:
+            """Item 5: resume a live game from a full-state replay moment.
+
+            Called by the ReplayScreen when the user picks 'Continue from here'
+            on a full-format replay. Builds a restored session through
+            GameService.restore_session, wraps it in a fresh controller, and
+            opens a GameScreen so the user actually keeps playing from that
+            authoritative moment.
+            """
+
+            service = self.service
+            restore = getattr(service, "restore_session", None) if service is not None else None
+            if restore is None:
+                self.statusBar().showMessage(tr("replay.continue_public_disabled"), 0)
+                return
+            try:
+                selected_mode = mode if isinstance(mode, GameMode) else GameMode(str(mode))
+            except (ValueError, TypeError):
+                selected_mode = GameMode.HUMAN_RANDOM
+            try:
+                handle = restore(
+                    dict(state_dict),
+                    mode=selected_mode.value,
+                    seed=seed,
+                    artifact_path=artifact_path,
+                    config=self.config,
+                )
+            except Exception as exc:  # never let a restore error crash the UI
+                self.statusBar().showMessage(str(exc) or tr("game.error_generic"), 0)
+                return
+            controller = GameSessionController(service, config=self.config, seed=seed)
+            controller.handle = handle
+            controller.mode = selected_mode
+            controller.active = True
+            controller.paused = False
+            controller._closed = False
+            controller._save_full_replay = selected_mode.is_human or selected_mode.is_spectator
+            controller.mode_ai_versions = controller._derive_ai_versions(selected_mode)
+            if artifact_path:
+                controller.set_ai_metadata({"path": artifact_path})
+            try:
+                controller.state = service.get_state(handle)
+            except Exception:
+                controller.state = None
+            self.controller = controller
+            self._last_mode = selected_mode
+            self._last_artifact = artifact_path
+            self._game_screen = GameScreen(
+                controller, self, on_back=self._show_menu, on_restart=self.on_restart
+            )
             self._set_screen(self._game_screen)
 
         def closeEvent(self, event: Any) -> None:

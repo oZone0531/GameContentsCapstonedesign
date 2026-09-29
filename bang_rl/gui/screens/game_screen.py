@@ -46,12 +46,17 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             parent: QWidget | None = None,
             *,
             on_back: Callable[[], None] | None = None,
+            on_restart: Callable[[], None] | None = None,
         ) -> None:
             require_qt()
             super().__init__(parent)
             self.controller = controller
             self.on_back = on_back
+            self.on_restart = on_restart
             self._alive = True
+            # Item 6: in a spectator (all-AI) game the human can only watch, so
+            # the action buttons are never enabled and board clicks are ignored.
+            self._spectator = bool(getattr(controller.mode, "is_spectator", False))
             # True while the pointer hovers a log row and the board is showing
             # that recorded moment as a read-only preview (item 8).
             self._log_hover_preview = False
@@ -79,6 +84,16 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.back_button = QPushButton(tr("common.back"), self)
             self.back_button.clicked.connect(self._go_back)
 
+            # Item 7: Restart / Return-to-menu buttons shown under the board
+            # only once the game is over (terminated or truncated), for both
+            # human and spectator games. Hidden while a game is in progress.
+            self.restart_button = QPushButton(tr("game.restart"), self)
+            self.restart_button.clicked.connect(self._on_restart_clicked)
+            self.return_menu_button = QPushButton(tr("game.return_menu"), self)
+            self.return_menu_button.clicked.connect(self._go_back)
+            self.restart_button.setVisible(False)
+            self.return_menu_button.setVisible(False)
+
             # Static descriptive label for the slider ("AI turn speed").
             self.speed_title = QLabel(tr("game.ai_speed"), self)
             self.speed_label = QLabel(self)
@@ -100,18 +115,33 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             speed_row.addWidget(self.speed_label)
             speed_row.addWidget(self.speed_slider, 1)
 
+            # Item 7: game-over button row sits beneath the board.
+            self.game_over_row = QHBoxLayout()
+            self.game_over_row.addStretch(1)
+            self.game_over_row.addWidget(self.restart_button)
+            self.game_over_row.addWidget(self.return_menu_button)
+            self.game_over_row.addStretch(1)
+
             layout = QVBoxLayout(self)
             layout.addWidget(self.back_button)
             layout.addLayout(top, 1)
             layout.addWidget(self.hint)
             layout.addWidget(self.event_status)
+            layout.addLayout(self.game_over_row)
             layout.addLayout(speed_row)
             layout.addWidget(self.actions)
             layout.addWidget(self.status)
 
-            self.board.actionRequested.connect(self._submit_action)
-            self.actions.actionRequested.connect(self._submit_action)
-            self.actions.pauseRequested.connect(self._toggle_pause)
+            # Item 6: a spectator human never banks/passes, so the board's
+            # action clicks and the ActionPanel buttons are not wired to submit
+            # an action. The AI-speed slider and log hover stay fully active.
+            if not self._spectator:
+                self.board.actionRequested.connect(self._submit_action)
+                self.actions.actionRequested.connect(self._submit_action)
+                self.actions.pauseRequested.connect(self._toggle_pause)
+            else:
+                # Keep pause available so the viewer can freeze the AI cadence.
+                self.actions.pauseRequested.connect(self._toggle_pause)
 
             # Item 8: hovering a left-log row previews that moment on the board;
             # clicking a row rewinds the game to that moment so play continues
@@ -123,6 +153,10 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
 
             controller.on_update = self._render
             self._render(controller.snapshot)
+            # Item 6: a spectator game has no human action to kick off the AI
+            # cadence, so start driving the all-AI turns right away.
+            if self._spectator:
+                self._maybe_start_ai_sequence()
 
         # -- navigation --------------------------------------------------
         def _go_back(self) -> None:
@@ -169,8 +203,19 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 return
             self.event_status.setText(tr("board.eliminated", player=int(player)))
 
+        # -- game over (item 7) ------------------------------------------
+        def _on_restart_clicked(self) -> None:
+            self._detach()
+            self.controller.close()
+            if self.on_restart is not None:
+                self.on_restart()
+
         # -- actions -----------------------------------------------------
         def _submit_action(self, action: int) -> None:
+            # Item 6: guard so a spectator can never influence the game even if
+            # a stray signal reaches here.
+            if self._spectator:
+                return
             try:
                 # advance_ai=False: this screen drives the AI cadence itself so
                 # each AI turn is shown one at a time via the QTimer below.
@@ -256,12 +301,21 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             if not self._alive or item is None:
                 return
             row = self.log.list.row(item)
-            # Clicking commits the rewind through the Qt-free controller, then
-            # re-renders so play can continue from that moment.
             self._log_hover_preview = False
             self._ai_timer.stop()
-            snapshot = self.controller.time_travel_to(row)
+            # Item 5: in a human game a click forks a live, continuable session
+            # from that moment (restore_to_moment; falls back to a read-only
+            # review when the service lacks restore support). A spectator game
+            # only reviews the moment (time_travel_to) since the human never
+            # plays. Both are Qt-free controller calls.
+            if self._spectator:
+                snapshot = self.controller.time_travel_to(row)
+            else:
+                snapshot = self.controller.restore_to_moment(row)
             self._render(snapshot)
+            # If the fork resumed a live game with AI seats to act, restart the
+            # AI cadence so play continues from the restored moment.
+            self._maybe_start_ai_sequence()
 
         def eventFilter(self, source: Any, event: Any) -> bool:
             if (
@@ -279,16 +333,24 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             if snapshot.state is not None:
                 self.board.update_state(snapshot.state)
                 self.log.update_state(snapshot.state)
+                # Item 6: in a spectator game the action buttons stay disabled
+                # (active=False) so the human can never bang/pass.
                 self.actions.update_mask(
-                    snapshot.state.action_mask, paused=snapshot.paused, active=snapshot.active
+                    snapshot.state.action_mask,
+                    paused=snapshot.paused,
+                    active=snapshot.active and not self._spectator,
                 )
-                # Show the click hint only while it is the human's live turn.
-                is_human_turn = (
-                    snapshot.active
-                    and not snapshot.paused
-                    and snapshot.state.current_player == self.controller.HUMAN_PLAYER
-                )
-                self.hint.setText(tr("game.click_hint") if is_human_turn else "")
+                if self._spectator:
+                    # Item 6: show a spectator hint instead of the click hint.
+                    self.hint.setText(tr("game.spectating"))
+                else:
+                    # Show the click hint only while it is the human's live turn.
+                    is_human_turn = (
+                        snapshot.active
+                        and not snapshot.paused
+                        and snapshot.state.current_player == self.controller.HUMAN_PLAYER
+                    )
+                    self.hint.setText(tr("game.click_hint") if is_human_turn else "")
                 status = snapshot.state.termination_status
                 self.status.setText(
                     tr(
@@ -298,10 +360,20 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                         status=status,
                     )
                 )
+                # Item 7: reveal the Restart / Return-to-menu buttons only when
+                # the game is over (terminated or truncated).
+                game_over = bool(
+                    getattr(snapshot.state, "terminated", False)
+                    or getattr(snapshot.state, "truncated", False)
+                )
+                self.restart_button.setVisible(game_over)
+                self.return_menu_button.setVisible(game_over)
             else:
                 self.actions.update_mask((0, 0, 0, 0, 0, 0), paused=snapshot.paused, active=snapshot.active)
                 self.hint.setText("")
                 self.status.setText(tr("game.no_session"))
+                self.restart_button.setVisible(False)
+                self.return_menu_button.setVisible(False)
             self.actions.set_message(snapshot.message)
 
         def closeEvent(self, event: Any) -> None:

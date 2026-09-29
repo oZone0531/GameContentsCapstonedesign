@@ -23,9 +23,11 @@ from ..i18n import tr
 from ..qt_compat import (
     QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPushButton,
     QSlider,
     QTimer,
@@ -56,12 +58,21 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             *,
             on_back: Callable[[], None] | None = None,
             replay_directory: str | Path | None = None,
+            on_continue: Callable[..., None] | None = None,
         ) -> None:
             require_qt()
             super().__init__(parent)
             self.model = model
             self.on_back = on_back
+            # Item 5: callback into main_window to resume a live game from a
+            # full-state replay moment.
+            self.on_continue = on_continue
             self._alive = True
+            # The currently loaded replay record + its on-disk path (when it was
+            # loaded from the browser). Used by rename/delete (item 10) and the
+            # continue-from-here control (item 5).
+            self._loaded_record: Any = None
+            self._loaded_path: Path | None = None
             # Current folder the browser lists replays from. When set the left
             # browser is populated via the Qt-free replay_store.list_replays.
             self._replay_directory: Path | None = (
@@ -87,6 +98,11 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.repath_button.clicked.connect(self._on_repath_clicked)
             self.open_file_button = QPushButton(tr("replay.open_file"), self)
             self.open_file_button.clicked.connect(self._on_open_file_clicked)
+            # Item 10: rename / delete the currently selected browser replay.
+            self.rename_button = QPushButton(tr("replay.rename"), self)
+            self.rename_button.clicked.connect(self._on_rename_clicked)
+            self.delete_button = QPushButton(tr("replay.delete"), self)
+            self.delete_button.clicked.connect(self._on_delete_clicked)
             self._replay_paths: list[Path] = []
 
             # Auto-play timer; the slider sets its interval. Guarded by _alive so
@@ -106,6 +122,11 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.prev_button.clicked.connect(self._step_prev)
             self.next_button = QPushButton(tr("replay.next"), self)
             self.next_button.clicked.connect(self._step_next)
+            # Item 5: resume a live game from the current moment. Enabled only
+            # for full-format records (see _refresh_continue_state).
+            self.continue_button = QPushButton(tr("replay.continue_from_here"), self)
+            self.continue_button.clicked.connect(self._on_continue_clicked)
+            self.continue_button.setEnabled(False)
 
             self.speed_label = QLabel(self)
             self.speed_slider = QSlider(Qt.Orientation.Horizontal, self)
@@ -122,6 +143,10 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             browser_column.addWidget(self.browser, 1)
             browser_column.addWidget(self.repath_button)
             browser_column.addWidget(self.open_file_button)
+            manage_row = QHBoxLayout()
+            manage_row.addWidget(self.rename_button)
+            manage_row.addWidget(self.delete_button)
+            browser_column.addLayout(manage_row)
 
             top = QHBoxLayout()
             top.addLayout(browser_column, 1)
@@ -133,6 +158,7 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             controls.addWidget(self.prev_button)
             controls.addWidget(self.play_button)
             controls.addWidget(self.next_button)
+            controls.addWidget(self.continue_button)
 
             speed_row = QHBoxLayout()
             speed_row.addWidget(self.speed_label)
@@ -196,6 +222,13 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 parts.append(str(mode_label))
             if outcome:
                 parts.append(str(outcome))
+            # Item 5: surface whether this is a full-state (resumable) or public
+            # (training-only) replay so the user knows before selecting it.
+            fmt = summary.get("replay_format")
+            if fmt == "full":
+                parts.append(tr("replay.format_full"))
+            elif fmt == "public":
+                parts.append(tr("replay.format_public"))
             return "  |  ".join(parts)
 
         def _on_replay_selected(self, item: Any) -> None:
@@ -211,6 +244,8 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             except (OSError, ValueError, TypeError, KeyError) as exc:
                 self.status.setText(str(exc) or tr("replay.no_episode"))
                 return
+            self._loaded_record = record
+            self._loaded_path = path
             self._load_model(model)
 
         def _load_model(self, model: ReplayModel) -> None:
@@ -220,7 +255,25 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self._hover_restore_index = None
             self.model = model
             self._render_current()
+            self._refresh_continue_state()
             self._start_autoplay()
+
+        def _refresh_continue_state(self) -> None:
+            """Enable Continue only for full-format records (item 5).
+
+            A public (training) record stores observations only and cannot be
+            resumed, so the button is disabled with a localized tooltip.
+            """
+
+            record = self._loaded_record
+            replay_format = None
+            if isinstance(record, dict):
+                replay_format = replay_store.replay_summary(record).get("replay_format")
+            is_full = replay_format == "full" and self.on_continue is not None
+            self.continue_button.setEnabled(bool(is_full))
+            self.continue_button.setToolTip(
+                "" if is_full else tr("replay.continue_public_disabled")
+            )
 
         def _on_repath_clicked(self) -> None:
             start_dir = str(self._replay_directory) if self._replay_directory else ""
@@ -244,7 +297,88 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             except (OSError, ValueError, TypeError, KeyError) as exc:
                 self.status.setText(str(exc) or tr("replay.no_episode"))
                 return
+            self._loaded_record = record
+            self._loaded_path = Path(path)
             self._load_model(model)
+
+        # -- rename / delete (item 10) -----------------------------------
+        def _selected_browser_path(self) -> Path | None:
+            row = self.browser.currentRow()
+            if not (0 <= row < len(self._replay_paths)):
+                self.status.setText(tr("replay.select_first"))
+                return None
+            return self._replay_paths[row]
+
+        def _on_rename_clicked(self) -> None:
+            path = self._selected_browser_path()
+            if path is None:
+                return
+            new_name, accepted = QInputDialog.getText(
+                self, tr("replay.rename_title"), tr("replay.rename_prompt"), text=path.name
+            )
+            if not accepted or not str(new_name).strip():
+                return
+            try:
+                new_path = replay_store.rename_replay(path, new_name)
+            except (OSError, ValueError, FileExistsError, FileNotFoundError) as exc:
+                self.status.setText(str(exc) or tr("replay.no_episode"))
+                return
+            # Keep a loaded record's path in sync when it was the renamed file.
+            if self._loaded_path is not None and self._loaded_path == path:
+                self._loaded_path = new_path
+            self._reload_browser()
+
+        def _on_delete_clicked(self) -> None:
+            path = self._selected_browser_path()
+            if path is None:
+                return
+            confirm = QMessageBox.question(
+                self,
+                tr("replay.delete_title"),
+                tr("replay.delete_confirm"),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                replay_store.delete_replay(path)
+            except OSError as exc:
+                self.status.setText(str(exc) or tr("replay.no_episode"))
+                return
+            # If the deleted file was the loaded one, clear the board / log.
+            if self._loaded_path is not None and self._loaded_path == path:
+                self._play_timer.stop()
+                self.model = None
+                self._loaded_record = None
+                self._loaded_path = None
+                self._render_current()
+                self._refresh_continue_state()
+            self._reload_browser()
+
+        # -- continue from here (item 5) ---------------------------------
+        def _on_continue_clicked(self) -> None:
+            record = self._loaded_record
+            if not isinstance(record, dict) or self.on_continue is None or self.model is None:
+                return
+            if replay_store.replay_summary(record).get("replay_format") != "full":
+                self.status.setText(tr("replay.continue_public_disabled"))
+                return
+            states = record.get("states") or []
+            if not states:
+                self.status.setText(tr("replay.continue_public_disabled"))
+                return
+            # Map the current playback cursor to the parallel authoritative
+            # state; clamp into range so the last state is used at the end.
+            index = max(0, min(int(self.model.index), len(states) - 1))
+            state_dict = states[index]
+            self._play_timer.stop()
+            self.on_continue(
+                state_dict,
+                mode=record.get("mode"),
+                seed=record.get("seed"),
+                artifact_path=None,
+            )
 
         # -- navigation --------------------------------------------------
         def _go_back(self) -> None:

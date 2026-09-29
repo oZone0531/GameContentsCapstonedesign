@@ -28,12 +28,31 @@ _MAX_RADIUS = 60.0
 # The human seat sits centred along the bottom edge; the four opponents are
 # arranged clockwise around the top and sides.  Values are normalized (0..1)
 # offsets within the drawable area, later scaled by width/height.
-_HUMAN_SLOT = (0.5, 0.84)
+#
+# ITEM 3 (reduced top margin): the human seat used to sit at y=0.84, so the
+# three caption lines the board draws BELOW the human circle (name, "HP .
+# status", role) fell off the bottom once the circle grew toward _MAX_RADIUS.
+# Raising the human seat leaves >= 3 caption lines + the radius below it within
+# the board height, and lowering the top opponent row from y=0.20 to y=0.14
+# reclaims the freed top margin so the five seats stay well spread out.
+#
+# REVIEW FIX (short/wide windows): item 3 was originally verified only at a
+# square 1000x1000 board where the seat radius clamps to its _MAX_RADIUS. The
+# tightest realistic case is the board's own minimum height (GraphicalBoard
+# _MIN_HEIGHT = 520 inside the fixed 1280x860 window), where the radius is
+# clamped by min(w, h) instead. The board draws the last caption line at
+#   cy + radius + 6 + 2 * (radius*0.34 + 6) + 22   (see game_widgets._paint_caption),
+# with cy = y * height. At y=0.72 that leaves only ~9.5px below a 520px board;
+# lowering the human seat to y=0.70 widens the worst-case margin to ~20px so the
+# three caption lines fit comfortably at every realistic (non-square, short and
+# wide) board size, not just the square where the radius is maxed out. It stays
+# < 0.84 so the top-margin reduction that item 3 introduced is preserved.
+_HUMAN_SLOT = (0.5, 0.70)
 _OPPONENT_SLOTS = (
-    (0.16, 0.60),  # left-lower
-    (0.24, 0.20),  # left-upper
-    (0.76, 0.20),  # right-upper
-    (0.84, 0.60),  # right-lower
+    (0.16, 0.56),  # left-lower
+    (0.24, 0.14),  # left-upper
+    (0.76, 0.14),  # right-upper
+    (0.84, 0.56),  # right-lower
 )
 
 
@@ -287,11 +306,14 @@ def gun_anchor_and_angle(
 ) -> tuple[tuple[float, float], float] | None:
     """Return ``((anchor_x, anchor_y), angle)`` for the gun a character holds.
 
-    The gun sits on the character's RIGHT side relative to the ``facing``
-    direction and its barrel points along ``facing``.  "Right of facing" in
-    screen coordinates (y grows downward) is the facing vector rotated by
-    ``-90 degrees`` (``(sin(f), -cos(f))``); the anchor is placed on the seat
-    circle edge along that right vector.  Returns ``None`` when the seat is
+    The gun sits on the character's *visually*-RIGHT side and its barrel points
+    along ``facing``.  Because every seat faces the board centre, the previous
+    "right of facing" offset ``(sin(f), -cos(f))`` (facing rotated by
+    ``-90 degrees``) rendered the gun on the seat's visual LEFT.  ITEM 1 flips
+    the anchor to the opposite perpendicular side, i.e. facing rotated by
+    ``+90 degrees`` -> ``(-sin(f), cos(f))``, so the gun now appears on the
+    character's visual right.  The returned angle stays equal to ``facing`` so
+    the barrel still points along ``facing``.  Returns ``None`` when the seat is
     missing.  Pure and Qt-free so seat/gun placement is unit-testable.
     """
 
@@ -300,10 +322,11 @@ def gun_anchor_and_angle(
         return None
     cx, cy = positions[player]
     radius = circle_radius(width, height)
-    # Right of the facing direction in screen coords (y down): rotate facing by
-    # -90 degrees -> (cos(f - pi/2), sin(f - pi/2)) == (sin(f), -cos(f)).
-    right_x = math.sin(facing)
-    right_y = -math.cos(facing)
+    # Visual-right of the character (ITEM 1): rotate facing by +90 degrees ->
+    # (cos(f + pi/2), sin(f + pi/2)) == (-sin(f), cos(f)); the opposite
+    # perpendicular of the old (sin(f), -cos(f)) offset that appeared on the left.
+    right_x = -math.sin(facing)
+    right_y = math.cos(facing)
     anchor = (cx + radius * right_x, cy + radius * right_y)
     return anchor, float(facing)
 

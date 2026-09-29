@@ -65,6 +65,14 @@ BANG_TOTAL_FRAMES = BANG_SHOT_FRAMES + BANG_SMOKE_FRAMES
 # panel from over-expanding while still fitting four short opponent rows.
 OPPONENT_PANEL_MAX_WIDTH = 340
 
+# Minimum drawable size of the GraphicalBoard, in pixels. Defined outside the
+# ``if QT_AVAILABLE:`` gate so the layout tests can reason about the realistic
+# smallest board size headlessly (item 3 caption-fit at short/wide sizes). The
+# board can never render smaller than this inside the fixed main window, so it
+# is the tightest case for whether the human's caption lines fit below the seat.
+GRAPHICAL_BOARD_MIN_WIDTH = 560
+GRAPHICAL_BOARD_MIN_HEIGHT = 520
+
 
 def opponent_public_rows(state: Any, *, human_player: int = 0) -> tuple[dict[str, Any], ...]:
     """Build a privacy-safe four-opponent projection from a public DTO."""
@@ -250,8 +258,8 @@ if QT_AVAILABLE:
         playerHit = pyqtSignal(int)
         playerEliminated = pyqtSignal(int)
 
-        _MIN_WIDTH = 560
-        _MIN_HEIGHT = 520
+        _MIN_WIDTH = GRAPHICAL_BOARD_MIN_WIDTH
+        _MIN_HEIGHT = GRAPHICAL_BOARD_MIN_HEIGHT
 
         def __init__(self, parent: QWidget | None = None, *, human_player: int = 0) -> None:
             require_qt()
@@ -851,6 +859,8 @@ __all__ = [
     "GameBoard",
     "GameLog",
     "GraphicalBoard",
+    "GRAPHICAL_BOARD_MIN_HEIGHT",
+    "GRAPHICAL_BOARD_MIN_WIDTH",
     "OPPONENT_PANEL_MAX_WIDTH",
     "format_event",
     "format_log_moment",

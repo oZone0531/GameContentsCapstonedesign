@@ -86,6 +86,10 @@ def build_replay_record(
 
     record: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
+        # 'public' == the training-safe observations-only format (no hidden
+        # state). Distinguished from the 'full' format below so a loader knows
+        # whether authoritative reproduction state is available.
+        "replay_format": "public",
         # Stable enum value (e.g. 'human_random') for programmatic use, and a
         # raw english label; the viewer localizes separately.
         "game_type": mode,
@@ -105,6 +109,57 @@ def build_replay_record(
     if events:
         record["events"] = [_json_safe(event) for event in events if isinstance(event, Mapping)]
     return record
+
+
+def build_full_replay_record(
+    *,
+    mode: str,
+    mode_label: str,
+    ai_versions: Any,
+    winning_team: str | None,
+    winners: Sequence[int] | None,
+    human_player: int,
+    seed: int | None,
+    states: Sequence[Mapping[str, Any]],
+    observations: Sequence[Mapping[str, Any]],
+    events: Sequence[Mapping[str, Any]] | None = None,
+    terminated: bool = False,
+    truncated: bool = False,
+) -> dict[str, Any]:
+    """Build a JSON-safe FULL-reproduction-state replay record (item 5).
+
+    Unlike :func:`build_replay_record` (the training-safe ``public`` format),
+    this stores a top-level ``states`` list of authoritative
+    :meth:`bang_rl.env.state.EnvironmentState.to_dict` dicts (one per recorded
+    turn) plus the ``seed``, so a chosen moment can be restored deterministically
+    for rewind-and-continue. It intentionally carries hidden roles / deck / seat
+    order and MUST only be written for human-played and AI-spectator games, never
+    for AI-training datasets.
+
+    The record ALSO carries the same public ``observations`` list a public
+    record would, so a ``full`` replay renders on the graphical board / log
+    exactly like a public one (``ReplayModel`` reads ``observations`` and simply
+    ignores the extra ``states`` key).
+    """
+
+    base = build_replay_record(
+        mode=mode,
+        mode_label=mode_label,
+        ai_versions=ai_versions,
+        winning_team=winning_team,
+        winners=winners,
+        human_player=human_player,
+        seed=seed,
+        observations=observations,
+        events=events,
+        terminated=terminated,
+        truncated=truncated,
+    )
+    base["replay_format"] = "full"
+    base["states"] = [
+        _json_safe(state) for state in (states or ()) if isinstance(state, Mapping)
+    ]
+    return base
 
 
 def _timestamped_filename(session: str | None = None) -> str:
@@ -174,6 +229,79 @@ def load_replay(path: str | Path) -> dict[str, Any]:
         return json.load(handle)
 
 
+def _sanitize_replay_name(new_name: str, *, default_suffix: str) -> str:
+    """Return a safe single-segment file name preserving a .json/.jsonl suffix.
+
+    Strips any directory component (defends against path traversal), keeps only
+    filename-safe characters, and preserves a ``.json``/``.jsonl`` suffix,
+    defaulting to ``default_suffix`` when the caller supplied none. Raises
+    ``ValueError`` when nothing usable remains.
+    """
+
+    # Drop any directory component so the rename can never escape the folder.
+    raw = Path(str(new_name)).name.strip()
+    if not raw:
+        raise ValueError("replay name must not be empty")
+    suffix = ""
+    lowered = raw.lower()
+    for candidate in (".jsonl", ".json"):
+        if lowered.endswith(candidate):
+            suffix = raw[-len(candidate):]
+            raw = raw[: -len(candidate)]
+            break
+    stem = "".join(ch for ch in raw if ch.isalnum() or ch in (" ", "-", "_", ".")).strip()
+    stem = stem.replace(" ", "_")
+    if not stem:
+        raise ValueError("replay name has no usable characters")
+    if not suffix:
+        suffix = default_suffix
+    return f"{stem}{suffix}"
+
+
+def rename_replay(path: str | Path, new_name: str) -> Path:
+    """Rename the replay file at ``path`` to ``new_name`` within its folder.
+
+    Qt-free and defensive (item 10): the new name is sanitized to a single
+    filename-segment and its ``.json``/``.jsonl`` suffix is preserved, so the
+    renamed file always stays inside the original replay directory. Returns the
+    new path. Raises ``FileNotFoundError`` when the source is missing,
+    ``ValueError`` for an unusable name, and ``FileExistsError`` when the target
+    already exists.
+    """
+
+    source = Path(path)
+    if not source.exists():
+        raise FileNotFoundError(f"replay file not found: {source}")
+    default_suffix = source.suffix if source.suffix.lower() in (".json", ".jsonl") else ".json"
+    safe_name = _sanitize_replay_name(new_name, default_suffix=default_suffix)
+    target = source.parent / safe_name
+    # Confirm the resolved target really stays inside the source directory.
+    if target.parent.resolve() != source.parent.resolve():
+        raise ValueError("renamed replay must stay in the same directory")
+    if target == source:
+        return source
+    if target.exists():
+        raise FileExistsError(f"a replay named {safe_name!r} already exists")
+    source.rename(target)
+    return target
+
+
+def delete_replay(path: str | Path) -> None:
+    """Delete the replay file at ``path`` (item 10).
+
+    Qt-free and defensive: a missing file is tolerated (no error), and only a
+    regular file is removed so a directory can never be deleted here.
+    """
+
+    target = Path(path)
+    try:
+        if target.is_file():
+            target.unlink()
+    except FileNotFoundError:
+        # Already gone -- treat as success so a double-delete never raises.
+        return
+
+
 def replay_summary(record: Mapping[str, Any]) -> dict[str, Any]:
     """Return a lightweight display header (mode_label / outcome / winner).
 
@@ -187,14 +315,22 @@ def replay_summary(record: Mapping[str, Any]) -> dict[str, Any]:
         "outcome": record.get("outcome"),
         "winning_team": record.get("winning_team"),
         "human_won": record.get("human_won"),
+        # 'public' (training-safe observations-only) vs 'full' (adds a top-level
+        # authoritative 'states' list). Default to 'public' for legacy records
+        # written before the format tag existed.
+        "replay_format": record.get("replay_format", "public"),
+        "has_full_state": bool(record.get("states")),
     }
 
 
 __all__ = [
     "SCHEMA_VERSION",
+    "build_full_replay_record",
     "build_replay_record",
+    "delete_replay",
     "list_replays",
     "load_replay",
+    "rename_replay",
     "replay_summary",
     "save_replay",
 ]

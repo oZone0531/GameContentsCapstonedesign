@@ -112,3 +112,76 @@ def test_no_em_dash_in_new_tooltip_strings() -> None:
     for key in TOOLTIP_KEYS:
         for text in _STRINGS[key].values():
             assert "\u2014" not in text, f"em dash found in {key}"
+
+
+# --- Item 3: human caption fit at REALISTIC (non-square) board sizes ------
+#
+# The reviewer flagged that item 3's caption fit was only checked at a square
+# 1000x1000 board (where the seat radius clamps to its max). These tests use the
+# SAME geometry the Qt board draws with -- pure board_layout seat placement plus
+# the caption metrics copied from GraphicalBoard._paint_caption -- to prove the
+# human's three caption lines fit at the realistic minimum/short-wide board
+# sizes, not just a square.
+
+from bang_rl.gui.widgets import board_layout
+from bang_rl.gui.widgets.game_widgets import (
+    GRAPHICAL_BOARD_MIN_HEIGHT,
+    GRAPHICAL_BOARD_MIN_WIDTH,
+)
+
+
+def _caption_bottom(width: float, height: float) -> float:
+    """Bottom y of the human's third caption line for a width x height board.
+
+    Mirrors GraphicalBoard._paint_caption exactly:
+      top = cy + radius + 6
+      line_height = radius * 0.34 + 6
+      third line drawn at top + 2 * line_height, in a 22px-tall text rect.
+    with cy = human seat centre y from the pure board_layout geometry.
+    """
+
+    radius = board_layout.circle_radius(width, height)
+    _, cy = board_layout.seat_positions(width, height, human_player=0)[0]
+    top = cy + radius + 6
+    line_height = radius * 0.34 + 6
+    caption_text_rect_height = 22
+    return top + 2 * line_height + caption_text_rect_height
+
+
+# Realistic board sizes. The GraphicalBoard enforces a minimum size, and it
+# lives inside the fixed WINDOW_WIDTH x WINDOW_HEIGHT window, so the board can
+# never render shorter than its own _MIN_HEIGHT. The tightest case is that
+# minimum height paired with a wide board (radius clamped by height), which the
+# square 1000x1000 check never exercised.
+_REALISTIC_BOARD_SIZES = (
+    (GRAPHICAL_BOARD_MIN_WIDTH, GRAPHICAL_BOARD_MIN_HEIGHT),  # smallest allowed
+    (960, GRAPHICAL_BOARD_MIN_HEIGHT),  # wide + shortest allowed height
+    (WINDOW_WIDTH * 3 // 4, GRAPHICAL_BOARD_MIN_HEIGHT),  # ~board share, short
+    (WINDOW_WIDTH, GRAPHICAL_BOARD_MIN_HEIGHT),  # extreme wide-short
+    (1000, 1000),  # the original square (still must fit)
+)
+
+
+def test_human_caption_fits_at_realistic_board_sizes() -> None:
+    for width, height in _REALISTIC_BOARD_SIZES:
+        bottom = _caption_bottom(width, height)
+        assert bottom <= height, (
+            f"caption overflows at {width}x{height}: bottom={bottom:.1f} > {height}"
+        )
+
+
+def test_human_caption_has_comfortable_margin_at_min_board_height() -> None:
+    # At the board's own minimum height the three caption lines must not merely
+    # touch the edge; keep a visible margin so descenders/anti-aliasing show.
+    width = WINDOW_WIDTH
+    height = GRAPHICAL_BOARD_MIN_HEIGHT
+    margin = height - _caption_bottom(width, height)
+    assert margin >= 12, f"only {margin:.1f}px below the third caption line"
+
+
+def test_human_seat_stays_above_the_old_low_slot() -> None:
+    # The seat was raised from the old 0.84 fraction to reclaim top margin AND
+    # fit the caption; it must remain clearly above that old position.
+    width, height = 1000.0, 1000.0
+    _, human_y = board_layout.seat_positions(width, height, human_player=0)[0]
+    assert human_y <= 0.72 * height
