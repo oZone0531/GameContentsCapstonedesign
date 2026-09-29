@@ -229,6 +229,66 @@ def test_get_full_state_and_restore_session_round_trip() -> None:
     game.close_session(forked)
 
 
+def test_export_agent_internals_returns_hp_and_per_seat_state() -> None:
+    # Item 4: a dummy_five session exposes every player's HP plus each dummy
+    # seat's serialized emotion / role-belief state, and nothing leaks into the
+    # public projection.
+    config = SystemConfig(seed=31)
+    game = GameService()
+    handle = game.create_session(SessionConfig(mode="dummy_five", config=config, seed=31))
+    game.step(handle)
+    internals = game.export_agent_internals(handle)
+    assert isinstance(internals, dict)
+    assert len(internals["health"]) == 5
+    seats = internals["seats"]
+    # Every seat is a DummyAgent, so each descriptor carries a serialized state.
+    for seat in range(5):
+        descriptor = seats[str(seat)]
+        assert descriptor["kind"] == "dummy"
+        assert descriptor["state"]["schema_version"] == "2.0"
+    # Internals never leak into the public state DTO / observation.
+    state = game.get_state(handle)
+    assert not hasattr(state, "agent_internals")
+    assert "agent_internals" not in state.observation
+    game.close_session(handle)
+
+
+def test_export_agent_internals_random_seats_are_minimal() -> None:
+    config = SystemConfig(seed=32)
+    game = GameService()
+    handle = game.create_session(SessionConfig(mode="random_five", config=config, seed=32))
+    game.step(handle)
+    internals = game.export_agent_internals(handle)
+    for seat in range(5):
+        assert internals["seats"][str(seat)] == {"kind": "random"}
+    game.close_session(handle)
+
+
+def test_restore_session_with_internals_keeps_dummy_state() -> None:
+    # Item 4: restoring with a captured internals mapping resumes each dummy
+    # seat's serialized state rather than a fresh agent. The restore is
+    # defensive and reachable via the single-positional alias too.
+    config = SystemConfig(seed=33)
+    game = GameService()
+    handle = game.create_session(SessionConfig(mode="dummy_five", config=config, seed=33))
+    game.step(handle)
+    game.step(handle)
+    full = game.get_full_state(handle)
+    internals = game.export_agent_internals(handle)
+    restored = game.restore_session(
+        full, mode="dummy_five", seed=33, config=config, internals=internals
+    )
+    # The restored session is live and public-safe.
+    restored_state = game.get_state(restored)
+    assert restored_state.environment_step == game.get_state(handle).environment_step
+    # A malformed / absent internals mapping must not raise (defensive resume).
+    forked = game.restore_session(full, mode="dummy_five", config=config, internals=None)
+    assert game.get_state(forked) is not None
+    game.close_session(handle)
+    game.close_session(restored)
+    game.close_session(forked)
+
+
 def test_restored_session_keeps_public_privacy_during_play() -> None:
     config = SystemConfig(seed=13)
     game = GameService()

@@ -141,6 +141,7 @@ def build_full_replay_record(
     seed: int | None,
     states: Sequence[Mapping[str, Any]],
     observations: Sequence[Mapping[str, Any]],
+    internals: Sequence[Any] | None = None,
     events: Sequence[Mapping[str, Any]] | None = None,
     terminated: bool = False,
     truncated: bool = False,
@@ -159,6 +160,16 @@ def build_full_replay_record(
     record would, so a ``full`` replay renders on the graphical board / log
     exactly like a public one (``ReplayModel`` reads ``observations`` and simply
     ignores the extra ``states`` key).
+
+    Item 4/6: when ``internals`` is provided it is stored as a top-level
+    per-step ``internals`` list, each entry the JSON-safe per-step internal
+    snapshot (every player's HP plus each dummy / main AI's emotion and role
+    belief / guess). Like ``states`` this carries hidden information, so it is
+    only ever written into the ``full`` format for human / spectator games,
+    never into the public / training format (:func:`build_replay_record` does
+    not accept it). A loaded full replay therefore has actions and situation
+    (from ``observations``), the authoritative moment (``states``), and per-step
+    HP + AI internals (``internals``), so it can be re-watched and resumed.
     """
 
     base = build_replay_record(
@@ -178,6 +189,14 @@ def build_full_replay_record(
     base["states"] = [
         _json_safe(state) for state in (states or ()) if isinstance(state, Mapping)
     ]
+    if internals is not None:
+        # Preserve the index-parallel invariant with ``states`` / ``observations``:
+        # a per-turn export miss is recorded as a ``None`` placeholder by the
+        # controller, so keep those entries (as JSON null) rather than dropping
+        # them, which would offset every later index.
+        base["internals"] = [
+            None if entry is None else _json_safe(entry) for entry in internals
+        ]
     return base
 
 
@@ -444,6 +463,9 @@ def replay_summary(record: Mapping[str, Any]) -> dict[str, Any]:
         # written before the format tag existed.
         "replay_format": record.get("replay_format", "public"),
         "has_full_state": bool(record.get("states")),
+        # Item 4/6: True when the full record carries per-step internal state
+        # (HP + AI emotion / belief) so a step can be re-watched / resumed.
+        "has_internals": bool(record.get("internals")),
     }
 
 

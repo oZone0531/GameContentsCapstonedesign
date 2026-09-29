@@ -674,6 +674,95 @@ def test_restore_to_moment_by_log_row_forks_from_that_row_state() -> None:
     assert service.restored[-1]["environment_step"] != 0
 
 
+# --- item 4: per-step internals capture, index-parallel + restore ---------
+
+class InternalsRestoreService(RestoreService):
+    """RestoreService that also exports per-turn AI internals and accepts them."""
+
+    def __init__(self, states) -> None:
+        super().__init__(states)
+        self.restored_internals: list[object] = []
+
+    def export_agent_internals(self, handle):
+        return {
+            "health": [5, max(1, 5 - len(self.steps)), 5, 5, 5],
+            "seats": {"1": {"kind": "dummy", "state": {"turn": len(self.steps)}}},
+        }
+
+    def restore_session(self, state_dict, *, internals=None):
+        self.restored_internals.append(internals)
+        return super().restore_session(state_dict)
+
+
+def test_controller_records_third_internals_buffer_index_parallel() -> None:
+    service = InternalsRestoreService(_logged_three_turn_states())
+    controller = GameSessionController(service)
+    controller.start(GameMode.HUMAN_RANDOM)
+    controller.submit_human_action(1)
+    controller.submit_human_action(1)
+    assert len(controller._replay_internals) == len(controller._replay_observations)
+    assert len(controller._replay_states) == len(controller._replay_internals)
+    for entry in controller._replay_internals:
+        assert entry is not None
+        assert len(entry["health"]) == 5
+        assert entry["seats"]["1"]["kind"] == "dummy"
+
+
+def test_restore_to_moment_passes_matching_internals_when_supported() -> None:
+    service = InternalsRestoreService(_logged_three_turn_states())
+    controller = GameSessionController(service)
+    controller.start(GameMode.HUMAN_RANDOM)
+    controller.submit_human_action(1)
+    controller.submit_human_action(1)
+    controller.restore_to_moment(1)
+    assert service.restored  # a fork happened
+    assert service.restored_internals  # internals were forwarded to the restorer
+    assert service.restored_internals[-1] is not None
+    assert service.restored_internals[-1]["seats"]["1"]["kind"] == "dummy"
+
+
+def test_restore_still_forks_when_restorer_rejects_internals_kwarg() -> None:
+    # A legacy RestoreService.restore_session takes ONLY the state dict; the
+    # controller must not pass internals to it and must still fork.
+    service = RestoreService(_logged_three_turn_states())
+
+    def export_agent_internals(handle):
+        return {"health": [5, 5, 5, 5, 5], "seats": {}}
+
+    service.export_agent_internals = export_agent_internals  # type: ignore[attr-defined]
+    controller = GameSessionController(service)
+    controller.start(GameMode.HUMAN_RANDOM)
+    controller.submit_human_action(1)
+    controller.submit_human_action(1)
+    controller.restore_to_moment(1)
+    assert service.restored  # the state-only restorer still forked a session
+    assert controller.active is True
+
+
+def test_log_history_before_clicked_row_is_preserved_on_resume() -> None:
+    # Item 3: clicking a mid log row to resume must NOT delete the earlier log.
+    service = InternalsRestoreService(_logged_three_turn_states())
+    controller = GameSessionController(service)
+    controller.start(GameMode.HUMAN_RANDOM)
+    controller.submit_human_action(1)
+    controller.submit_human_action(1)
+    from bang_rl.gui.replay import ReplayModel
+
+    before = [
+        e.get("event_type")
+        for e in ReplayModel(list(controller._replay_observations)).full_events()
+    ]
+    assert "game_started" in before
+    controller.restore_to_moment(1)
+    after = [
+        e.get("event_type")
+        for e in ReplayModel(list(controller._replay_observations)).full_events()
+    ]
+    # The events at / before the clicked moment survived (not wiped).
+    assert after[0] == "game_started"
+    assert "bang" in after
+
+
 # --- Item 1 + 3: gun to the visual right, reduced top margin -------------
 
 def test_gun_anchor_sits_on_the_opposite_perpendicular_side() -> None:

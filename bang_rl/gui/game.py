@@ -141,6 +141,13 @@ class GameSessionController:
         # service (when it exposes them) so a moment can be restored to a live,
         # continuable session. Parallel to _replay_observations (one per turn).
         self._replay_states: list[dict[str, Any]] = []
+        # Item 4: authoritative per-turn AI-internals snapshots (every player's
+        # HP plus each dummy / main AI's emotion state and current role belief /
+        # guess), captured from the service (when it exposes them) so a moment
+        # can be restored with AI internals intact. Index-parallel to
+        # _replay_observations and _replay_states (one per turn; a None
+        # placeholder on export miss keeps the three buffers aligned).
+        self._replay_internals: list[dict[str, Any] | None] = []
         self._replay_saved = False
         # Item 5/6: human-played and AI-spectator games persist the FULL
         # reproduction-state replay format; AI-training lines stay public-only.
@@ -212,6 +219,7 @@ class GameSessionController:
             # artifact metadata for the Main-AI seat).
             self._replay_observations = []
             self._replay_states = []
+            self._replay_internals = []
             self._replay_saved = False
             # Human-played and AI-spectator games both save the FULL replay
             # format (item 5/6); a public-only save is used elsewhere.
@@ -468,9 +476,26 @@ class GameSessionController:
             # was captured for that turn, so we must not fork from a wrong or
             # absent state. Fall back to the read-only review.
             return self.time_travel_to(moment)
+        # Item 4: pass the matching per-turn AI internals (HP + emotion / belief)
+        # so the forked session continues with AI internals intact. Guard for a
+        # None placeholder / length mismatch exactly like the state buffer, and
+        # only pass ``internals`` when the restorer accepts it (older restorers
+        # take only the state dict), so a resume never fails on an extra kwarg.
+        internals = self._moment_internals(index)
         try:
-            handle = restorer(state_dict)
+            if internals is not None and self._restorer_accepts_internals(restorer):
+                handle = restorer(state_dict, internals=internals)
+            else:
+                handle = restorer(state_dict)
             new_state = self.service.get_state(handle)
+        except TypeError:
+            # A restorer that rejected the internals kwarg: retry state-only so
+            # the fork still succeeds (just with fresh AI internals).
+            try:
+                handle = restorer(state_dict)
+                new_state = self.service.get_state(handle)
+            except Exception:
+                return self.time_travel_to(moment)
         except Exception:
             return self.time_travel_to(moment)
         # Close the previous live session (best effort) before adopting the fork.
@@ -486,10 +511,21 @@ class GameSessionController:
         self.previewing = False
         self._closed = False
         self._live_state = None
-        # The continued line is a new episode: keep the restored prefix so the
-        # saved replay reflects everything up to the fork, and re-arm the save.
+        # Item 3 (log-preservation): the continued line is a new episode, but
+        # the PRIOR log history up to and including the clicked moment MUST be
+        # preserved (the earlier log entries are NOT deleted). Keeping the
+        # prefix ``0 .. index`` of every index-parallel buffer retains exactly
+        # that history: because each recorded observation carries the CUMULATIVE
+        # ``event_sequence`` up to its own turn, the prefix's last (longest)
+        # observation still holds every event from the game start through the
+        # clicked moment, which is what ReplayModel renders as the log. The
+        # follow-on _record_replay_snapshot / _advance_to_human_turn then APPEND
+        # the continued turns after this prefix, so the log grows forward from
+        # the clicked point instead of wiping earlier entries. Re-arm the save
+        # so the continued line is persisted afresh.
         self._replay_observations = self._replay_observations[: index + 1]
         self._replay_states = self._replay_states[: index + 1]
+        self._replay_internals = self._replay_internals[: index + 1]
         self._replay_saved = False
         self.message = None
         self._record_replay_snapshot()
@@ -538,6 +574,48 @@ class GameSessionController:
         if self._replay_states[clamped] is None:
             return None
         return clamped
+
+    def _moment_internals(self, index: int) -> Mapping[str, Any] | None:
+        """Return the recorded AI internals for ``index`` (or ``None``).
+
+        Item 4: guards for a ``None`` placeholder (an export miss for that turn)
+        and a length mismatch with :attr:`_replay_observations`, exactly like
+        :meth:`_moment_state_index` does for the state buffer, so a resume only
+        ever passes internals that are truly index-aligned with the chosen turn.
+        """
+
+        internals = getattr(self, "_replay_internals", None)
+        if not internals:
+            return None
+        if len(internals) != len(self._replay_observations):
+            return None
+        if not (0 <= index < len(internals)):
+            return None
+        entry = internals[index]
+        return entry if isinstance(entry, Mapping) else None
+
+    @staticmethod
+    def _restorer_accepts_internals(restorer: Any) -> bool:
+        """Return ``True`` when ``restorer`` accepts an ``internals`` keyword.
+
+        The controller only passes ``internals`` to a restorer whose signature
+        accepts it, so an older service that takes only the state dict is never
+        called with an unexpected keyword. Defensive: any introspection failure
+        returns ``False`` (state-only restore) so a resume never raises.
+        """
+
+        try:
+            import inspect
+
+            signature = inspect.signature(restorer)
+        except (TypeError, ValueError):
+            return False
+        parameters = signature.parameters
+        if "internals" in parameters:
+            return True
+        return any(
+            param.kind is param.VAR_KEYWORD for param in parameters.values()
+        )
 
     def refresh(self) -> GameControllerSnapshot:
         if self.handle is not None and self.active:
@@ -709,6 +787,42 @@ class GameSessionController:
         # Always append (possibly ``None``) to preserve the index-parallel
         # invariant with ``_replay_observations``.
         self._replay_states.append(state_dict)
+        self._record_internals_snapshot()
+
+    def _record_internals_snapshot(self) -> None:
+        """Capture the per-turn AI-internals snapshot for the current turn.
+
+        Item 4: for human / spectator games we persist every player's HP plus
+        each dummy / main AI's internal emotion state and current role belief /
+        guess so a moment can later be restored with AI internals intact (and so
+        every player's HP is always present in the per-step record even when a
+        seat has no AI internals). The service exposes this via
+        ``export_agent_internals`` (added in this feature).
+
+        INDEX-PARALLEL INVARIANT: this runs exactly once per appended
+        observation (from :meth:`_record_full_state`), so ``_replay_internals``
+        stays one-to-one with ``_replay_observations`` and ``_replay_states``. A
+        missing exporter, a raise, or a non-mapping result appends a ``None``
+        placeholder rather than nothing, so a single transient miss can never
+        permanently offset every later index. Never raises. Qt-free.
+        """
+
+        internals: Any = None
+        if self.handle is not None and self.service is not None:
+            exporter = getattr(self.service, "export_agent_internals", None)
+            if callable(exporter):
+                try:
+                    exported = exporter(self.handle)
+                except Exception:
+                    exported = None
+                if isinstance(exported, Mapping):
+                    try:
+                        import copy
+
+                        internals = copy.deepcopy(dict(exported))
+                    except Exception:
+                        internals = None
+        self._replay_internals.append(internals)
 
     def _save_replay_if_needed(self) -> None:
         """Best-effort save of the finished human game as a replay JSON.
@@ -744,8 +858,14 @@ class GameSessionController:
             # authoritative per-turn state was captured; otherwise fall back to
             # the training-safe public format.
             if self._save_full_replay and self._replay_states:
+                # Item 4/6: pass the per-step AI internals (HP + emotion /
+                # belief) alongside the authoritative states when they were
+                # captured, so a loaded full replay carries per-step HP + AI
+                # internals for re-watch and resume. Omit when empty so a legacy
+                # save path is unchanged.
+                internals = self._replay_internals if self._replay_internals else None
                 record = replay_store.build_full_replay_record(
-                    states=self._replay_states, **common
+                    states=self._replay_states, internals=internals, **common
                 )
             else:
                 record = replay_store.build_replay_record(**common)

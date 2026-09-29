@@ -673,6 +673,118 @@ class GameService:
     authoritative_state = get_full_state
     export_state = get_full_state
 
+    def export_agent_internals(self, handle: SessionHandle | str) -> dict[str, Any]:
+        """Return a JSON-safe per-seat snapshot of each AI seat's internal state.
+
+        Item 4: for human-played and AI-spectator games the GUI controller
+        records this per turn so a moment can later be resumed with each dummy /
+        main AI's emotion state and current role belief / guess intact (and so
+        every player's HP is always present in the per-step record even when a
+        seat has no AI internals).
+
+        The returned mapping has two top-level keys:
+
+        * ``health``: a list of every player's current HP (from
+          ``env.state.health``), so HP is always carried per step.
+        * ``seats``: a seat -> descriptor mapping. A DummyAgent seat reuses
+          ``agent.state_dict()`` (which already serializes its emotion module
+          via ``EmotionModule.state_dict`` and its role beliefs / guess via
+          ``RoleBeliefEstimator.state_dict``). A RandomAgent seat records a
+          minimal ``{"kind": "random"}`` descriptor (it has no belief / emotion
+          state). The Main-AI seat (``_ArtifactAgent``) has no single
+          ``state_dict``, so this captures a best-effort descriptor: the
+          inference modules' ``get_state()`` stream buffers where present, all
+          converted JSON-safe.
+
+        This method is DEFENSIVE and never raises: a seat whose serialization
+        fails is recorded as ``{"kind": "unknown"}`` rather than aborting the
+        whole export. It is intentionally kept out of :meth:`get_state`,
+        ``PublicGameState`` and every observation so AI internals never leak
+        into public / training data.
+        """
+
+        session = self._session(handle)
+        env = session.environment
+        health: list[int] = []
+        try:
+            health = [int(value) for value in getattr(env.state, "health", ()) or ()]
+        except Exception:
+            health = []
+        seats: dict[str, Any] = {}
+        agents = getattr(session, "agents", ()) or ()
+        for index, agent in enumerate(agents):
+            seats[str(index)] = self._agent_internal_descriptor(agent)
+        return {"health": _json_value(health), "seats": seats}
+
+    @staticmethod
+    def _agent_internal_descriptor(agent: Any) -> dict[str, Any]:
+        """Return a JSON-safe internal-state descriptor for one AI seat.
+
+        Never raises: any serialization failure degrades to a minimal
+        ``{"kind": "unknown"}`` descriptor. Kept Qt-free.
+        """
+
+        # A DummyAgent carries the emotion module + role belief / guess we want.
+        state_dict = getattr(agent, "state_dict", None)
+        if isinstance(agent, DummyAgent) and callable(state_dict):
+            try:
+                return {"kind": "dummy", "state": _json_value(state_dict())}
+            except Exception:
+                return {"kind": "dummy"}
+        if isinstance(agent, RandomAgent):
+            return {"kind": "random"}
+        if isinstance(agent, HumanAgent):
+            return {"kind": "human"}
+        # Main-AI (_ArtifactAgent): no single state_dict. Capture the inference
+        # modules' stateful stream buffers where available, best effort.
+        artifact = getattr(agent, "artifact", None)
+        if artifact is not None:
+            descriptor: dict[str, Any] = {"kind": "main"}
+            module_states: dict[str, Any] = {}
+            for module_name in ("intent", "emotion"):
+                module = getattr(artifact, module_name, None)
+                get_state = getattr(module, "get_state", None)
+                if callable(get_state):
+                    try:
+                        value = get_state()
+                    except Exception:
+                        value = None
+                    if value is not None:
+                        module_states[module_name] = GameService._json_safe_state(value)
+            if module_states:
+                descriptor["module_states"] = module_states
+            return descriptor
+        # Fall back to a generic state_dict probe for any other agent type.
+        if callable(state_dict):
+            try:
+                return {"kind": "unknown", "state": _json_value(state_dict())}
+            except Exception:
+                return {"kind": "unknown"}
+        return {"kind": "unknown"}
+
+    @staticmethod
+    def _json_safe_state(value: Any) -> Any:
+        """Recursively convert a value (incl. torch / numpy tensors) JSON-safe.
+
+        The main-AI inference modules' ``get_state()`` returns tensors, which
+        ``_json_value`` alone leaves as raw objects. Any object exposing
+        ``tolist`` (torch Tensor / numpy array) is converted to nested lists;
+        everything else defers to :func:`_json_value`. Never raises: an
+        un-convertible value degrades to its ``str`` form. Kept Qt-free.
+        """
+
+        if isinstance(value, Mapping):
+            return {str(key): GameService._json_safe_state(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [GameService._json_safe_state(item) for item in value]
+        tolist = getattr(value, "tolist", None)
+        if callable(tolist) and not isinstance(value, (str, bytes)):
+            try:
+                return tolist()
+            except Exception:
+                return str(value)
+        return _json_value(value)
+
     def restore_session(
         self,
         state_dict: Mapping[str, Any],
@@ -681,6 +793,7 @@ class GameService:
         seed: int | None = None,
         artifact_path: str | Path | None = None,
         config: SystemConfig | Mapping[str, Any] | None = None,
+        internals: Mapping[str, Any] | None = None,
     ) -> SessionHandle:
         """Rebuild a live, continuable session from an authoritative state dict.
 
@@ -713,6 +826,13 @@ class GameService:
             mode=resolved_mode, config=system_config, seed=resolved_seed, artifact_path=artifact_path
         )
         agents = self._build_agents(options, system_config, seed_manager, artifact)
+        # Item 4: optionally restore each AI seat's internal state (dummy
+        # emotion / role belief, main-AI stream buffers) so a resumed session
+        # continues with AI internals intact rather than fresh agents. Every
+        # step here is defensive: a missing / malformed entry leaves that seat's
+        # freshly built agent untouched.
+        if internals is not None:
+            agents = self._restore_agent_internals(agents, internals)
         owned_loggers: tuple[StructuredLogger, ...] = ()
         if self.logger is None:
             streams = [io.StringIO() for _ in range(4)]
@@ -743,6 +863,50 @@ class GameService:
 
     # The controller also probes ``create_session_from_state``; expose the same.
     create_session_from_state = restore_session
+
+    @staticmethod
+    def _restore_agent_internals(
+        agents: tuple[Any, ...], internals: Mapping[str, Any]
+    ) -> tuple[Any, ...]:
+        """Apply a recorded per-seat internals mapping onto freshly built agents.
+
+        Item 4: ``internals`` is the mapping produced by
+        :meth:`export_agent_internals` (``{"health": [...], "seats": {seat: descriptor}}``).
+        Each DummyAgent seat is restored via ``load_state_dict`` and each main-AI
+        seat via its inference modules' ``set_state``, so a resumed session keeps
+        AI emotion / belief intact. Defensive: any per-seat failure is swallowed
+        so a resume never raises and simply keeps that seat's fresh agent.
+        """
+
+        if not isinstance(internals, Mapping):
+            return agents
+        seats = internals.get("seats")
+        if not isinstance(seats, Mapping):
+            return agents
+        for index, agent in enumerate(agents):
+            descriptor = seats.get(str(index))
+            if not isinstance(descriptor, Mapping):
+                continue
+            kind = str(descriptor.get("kind", "")).strip().lower()
+            try:
+                if kind == "dummy" and isinstance(agent, DummyAgent):
+                    state = descriptor.get("state")
+                    if isinstance(state, Mapping):
+                        agent.load_state_dict(dict(state))
+                elif kind == "main":
+                    module_states = descriptor.get("module_states")
+                    artifact = getattr(agent, "artifact", None)
+                    if isinstance(module_states, Mapping) and artifact is not None:
+                        for module_name in ("intent", "emotion"):
+                            value = module_states.get(module_name)
+                            module = getattr(artifact, module_name, None)
+                            set_state = getattr(module, "set_state", None)
+                            if value is not None and callable(set_state):
+                                set_state(value)
+            except Exception:
+                # Keep the freshly built agent for this seat on any failure.
+                continue
+        return agents
 
     def step(self, handle: SessionHandle | str, action: Any | None = None) -> StepResult:
         session = self._session(handle)

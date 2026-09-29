@@ -422,3 +422,56 @@ def test_replay_store_i18n_keys_exist_in_both_languages() -> None:
         assert "ko" in _STRINGS[key]
         for text in _STRINGS[key].values():
             assert "\u2014" not in text
+
+
+# --- item 4 / item 6: per-step internals round-trip (needs numpy DummyAgent) --
+def test_full_replay_internals_round_trip_back_to_dummy_agent(tmp_path) -> None:
+    """A captured DummyAgent state survives the full-replay JSON round-trip and
+    can be handed back to ``DummyAgent.from_state_dict`` to resume its internal
+    emotion / role-belief state."""
+
+    from bang_rl.agents import DummyAgent
+
+    dummy = DummyAgent("player_1", seed=13, player_idx=1)
+    per_seat_state = dummy.state_dict()
+    internals = [
+        {"health": [5, 5, 5, 5, 5], "seats": {"1": {"kind": "dummy", "state": per_seat_state}}},
+        None,  # a per-turn export-miss placeholder must survive as JSON null
+        {"health": [5, 4, 5, 5, 5], "seats": {"1": {"kind": "dummy", "state": per_seat_state}}},
+    ]
+    record = replay_store.build_full_replay_record(
+        mode="human_dummy",
+        mode_label="Human vs Dummy",
+        ai_versions={"1": "dummy", "2": "dummy", "3": "dummy", "4": "dummy"},
+        winning_team="sheriff_team",
+        winners=[0],
+        human_player=0,
+        seed=7,
+        states=[{"episode_id": "e", "environment_step": step} for step in range(3)],
+        internals=internals,
+        observations=_observations(),
+        terminated=True,
+    )
+    path = replay_store.save_replay(record, tmp_path)
+    loaded = replay_store.load_replay(path)
+    assert loaded["internals"][1] is None
+    restored_state = loaded["internals"][0]["seats"]["1"]["state"]
+    # The state round-trips cleanly back into a live DummyAgent.
+    restored_agent = DummyAgent.from_state_dict(restored_state)
+    assert restored_agent.role_estimator.beliefs.shape == dummy.role_estimator.beliefs.shape
+    assert replay_store.replay_summary(loaded)["has_internals"] is True
+
+
+def test_public_replay_never_stores_internals() -> None:
+    public = replay_store.build_replay_record(
+        mode="human_dummy",
+        mode_label="Human vs Dummy",
+        ai_versions={"1": "dummy"},
+        winning_team=None,
+        winners=[],
+        human_player=0,
+        seed=1,
+        observations=_observations(),
+    )
+    assert "internals" not in public
+    assert replay_store.replay_summary(public)["has_internals"] is False
