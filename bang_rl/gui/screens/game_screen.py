@@ -159,8 +159,13 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self._render(controller.snapshot)
             # Item 6: a spectator game has no human action to kick off the AI
             # cadence, so start driving the all-AI turns right away.
-            if self._spectator:
-                self._maybe_start_ai_sequence()
+            # Item 1 (FEAT-003): a HUMAN game whose first turn is an AI seat
+            # (Sheriff-first) also needs the cadence kicked off here so the
+            # initial AI run-up ANIMATES one turn at a time into the human's
+            # first turn (the controller was started with advance_ai=False so it
+            # is still parked on the AI turn). When the human is genuinely first,
+            # is_ai_turn() is False and the timer stays stopped (no double-run).
+            self._maybe_start_ai_sequence()
 
         # -- navigation --------------------------------------------------
         def _go_back(self) -> None:
@@ -315,7 +320,10 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             if self._spectator:
                 snapshot = self.controller.time_travel_to(row)
             else:
-                snapshot = self.controller.restore_to_moment(row)
+                # Item 2 (FEAT-003): advance_ai=False so the restored AI run-up
+                # animates one turn at a time on the QTimer below (the same
+                # cadence as the item-1 startup) instead of fast-forwarding.
+                snapshot = self.controller.restore_to_moment(row, advance_ai=False)
             self._render(snapshot)
             # If the fork resumed a live game with AI seats to act, restart the
             # AI cadence so play continues from the restored moment.

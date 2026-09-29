@@ -288,8 +288,18 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             # torn-down) GameScreen so controller.start()'s internal publish
             # cannot render into deleted C++ widgets.
             self.controller.on_update = None
+            # Item 1 (FEAT-003): for a HUMAN mode whose first turn is an AI
+            # (Sheriff-first), let the GameScreen animate the AI run-up one turn
+            # at a time instead of the controller silently fast-forwarding it.
+            # advance_ai=False keeps the controller on the AI turn so the screen
+            # drives the cadence via _maybe_start_ai_sequence. Spectator modes
+            # already never fast-forward (their _advance_to_human_turn early-
+            # returns), so the default is fine there.
+            advance_ai = not bool(getattr(mode, "is_human", False))
             try:
-                self.controller.start(mode, artifact_path=artifact_path)
+                self.controller.start(
+                    mode, artifact_path=artifact_path, advance_ai=advance_ai
+                )
             except GameGuiError as exc:
                 # showMessage's default timeout auto-clears the text; passing 0
                 # keeps the error visible in the always-present status bar until

@@ -180,7 +180,13 @@ class GameSessionController:
             self.on_update(snapshot)
         return snapshot
 
-    def start(self, mode: GameMode | str, *, artifact_path: str | None = None) -> GameControllerSnapshot:
+    def start(
+        self,
+        mode: GameMode | str,
+        *,
+        artifact_path: str | None = None,
+        advance_ai: bool = True,
+    ) -> GameControllerSnapshot:
         selected = mode if isinstance(mode, GameMode) else GameMode(str(mode))
         if (
             selected in (GameMode.HUMAN_MAIN_DUMMY, GameMode.MAIN_ONE_DUMMY_FOUR)
@@ -226,7 +232,14 @@ class GameSessionController:
             self._save_full_replay = selected.is_human or selected.is_spectator
             self.mode_ai_versions = self._derive_ai_versions(selected)
             self._record_replay_snapshot()
-            self._advance_to_human_turn()
+            # Item 1 (FEAT-003): when ``advance_ai`` is False the graphical
+            # screen drives the AI cadence itself (via step_single_ai_turn on a
+            # QTimer) so the initial Sheriff-first run-up is ANIMATED one turn at
+            # a time instead of silently fast-forwarded. The default (True)
+            # preserves the synchronous fast-forward for headless/default
+            # callers so existing tests and the FakeService flow are unchanged.
+            if advance_ai:
+                self._advance_to_human_turn()
             return self._publish()
         except Exception as exc:
             if self.handle is not None and not self._closed:
@@ -440,7 +453,9 @@ class GameSessionController:
         self.message = None
         return self._publish()
 
-    def restore_to_moment(self, moment: Any) -> GameControllerSnapshot:
+    def restore_to_moment(
+        self, moment: Any, *, advance_ai: bool = True
+    ) -> GameControllerSnapshot:
         """Fork a live, continuable session from a recorded ``moment`` (item 5).
 
         Maps ``moment`` (a log-row index, an ``environment_step`` int, or an
@@ -451,6 +466,13 @@ class GameSessionController:
         can CONTINUE playing from that point: ``active`` becomes True,
         ``previewing`` False, and the replay buffers are reset to the restored
         prefix so the continued line can be saved as a fresh replay.
+
+        When ``advance_ai`` is False (item 2) the caller (the graphical screen)
+        drives the AI cadence one turn at a time on a QTimer, so this method
+        does NOT fast-forward past the restored AI turns; the run-up from the
+        clicked moment then animates one turn at a time into the human's turn.
+        The default (True) preserves the synchronous fast-forward for
+        headless/default callers.
 
         Falls back to the read-only :meth:`time_travel_to` review path when the
         service lacks restore support or no full state was captured, and NEVER
@@ -529,7 +551,12 @@ class GameSessionController:
         self._replay_saved = False
         self.message = None
         self._record_replay_snapshot()
-        if self.active:
+        # Item 2 (FEAT-003): when ``advance_ai`` is False the graphical screen
+        # drives the AI cadence itself so, if the restored moment lands on an AI
+        # seat, the AI turns ANIMATE one at a time from that turn into the
+        # human's turn (matching the item-1 run-up). The default (True) keeps the
+        # synchronous fast-forward for headless/default callers unchanged.
+        if self.active and advance_ai:
             self._advance_to_human_turn()
         return self._publish()
 
