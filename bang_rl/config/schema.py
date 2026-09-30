@@ -426,6 +426,16 @@ class EmotionConfig(ConfigModel):
     # with an empty ``relation_updates`` the relation vector never moves.
     relation_baseline: float = Field(default=0.0, ge=-1.0, le=1.0)
     relation_updates: dict[str, float] = Field(default_factory=dict)
+    # Public-HP control thresholds (EmotionModule schema "1.1").  The emotion
+    # module derives HP-context bucket keys (``target_low_hp`` / ``target_lethal``
+    # / ``self_low_hp`` / ``self_lethal``) from the PUBLIC per-event ``hp_after``.
+    # Both thresholds DEFAULT to ``None`` so no HP bucket key ever fires and
+    # behaviour is byte-for-byte identical to before this feature.  ``hp_after``
+    # at or below ``hp_lethal_threshold`` yields the ``*_lethal`` bucket; at or
+    # below ``hp_low_threshold`` yields the ``*_low_hp`` bucket.  Configure the
+    # matching keys in an emotion definition's ``event_updates`` to react.
+    hp_low_threshold: int | None = Field(default=None, ge=0)
+    hp_lethal_threshold: int | None = Field(default=None, ge=0)
     encoder: Literal["GRU"] = "GRU"
     hidden_size: Literal[128] = 128
     num_layers: Literal[1] = 1
@@ -478,6 +488,18 @@ class EmotionConfig(ConfigModel):
             raise ValueError("relation_baseline must be a finite number in [-1, 1]")
         if not isfinite(float(value)):
             raise ValueError("relation_baseline must be a finite number in [-1, 1]")
+        return value
+
+    @field_validator("hp_low_threshold", "hp_lethal_threshold", mode="before")
+    @classmethod
+    def hp_threshold_must_be_non_negative_int_or_none(cls, value: object) -> object:
+        # ``None`` keeps the HP buckets a strict no-op (the shipped default).  When
+        # a threshold is provided it must be a genuine non-negative integer HP
+        # value; booleans are rejected so ``True``/``False`` never masquerade as 1/0.
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("HP thresholds must be a non-negative integer or None")
         return value
 
     @field_validator("relation_updates")

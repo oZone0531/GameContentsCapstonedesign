@@ -418,3 +418,190 @@ def test_unsupported_state_version_is_rejected() -> None:
     state["schema_version"] = "2.0"
     with pytest.raises(ValueError, match="unsupported emotion module state schema"):
         EmotionModule.from_state_dict(state)
+
+
+# ---------------------------------------------------------------------------
+# HP-context bucket + public board snapshot tests (FEAT-003).
+#
+# These construct an EmotionConfig / EmotionModule / DummyAgent and so import
+# numpy + pydantic; they are therefore CI-only and do not run in the restricted
+# sandbox.  The numpy-free portion of the HP-bucket derivation lives in
+# test_emotion_hp_buckets.py, which does run in the sandbox.
+# ---------------------------------------------------------------------------
+
+
+def _hp_config(
+    event_updates: dict[str, float],
+    *,
+    hp_low_threshold: int | None = None,
+    hp_lethal_threshold: int | None = None,
+) -> EmotionConfig:
+    """A single-emotion config for exercising HP-context bucket keys.
+
+    ``change_rate`` is 0.0 so a plain event with no matching key applies nothing;
+    only a configured HP/relationship/event key moves the value, keeping the
+    delta assertions unambiguous.
+    """
+
+    return EmotionConfig(
+        schema_version="hp-test-v1",
+        hp_low_threshold=hp_low_threshold,
+        hp_lethal_threshold=hp_lethal_threshold,
+        emotions=[
+            {
+                "name": "fear",
+                "initial_value": 0.5,
+                "change_rate": 0.0,
+                "decay_rate": 0.0,
+                "event_updates": event_updates,
+            }
+        ],
+    )
+
+
+def test_hp_bucket_key_fires_only_when_thresholds_configured() -> None:
+    seat = 0
+    event = {
+        "event_id": 1,
+        "event_type": "bang",
+        "actor_idx": 3,
+        "target_idx": 2,
+        "hp_after": 1,
+    }
+    # Without thresholds the HP bucket key is never derived -> plain change_rate 0.
+    without = EmotionModule(_hp_config({"target_low_hp": 0.4}), player_idx=seat)
+    assert _applied_delta(without, dict(event)) == pytest.approx(0.0)
+    # With the low threshold configured the target_low_hp key fires.
+    with_threshold = EmotionModule(
+        _hp_config({"target_low_hp": 0.4}, hp_low_threshold=1), player_idx=seat
+    )
+    assert _applied_delta(with_threshold, dict(event)) == pytest.approx(0.4)
+
+
+def test_hp_lethal_key_wins_over_plain_event_key() -> None:
+    seat = 0
+    module = EmotionModule(
+        _hp_config(
+            {"target_lethal": 0.6, "bang": 0.1},
+            hp_low_threshold=2,
+            hp_lethal_threshold=0,
+        ),
+        player_idx=seat,
+    )
+    # hp_after 0 -> target_lethal precedes plain bang.
+    delta = _applied_delta(
+        module,
+        {
+            "event_id": 1,
+            "event_type": "bang",
+            "actor_idx": 3,
+            "target_idx": 2,
+            "hp_after": 0,
+        },
+    )
+    assert delta == pytest.approx(0.6)
+
+
+def test_relationship_key_still_wins_over_hp_key() -> None:
+    seat = 2
+    module = EmotionModule(
+        _hp_config(
+            {"bang_at_me": 0.5, "self_low_hp": 0.3, "bang": 0.1},
+            hp_low_threshold=2,
+        ),
+        player_idx=seat,
+    )
+    # A bang aimed at our own low-HP seat matches both bang_at_me and self_low_hp;
+    # the relationship key must retain precedence over the HP key.
+    delta = _applied_delta(
+        module,
+        {
+            "event_id": 1,
+            "event_type": "bang",
+            "actor_idx": 0,
+            "target_idx": seat,
+            "hp_after": 1,
+        },
+    )
+    assert delta == pytest.approx(0.5)
+
+
+def test_hp_default_config_behaviour_is_unchanged() -> None:
+    seat = 1
+    # A config that predates HP thresholds (defaults None) with a plain bang rule
+    # behaves exactly as before: the plain key applies, no HP key interferes.
+    module = EmotionModule(
+        EmotionConfig(
+            schema_version="hp-default-v1",
+            emotions=[{"name": "fear", "initial_value": 0.5, "event_updates": {"bang": 0.2}}],
+        ),
+        player_idx=seat,
+    )
+    delta = _applied_delta(
+        module,
+        {
+            "event_id": 1,
+            "event_type": "bang",
+            "actor_idx": 3,
+            "target_idx": seat,
+            "hp_after": 0,
+        },
+    )
+    assert delta == pytest.approx(0.2)
+
+
+def test_hp_thresholds_default_none_and_reject_bool() -> None:
+    assert EmotionConfig().hp_low_threshold is None
+    assert EmotionConfig().hp_lethal_threshold is None
+    with pytest.raises(Exception):
+        EmotionConfig(hp_low_threshold=True)
+
+
+def test_observe_public_state_holds_transient_board_snapshot() -> None:
+    module = EmotionModule(_hp_config({}), player_idx=0)
+    assert module.board_healths is None
+    assert module.board_alive is None
+    module.observe_public_state([5, 4, 0, 4, 4], [True, True, False, True, True])
+    np.testing.assert_allclose(module.board_healths, np.asarray([5, 4, 0, 4, 4], dtype=np.float32))
+    assert module.board_alive.tolist() == [True, True, False, True, True]
+    # A returned copy is detached from internal state.
+    snapshot = module.board_healths
+    snapshot[0] = 99.0
+    assert module.board_healths[0] == pytest.approx(5.0)
+    # The snapshot is transient: it is not part of the serialized state.
+    assert "board_healths" not in module.state_dict()
+    assert "board_alive" not in module.state_dict()
+
+
+def test_observe_public_state_missing_board_is_safe_noop() -> None:
+    module = EmotionModule(_hp_config({}), player_idx=0)
+    module.observe_public_state([5, 4, 4, 4, 4], [True] * 5)
+    # A later fixture that omits the board clears the snapshot rather than raising.
+    module.observe_public_state(None, None)
+    assert module.board_healths is None
+    assert module.board_alive is None
+
+
+def test_dummy_agent_feeds_public_board_into_emotion_module() -> None:
+    observation = {
+        "healths": [5, 4, 4, 4, 4],
+        "alive": [True, True, True, True, True],
+        "environment_step": [0],
+        "event_sequence": (),
+    }
+    agent = DummyAgent(agent_id="player_0", player_idx=0)
+    agent._prepare_emotion(observation)
+    np.testing.assert_allclose(
+        agent.emotion_module.board_healths, np.asarray([5, 4, 4, 4, 4], dtype=np.float32)
+    )
+    assert agent.emotion_module.board_alive.tolist() == [True] * 5
+
+
+def test_dummy_agent_missing_board_is_safe_noop() -> None:
+    # A tiny fixture with no healths/alive must not crash; the module simply
+    # holds no board snapshot.
+    observation = {"environment_step": [0], "event_sequence": ()}
+    agent = DummyAgent(agent_id="player_0", player_idx=0)
+    agent._prepare_emotion(observation)
+    assert agent.emotion_module.board_healths is None
+    assert agent.emotion_module.board_alive is None

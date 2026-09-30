@@ -222,6 +222,79 @@ def _relation_event_seats(
     return tuple(result)
 
 
+def _hp_number(value: Any) -> int | None:
+    """Return a genuine integer HP value, or ``None`` when unknown.
+
+    Public ``hp_before`` / ``hp_after`` fields are optional (``int | None``).
+    Booleans are rejected (mirroring the other seat/index guards in this module)
+    and any non-integer / ``None`` value is treated as unknown so no HP bucket
+    fires.  The helper avoids importing numpy so it can be reused by pure,
+    dependency-free unit tests.
+    """
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return int(value)
+    return None
+
+
+def _hp_event_bucket_keys(
+    event_type: str,
+    hp_after: Any,
+    target_idx: Any,
+    eliminated_idx: Any,
+    player_idx: Any,
+    low_threshold: Any,
+    lethal_threshold: Any,
+) -> tuple[str, ...]:
+    """Derive HP-context bucket keys from PUBLIC per-event health numbers.
+
+    This is the health counterpart of :func:`_relationship_event_keys`.  It maps
+    the raw PUBLIC ``hp_after`` of the affected seat (the ``target_idx`` that took
+    damage, or ``eliminated_idx`` for an elimination) to documented, deterministic
+    bucket keys that ``event_updates`` rules can match.  Nothing private is read.
+
+    Thresholds are sourced from ``EmotionConfig`` and DEFAULT to ``None``.  When a
+    threshold is ``None`` (or not a genuine number), its bucket never fires, so
+    with the shipped defaults this helper returns an empty tuple and behaviour is
+    byte-for-byte identical to before the HP feature.
+
+    Vocabulary (ordered most-specific-first):
+    * ``self_lethal`` / ``self_low_hp`` when the affected seat is our OWN seat
+      (``player_idx``) and its ``hp_after`` is at/under the lethal / low
+      threshold respectively.
+    * ``target_lethal`` / ``target_low_hp`` when the affected seat is a DIFFERENT
+      seat and its ``hp_after`` is at/under the lethal / low threshold.
+
+    ``lethal`` is emitted before ``low_hp`` so a lethal blow takes precedence over
+    a merely-low one; the ``self_*`` keys are emitted before the ``target_*`` keys
+    so a hit on our own seat is matched most specifically.  The affected seat is
+    ``target_idx`` for damage events; when ``target_idx`` is unknown the
+    ``eliminated_idx`` seat is used so eliminations still bucket.  When the
+    affected seat or ``hp_after`` is unknown, no key is produced.
+    """
+
+    hp = _hp_number(hp_after)
+    if hp is None:
+        return ()
+    affected = _seat_index(target_idx)
+    if affected is None:
+        affected = _seat_index(eliminated_idx)
+    if affected is None:
+        return ()
+    seat = _seat_index(player_idx)
+    is_self = seat is not None and affected == seat
+    low = _hp_number(low_threshold)
+    lethal = _hp_number(lethal_threshold)
+    keys: list[str] = []
+    if lethal is not None and hp <= lethal:
+        keys.append("self_lethal" if is_self else "target_lethal")
+    if low is not None and hp <= low:
+        keys.append("self_low_hp" if is_self else "target_low_hp")
+    return tuple(keys)
+
+
 def _finite_number(value: Any, label: str) -> float:
     if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.integer, np.floating)):
         raise TypeError(f"{label} must be a finite number")
@@ -272,6 +345,13 @@ class EmotionModule:
         # the neutral baseline and is never mutated.
         self._relation_baseline = float(self.config.relation_baseline)
         self._relation = np.full(PLAYER_COUNT, self._relation_baseline, dtype=np.float32)
+        # Latest PUBLIC per-seat health/alive snapshot.  This is TRANSIENT board
+        # context (recomputed every step from the observation) so it is NOT part
+        # of state_dict and the serialized schema stays at "1.1".  It starts empty
+        # (no snapshot) so control judgments that read it safely no-op until a
+        # board is observed.
+        self._board_healths: np.ndarray | None = None
+        self._board_alive: np.ndarray | None = None
         self.episode_id: str | None = None
         self.episode_seed: int | None = None
         self.last_event_id: int | None = None
@@ -362,6 +442,62 @@ class EmotionModule:
         return self._relation_baseline
 
     @property
+    def board_healths(self) -> np.ndarray | None:
+        """Return a detached copy of the latest PUBLIC per-seat health snapshot.
+
+        The array has length ``PLAYER_COUNT`` (float32) and mirrors the
+        observation's public ``healths`` field.  ``None`` means no board has been
+        observed yet (small fixtures, or before the first :meth:`observe_public_state`
+        call), so control judgments that read it can safely no-op.  This snapshot
+        is TRANSIENT: it is recomputed each step and is intentionally NOT part of
+        ``state_dict`` so the serialized schema stays at "1.1".
+        """
+
+        return None if self._board_healths is None else self._board_healths.copy()
+
+    @property
+    def board_alive(self) -> np.ndarray | None:
+        """Return a detached copy of the latest PUBLIC per-seat alive snapshot.
+
+        The array has length ``PLAYER_COUNT`` (bool) and mirrors the observation's
+        public ``alive`` field.  ``None`` means no board has been observed yet.  Like
+        :attr:`board_healths` this is TRANSIENT and never serialized.
+        """
+
+        return None if self._board_alive is None else self._board_alive.copy()
+
+    def observe_public_state(self, healths: Any = None, alive: Any = None) -> None:
+        """Hold the latest PUBLIC per-seat health/alive snapshot (transient).
+
+        ``healths`` / ``alive`` come straight from the observation's PUBLIC
+        ``healths`` and ``alive`` fields; nothing private is read.  The snapshot is
+        validated exactly like ``FactionStrengthEstimator._board`` (length
+        ``PLAYER_COUNT``, finite non-negative healths, binary alive) so control
+        judgments and later tasks can rely on it.
+
+        Passing ``None`` for either field (a fixture that omits the board) CLEARS
+        the snapshot to "no board observed" rather than raising, mirroring the way
+        the intent policy treats a missing board as a safe no-op.  This method does
+        NOT touch emotion values, the relation vector, event dedup, or the [0, 1]
+        clamp; it only records board context for control judgments to read.
+        """
+
+        if healths is None or alive is None:
+            self._board_healths = None
+            self._board_alive = None
+            return
+        health = np.asarray(healths, dtype=np.float32).reshape(-1)
+        living = np.asarray(alive).reshape(-1)
+        if health.shape != (PLAYER_COUNT,) or living.shape != (PLAYER_COUNT,):
+            raise ValueError("healths and alive must each contain five entries")
+        if not np.all(np.isfinite(health)) or np.any(health < 0.0):
+            raise ValueError("public healths must be finite and non-negative")
+        if living.dtype.kind not in "biu" or np.any((living != 0) & (living != 1)):
+            raise ValueError("alive must contain binary values")
+        self._board_healths = health
+        self._board_alive = living.astype(bool)
+
+    @property
     def processed_event_ids(self) -> tuple[int, ...]:
         return tuple(sorted(self._processed_event_ids))
 
@@ -392,6 +528,8 @@ class EmotionModule:
 
         self._values = self._baselines.copy()
         self._relation = np.full(PLAYER_COUNT, self._relation_baseline, dtype=np.float32)
+        self._board_healths = None
+        self._board_alive = None
         self.last_event_id = None
         self.last_environment_step = None
         self._processed_event_ids.clear()
@@ -434,6 +572,8 @@ class EmotionModule:
         event_type: str,
         actor_idx: Any = None,
         target_idx: Any = None,
+        hp_after: Any = None,
+        eliminated_idx: Any = None,
     ) -> float:
         aliases = {
             "elimination": "player_eliminated",
@@ -443,16 +583,30 @@ class EmotionModule:
         # event_type wire spelling, not the alias.
         normalized = aliases.get(event_type, event_type)
         # Precedence (first match wins): most-specific relationship key(s) ->
-        # plain event_type -> normalized alias -> "*" -> change_rate.  Among the
-        # relationship keys the actor-relative (_by_*) key is tried before the
-        # target-relative (_at_*) key.  When self.player_idx is None the helper
-        # returns (), so relationship keys are skipped entirely.
+        # HP-context bucket key(s) -> plain event_type -> normalized alias ->
+        # "*" -> change_rate.  Among the relationship keys the actor-relative
+        # (_by_*) key is tried before the target-relative (_at_*) key.  The HP
+        # bucket keys sit AFTER the relationship keys (which encode who-did-what-
+        # to-whom, the most specific signal) but BEFORE the plain event_type, so
+        # a configured HP rule refines the generic event.  When self.player_idx
+        # is None the relationship helper returns (); when no HP thresholds are
+        # configured the HP helper returns (), so both are strict no-ops that
+        # preserve the pre-existing plain-key behaviour exactly.
         relationship_keys = _relationship_event_keys(
             event_type, actor_idx, target_idx, self.player_idx
         )
+        hp_keys = _hp_event_bucket_keys(
+            event_type,
+            hp_after,
+            target_idx,
+            eliminated_idx,
+            self.player_idx,
+            self.config.hp_low_threshold,
+            self.config.hp_lethal_threshold,
+        )
         value = self._rule_value(
             definition.event_updates,
-            relationship_keys + (event_type, normalized, "*"),
+            relationship_keys + hp_keys + (event_type, normalized, "*"),
         )
         return definition.change_rate if value is None else value
 
@@ -478,8 +632,15 @@ class EmotionModule:
         # to every definition.
         actor_idx = values.get("actor_idx")
         target_idx = values.get("target_idx")
+        # hp_after / eliminated_idx are PUBLIC per-event health fields (kept by
+        # GameEvent.to_public_dict); they feed the HP-context bucket keys.  They
+        # default to None so events that omit them simply produce no HP key.
+        hp_after = values.get("hp_after")
+        eliminated_idx = values.get("eliminated_idx")
         deltas = [
-            self._event_value(definition, event_type, actor_idx, target_idx)
+            self._event_value(
+                definition, event_type, actor_idx, target_idx, hp_after, eliminated_idx
+            )
             for definition in self._definitions
         ]
         # Per-opponent relation update is guarded by the SAME dedup gate below

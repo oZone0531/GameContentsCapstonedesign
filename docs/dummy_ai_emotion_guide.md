@@ -32,6 +32,8 @@ GUI의 "더미 AI 설정" 창에서 감정별로 보이는 행(row)과 그 안�
 | `emotions` | 목록 | 아래 3절 참고 | 감정 정의 목록. 이름은 서로 **중복될 수 없습니다.** |
 | `relation_baseline` | 실수 | `[-1, 1]` | 기본 `0.0`. 상대별 관계 벡터(3.4 절)의 중립 기준값입니다. 모든 좌석이 이 값에서 시작합니다. |
 | `relation_updates` | `{문자열: 유한숫자}` | 키는 비어 있지 않은 문자열, 값은 유한 숫자 | 기본 `{}`. 상대별 관계 벡터를 움직이는 규칙(3.4 절). **비워 두면 관계 벡터는 전혀 움직이지 않으므로 기존 설정과 완전히 동일하게 동작합니다.** |
+| `hp_low_threshold` | 정수 또는 `null` | `>= 0` | 기본 `null`. 공개 `hp_after`가 이 값 이하이면 `target_low_hp` / `self_low_hp` HP 버킷 키가 발동합니다(3.6 절). **`null`이면 해당 키는 전혀 발동하지 않아 기존 동작과 동일합니다.** |
+| `hp_lethal_threshold` | 정수 또는 `null` | `>= 0` | 기본 `null`. 공개 `hp_after`가 이 값 이하이면 `target_lethal` / `self_lethal` HP 버킷 키가 발동합니다(3.6 절). **`null`이면 해당 키는 전혀 발동하지 않아 기존 동작과 동일합니다.** |
 
 그 밖의 필드(`encoder`, `hidden_size=128`, `num_layers`, `batch_first`, `dropout`, `emotion_head_hidden_size`, `output_activation`, `loss`, `optimizer` 등)는 모두 고정 리터럴입니다. **생략하면 기본값이 그대로 쓰이므로 손으로 적을 필요가 없습니다.** 감정 설계에는 위 표의 4개 필드만 신경 쓰면 됩니다.
 
@@ -167,6 +169,54 @@ GUI의 "더미 AI 설정" 창에서 감정별로 보이는 행(row)과 그 안�
 
 - `state_dict`/`to_json`은 이제 항상 `"1.1"`을 기록하고, 관계 벡터(`relation`)와 그 기준값(`relation_baseline`)을 함께 직렬화합니다.
 - **하위 호환:** `from_state_dict`/`from_json`은 예전 `"1.0"` 상태와 새 `"1.1"` 상태를 **모두 받아들입니다.** `"1.0"` 상태에는 관계 필드가 없으므로, 불러올 때 관계 벡터를 중립 기준값으로 기본 설정하여 메모리 상에서 업그레이드합니다. 그 밖의 버전은 거부됩니다.
+
+### 3.6 공개 체력/생존 입력과 HP 버킷 키 (`hp_low_threshold` / `hp_lethal_threshold`)
+
+감정 모듈은 이제 **공개 체력/생존 정보**를 함께 소비할 수 있습니다. 남은 HP를 기준으로 "공격이냐 불안이냐" 같은 통제 판단을 규칙으로 표현하기 위한 것입니다. 읽는 값은 모두 이미 공개된 정보뿐이며, 비공개 역할(role) 등은 절대 사용하지 않습니다.
+
+두 가지 입력 경로가 있습니다.
+
+**(a) 이벤트 지역 HP 버킷 키.** 각 공개 이벤트에는 이미 공개 필드 `hp_after`(피해를 입은 좌석의 남은 HP)와 `eliminated_idx`가 실려 있습니다(`GameEvent.to_public_dict`가 그대로 유지). 감정 모듈은 이 `hp_after`를 설정된 임계값과 비교해 아래의 **HP 버킷 키**를 만들어 `event_updates`에서 매칭합니다.
+
+- `target_lethal` = 피해 좌석이 **다른 좌석**이고 그 `hp_after`가 `hp_lethal_threshold` 이하.
+- `target_low_hp` = 피해 좌석이 **다른 좌석**이고 그 `hp_after`가 `hp_low_threshold` 이하.
+- `self_lethal` = 피해 좌석이 **내 좌석**(`player_idx`)이고 `hp_after`가 `hp_lethal_threshold` 이하.
+- `self_low_hp` = 피해 좌석이 **내 좌석**이고 `hp_after`가 `hp_low_threshold` 이하.
+
+피해 좌석은 우선 `target_idx`로 정하고, `target_idx`가 없으면 `eliminated_idx`를 사용합니다. `hp_after`나 피해 좌석을 알 수 없으면 어떤 HP 키도 만들지 않습니다.
+
+**정밀도(precedence) 순서.** `event_updates` 조회는 다음 순서로 첫 번째 일치를 채택합니다.
+
+1. 관계 기반 키(`_by_*` -> `_at_*`, 3.3 절) - 누가 누구에게 했는지가 가장 구체적인 신호이므로 최우선.
+2. **HP 버킷 키**(`_lethal`이 `_low_hp`보다, `self_*`가 `target_*`보다 먼저) - 일반 이벤트를 HP 상황으로 세분화.
+3. 일반 `event_type` -> 별칭(alias) -> `"*"` -> `change_rate`.
+
+즉 HP 키는 관계 키 **뒤**, 일반 `event_type` **앞**에 놓입니다.
+
+**(b) 보드 수준 체력/생존 스냅샷.** 감정 모듈은 최신 공개 좌석별 체력/생존 스냅샷을 보관하는 `observe_public_state(healths, alive)` 메서드를 제공합니다. 이 스냅샷은 읽기 전용 접근자 `board_healths` / `board_alive`로 노출됩니다(각각 detached 복사본; 관측된 보드가 없으면 `None`). 스냅샷은 매 스텝 관측에서 다시 계산되는 **일시적(transient)** 값이라 `state_dict`에 포함되지 않으며, 따라서 직렬화 스키마는 그대로 `"1.1"`을 유지합니다. `DummyAgent`는 관측의 공개 `healths` / `alive` 필드를 (`_field`로만) 읽어 이 메서드에 전달하며, 두 필드가 없는 작은 픽스처는 스냅샷을 비운 채 안전하게 무시합니다.
+
+**하위 호환.** `hp_low_threshold`와 `hp_lethal_threshold`는 **둘 다 기본값이 `None`**입니다. 임계값이 `None`이면 해당 HP 버킷 키는 **전혀 만들어지지 않으므로**, HP 규칙을 설정하지 않은 기존 설정은 이 기능 도입 전과 **완전히 동일하게(byte-for-byte)** 동작합니다. HP 소비는 `event_id` 중복 제거나 감정 값 `[0, 1]` 잘림 규칙을 바꾸지 않습니다.
+
+예시(`fear` 감정의 `event_updates` + 임계값):
+
+```json
+{
+  "hp_low_threshold": 1,
+  "hp_lethal_threshold": 0,
+  "emotions": [
+    {
+      "name": "fear",
+      "event_updates": {
+        "self_low_hp": 0.3,
+        "self_lethal": 0.6,
+        "target_low_hp": -0.1
+      }
+    }
+  ]
+}
+```
+
+의미: 내 좌석이 1 HP 이하로 떨어지면 공포 `+0.3`, 0 HP(치명)면 `+0.6`, 다른 좌석이 1 HP 이하로 몰리면 공포 `-0.1`(안심). 임계값을 적지 않으면(기본 `None`) 이 키들은 절대 발동하지 않습니다.
 
 ---
 
@@ -481,4 +531,5 @@ GUI 입력 항목과 파일 필드 대응:
 - [ ] 게임 정의 키(`event_type`, 결과명)의 철자를 확신하는가? 확신이 없으면 `"*"` 또는 `change_rate`로 처리했는가?
 - [ ] "내가 대상일 때만" 처럼 더 세밀하게 반응시키고 싶다면 관계 기반 키(`bang_at_me` / `bang_by_me` 등, 3.3 절)를 활용했는가?
 - [ ] "어느 상대인지"까지 구분해 원한/신뢰를 쌓고 싶다면 상대별 관계 벡터(`relation_updates`, 3.4 절)를 사용했는가? (비워 두면 기존 동작과 동일)
+- [ ] 남은 HP로 통제 판단(공격/불안)을 나누고 싶다면 `hp_low_threshold` / `hp_lethal_threshold`를 설정하고 대응하는 HP 버킷 키(`self_low_hp`, `target_lethal` 등, 3.6 절)를 `event_updates`에 넣었는가? (임계값을 비워 두면 기존 동작과 동일)
 - [ ] 모든 숫자가 유한값이고 초기값이 `[0, 1]` 안에 있는가?

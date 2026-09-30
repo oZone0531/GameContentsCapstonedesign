@@ -239,12 +239,43 @@ class DummyAgent(BaseAgent):
             raise ValueError("environment_step must be a non-negative integer")
         return int(value)
 
+    @classmethod
+    def _board_state(cls, observation: Any) -> tuple[Any, Any]:
+        """Return the PUBLIC per-seat (healths, alive) from the observation.
+
+        Reads only the public ``healths`` / ``alive`` fields through ``_field``
+        (never a private field).  A fixture that omits either field yields
+        ``(None, None)`` so the emotion module treats it as "no board observed"
+        (a safe no-op), exactly like ``FactionStrengthEstimator._board`` /
+        ``IntentModule._alive_and_health`` tolerate a missing board.
+        """
+
+        healths = cls._field(observation, "healths", "health", default=None)
+        alive = cls._field(observation, "alive", default=None)
+        if healths is None or alive is None:
+            return None, None
+        return healths, alive
+
     def _prepare_emotion(self, observation: Any) -> None:
+        healths, alive = self._board_state(observation)
         self._prepare_emotion_values(
-            self._public_events(observation), self._environment_step(observation)
+            self._public_events(observation),
+            self._environment_step(observation),
+            healths,
+            alive,
         )
 
-    def _prepare_emotion_values(self, events: tuple[Any, ...], step: int | None) -> None:
+    def _prepare_emotion_values(
+        self,
+        events: tuple[Any, ...],
+        step: int | None,
+        healths: Any = None,
+        alive: Any = None,
+    ) -> None:
+        # Feed the latest PUBLIC board snapshot into the emotion module before
+        # applying events so control judgments can read it.  A missing board
+        # (None) clears the snapshot to a safe no-op.
+        self.emotion_module.observe_public_state(healths, alive)
         if step is None:
             # Small standalone fixtures may omit the environment clock.  They
             # can still deliver a valid public event boundary, but no decay is
@@ -279,8 +310,11 @@ class DummyAgent(BaseAgent):
         # mutating either private module.
         public_events = self._public_events(observation)
         environment_step = self._environment_step(observation)
+        board_healths, board_alive = self._board_state(observation)
         self.role_estimator.update(observation)
-        self._prepare_emotion_values(public_events, environment_step)
+        self._prepare_emotion_values(
+            public_events, environment_step, board_healths, board_alive
+        )
         intent = self.intent_module.decision(observation, self.role_beliefs)
         selection = ActionSelector.select_with_info(
             intent.scores,
