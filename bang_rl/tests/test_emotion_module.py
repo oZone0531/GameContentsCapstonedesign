@@ -160,3 +160,105 @@ def test_emotion_config_can_add_and_remove_items_without_code_changes() -> None:
 
     assert EmotionModule(one).emotion_names == ("calm",)
     assert EmotionModule(two).emotion_names == ("calm", "alert")
+
+
+# ---------------------------------------------------------------------------
+# Relationship-key coverage (FEAT-002).
+#
+# The cases below require numpy + pydantic (EmotionModule/EmotionConfig) and are
+# therefore CI-only: they cannot run in the restricted sandbox where those
+# packages are unavailable.  The numpy-free portion of this behaviour lives in
+# test_emotion_relationship_keys.py, which does run in the sandbox.
+# ---------------------------------------------------------------------------
+
+
+def _relationship_config(event_updates: dict[str, float]) -> EmotionConfig:
+    """A single-emotion config with a neutral 0.0 change_rate fallback.
+
+    ``initial_value`` is 0.5 and ``change_rate`` is 0.0 so any applied delta is
+    entirely attributable to the matched ``event_updates`` rule (no decay, no
+    fallback noise), keeping the assertions unambiguous.
+    """
+
+    return EmotionConfig(
+        schema_version="relationship-test-v1",
+        emotions=[
+            {
+                "name": "fear",
+                "initial_value": 0.5,
+                "change_rate": 0.0,
+                "decay_rate": 0.0,
+                "event_updates": event_updates,
+            }
+        ],
+    )
+
+
+def _applied_delta(module: EmotionModule, event: dict) -> float:
+    """Return the change a single event applies to the (single) emotion value."""
+
+    before = float(module.values[0])
+    after = float(module.apply_event(event)[0])
+    return after - before
+
+
+def test_relationship_key_overrides_plain_key_when_target_is_me() -> None:
+    seat = 2
+    module = EmotionModule(_relationship_config({"bang_at_me": 0.5, "bang": 0.1}), player_idx=seat)
+    # bang aimed at our own seat -> the bang_at_me relationship key wins.
+    delta = _applied_delta(
+        module, {"event_id": 1, "event_type": "bang", "actor_idx": 0, "target_idx": seat}
+    )
+    assert delta == pytest.approx(0.5)
+
+
+def test_relationship_key_falls_back_to_plain_key_for_other_target() -> None:
+    seat = 2
+    module = EmotionModule(_relationship_config({"bang_at_me": 0.5, "bang": 0.1}), player_idx=seat)
+    # bang aimed at someone else -> no bang_at_me match, plain "bang" applies.
+    delta = _applied_delta(
+        module, {"event_id": 1, "event_type": "bang", "actor_idx": 0, "target_idx": 4}
+    )
+    assert delta == pytest.approx(0.1)
+
+
+def test_relationship_keys_disabled_when_player_idx_none() -> None:
+    module = EmotionModule(_relationship_config({"bang_at_me": 0.5, "bang": 0.1}), player_idx=None)
+    # With no seat, relationship keys never fire regardless of target.
+    delta_at_me = _applied_delta(
+        module, {"event_id": 1, "event_type": "bang", "actor_idx": 0, "target_idx": 2}
+    )
+    assert delta_at_me == pytest.approx(0.1)
+    delta_other = _applied_delta(
+        module, {"event_id": 2, "event_type": "bang", "actor_idx": 0, "target_idx": 4}
+    )
+    assert delta_other == pytest.approx(0.1)
+
+
+def test_plain_only_config_is_backward_compatible() -> None:
+    seat = 2
+    module_hit = EmotionModule(_relationship_config({"bang": 0.4}), player_idx=seat)
+    module_miss = EmotionModule(_relationship_config({"bang": 0.4}), player_idx=seat)
+    # A plain-only config yields the same delta whether or not actor/target
+    # match our seat.
+    delta_at_me = _applied_delta(
+        module_hit, {"event_id": 1, "event_type": "bang", "actor_idx": seat, "target_idx": seat}
+    )
+    delta_other = _applied_delta(
+        module_miss, {"event_id": 1, "event_type": "bang", "actor_idx": 0, "target_idx": 4}
+    )
+    assert delta_at_me == pytest.approx(0.4)
+    assert delta_other == pytest.approx(0.4)
+
+
+def test_actor_relative_key_beats_target_relative_key() -> None:
+    seat = 1
+    module = EmotionModule(
+        _relationship_config({"bang_by_me": 0.7, "bang_at_me": 0.5}), player_idx=seat
+    )
+    # actor == target == our seat: both by_me and at_me match, but the
+    # actor-relative by_me key is tried first and wins.
+    delta = _applied_delta(
+        module, {"event_id": 1, "event_type": "bang", "actor_idx": seat, "target_idx": seat}
+    )
+    assert delta == pytest.approx(0.7)
