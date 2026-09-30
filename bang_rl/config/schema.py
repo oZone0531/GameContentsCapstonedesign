@@ -330,6 +330,7 @@ class IntentPolicyConfig(ConfigModel):
     sheriff_role_bonus: float = 1.0
     deputy_role_bonus: float = 0.25
     target_health_weight: float = 0.0
+    relation_target_weight: float = 0.0
     role_target_weights: dict[str, float] = Field(default_factory=dict)
     optimizer: FixedOptimizerConfig = Field(
         default_factory=lambda: FixedOptimizerConfig(learning_rate=0.001)

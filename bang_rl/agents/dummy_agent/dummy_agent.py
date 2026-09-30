@@ -27,6 +27,41 @@ _PRIVATE_FIELDS = {
 }
 
 
+def _relation_target_contribution(
+    relation: Any,
+    weight: float,
+    player_idx: int | None,
+) -> list[float]:
+    """Return the per-target relation term over the length-6 action space.
+
+    The action space is: index ``0`` = pass; indices ``1..5`` = bang at seat
+    ``s`` where ``s = action_index - 1``.  Pass gets no term.  For each bang
+    action the term is ``-weight * relation[s]``.
+
+    Sign convention (consistent with FEAT-002): ``relation[s]`` is signed, with
+    negative meaning grudge and positive meaning trust.  The leading minus sign
+    means that, with ``weight > 0``, a grudge (negative relation) toward seat
+    ``s`` produces a POSITIVE bump to the "bang seat ``s``" score, so the agent
+    is biased to shoot the opponent it resents; trust (positive relation)
+    lowers that score.  With ``weight == 0.0`` (the default) every entry is
+    exactly ``0.0`` so action selection is byte-for-byte unchanged.
+
+    The self slot (``s == player_idx``) is neutral in the relation vector, so
+    its term is ~0; it is skipped defensively regardless.  This helper is pure
+    (builtins only, no numpy) so it is unit-testable in the restricted sandbox.
+    """
+
+    contribution = [0.0] * 6
+    weight_value = float(weight)
+    if weight_value == 0.0:
+        return contribution
+    for seat in range(5):
+        if player_idx is not None and seat == player_idx:
+            continue
+        contribution[seat + 1] = -weight_value * float(relation[seat])
+    return contribution
+
+
 def _json_safe(value: Any) -> Any:
     """Convert NumPy RNG state values to stable JSON-compatible values."""
 
@@ -295,6 +330,18 @@ class DummyAgent(BaseAgent):
                 for name, effect in effects.items()
                 if name in by_name
             )
+        # Additive per-target relation term (FEAT-004): bias banging a resented
+        # seat when relation_target_weight > 0.  Defaults to exactly 0.0 so
+        # existing configs and determinism are preserved.  Read relation via the
+        # read-only property (a detached copy); never mutate emotion/relation
+        # state during action selection.
+        weight = float(self.intent_module.config.relation_target_weight)
+        if weight != 0.0:
+            relation = self.emotion_module.relation
+            target_term = _relation_target_contribution(
+                relation, weight, self.emotion_module.player_idx
+            )
+            contribution += np.asarray(target_term, dtype=np.float64)
         return contribution
 
     def act(self, observation: Any, action_mask: Any, *, mode: str | None = None) -> int:

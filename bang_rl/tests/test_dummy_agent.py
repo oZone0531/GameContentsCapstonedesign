@@ -392,3 +392,139 @@ def test_dummy_agent_lifecycle_reset_and_environment_integration() -> None:
 
     assert environment.environment_step > 0
     assert environment.environment_step <= 24
+
+
+# FEAT-004 per-target relation weighting integration coverage
+
+
+def _grudge_emotion_config():
+    """EmotionConfig whose ``shot_by`` relation update builds a grudge."""
+
+    from bang_rl.config import EmotionConfig
+
+    return EmotionConfig(
+        schema_version="relation-target-v1",
+        relation_updates={"shot_by": -0.6},
+    )
+
+
+def _shot_by_observation(*, shooter_idx: int, player_idx: int = 0):
+    """Observation carrying a public event where ``shooter_idx`` banged us."""
+
+    observation = complete_observation(player_idx=player_idx, self_role=0)
+    event = {
+        "event_id": 1,
+        "event_type": "bang",
+        "actor_idx": shooter_idx,
+        "target_idx": player_idx,
+        "hp_before": 4,
+        "hp_after": 3,
+        "public": True,
+    }
+    return {**observation, "event_sequence": (event,), "environment_step": np.asarray([1], dtype=np.int64)}
+
+
+def test_relation_target_weight_defaults_to_zero_and_is_a_no_op() -> None:
+    # With the default weight (0.0) the combined scores and selected action are
+    # identical to a baseline agent that never sees the feature.
+    observation = _shot_by_observation(shooter_idx=3, player_idx=0)
+    mask = observation["action_mask"]
+
+    baseline = DummyAgent(agent_id="player_0", seed=8, emotion_config=_grudge_emotion_config())
+    feature = DummyAgent(
+        agent_id="player_0",
+        seed=8,
+        emotion_config=_grudge_emotion_config(),
+        policy_config={"relation_target_weight": 0.0},
+    )
+    baseline_action = baseline.act(observation, mask)
+    feature_action = feature.act(observation, mask)
+
+    assert baseline_action == feature_action
+    assert (
+        baseline.last_decision_info.combined_scores
+        == feature.last_decision_info.combined_scores
+    )
+    # Every emotion contribution entry is identical because the added term is 0.
+    assert (
+        baseline.last_decision_info.emotion_contribution
+        == feature.last_decision_info.emotion_contribution
+    )
+
+
+def test_positive_weight_and_grudge_raises_bang_score_for_resented_seat() -> None:
+    # Seat 3 shot us -> relation[3] < 0.  With a positive relation_target_weight
+    # the bang-at-seat-3 action (index 4) gains score relative to banging a
+    # non-resented seat (for example seat 1, action index 2).
+    observation = _shot_by_observation(shooter_idx=3, player_idx=0)
+    mask = observation["action_mask"]
+
+    baseline = DummyAgent(agent_id="player_0", seed=8, emotion_config=_grudge_emotion_config())
+    feature = DummyAgent(
+        agent_id="player_0",
+        seed=8,
+        emotion_config=_grudge_emotion_config(),
+        policy_config={"relation_target_weight": 5.0},
+    )
+    baseline.act(observation, mask)
+    feature.act(observation, mask)
+
+    # The resented seat's bang action (index 4) is boosted versus baseline.
+    assert (
+        feature.last_decision_info.emotion_contribution[4]
+        > baseline.last_decision_info.emotion_contribution[4]
+    )
+    # A non-resented seat (index 2 == bang seat 1) is not boosted.
+    assert (
+        feature.last_decision_info.emotion_contribution[2]
+        == baseline.last_decision_info.emotion_contribution[2]
+    )
+    # Relative to banging the non-resented seat, the resented seat scores higher.
+    contribution = feature.last_decision_info.emotion_contribution
+    assert contribution[4] > contribution[2]
+
+
+def test_relation_state_is_not_mutated_by_action_selection() -> None:
+    observation = _shot_by_observation(shooter_idx=3, player_idx=0)
+    mask = observation["action_mask"]
+    agent = DummyAgent(
+        agent_id="player_0",
+        seed=8,
+        emotion_config=_grudge_emotion_config(),
+        policy_config={"relation_target_weight": 5.0},
+    )
+    agent.act(observation, mask)
+    relation_after_first = agent.emotion_module.relation.copy()
+    # A second act on the SAME event (deduped by event_id) must not change the
+    # relation vector, confirming scoring reads but never mutates relation.
+    agent.act(observation, mask)
+    np.testing.assert_array_equal(agent.emotion_module.relation, relation_after_first)
+
+
+def test_relation_target_weight_preserves_determinism() -> None:
+    observation = _shot_by_observation(shooter_idx=3, player_idx=0)
+    mask = observation["action_mask"]
+    first = DummyAgent(
+        agent_id="player_0",
+        seed=8,
+        emotion_config=_grudge_emotion_config(),
+        policy_config={"relation_target_weight": 5.0},
+    )
+    second = DummyAgent(
+        agent_id="player_0",
+        seed=8,
+        emotion_config=_grudge_emotion_config(),
+        policy_config={"relation_target_weight": 5.0},
+    )
+    assert first.act(observation, mask) == second.act(observation, mask)
+
+
+def test_relation_target_weight_round_trips_through_policy_state() -> None:
+    agent = DummyAgent(
+        agent_id="player_0",
+        seed=8,
+        policy_config={"relation_target_weight": 2.5},
+    )
+    assert agent.policy_config.relation_target_weight == 2.5
+    restored = DummyAgent.from_json(agent.to_json())
+    assert restored.policy_config.relation_target_weight == 2.5
