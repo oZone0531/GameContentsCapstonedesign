@@ -396,8 +396,8 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ko": "시간이 지남에 따라 이 감정이 기준값으로 감소하는 속도를 의미합니다.",
     },
     "tooltip.emotion_event_updates": {
-        "en": "JSON map of game events to how much they change this emotion.",
-        "ko": "게임 이벤트별로 이 감정을 얼마나 변화시키는지 나타내는 JSON 맵을 의미합니다.",
+        "en": "JSON map of game events to how much they change this emotion. Relationship keys such as bang_at_me / bang_by_me are also supported and take precedence over the plain event key.",
+        "ko": "게임 이벤트별로 이 감정을 얼마나 변화시키는지 나타내는 JSON 맵을 의미합니다. bang_at_me / bang_by_me 같은 관계 기반 키도 지원되며, 일반 이벤트 키보다 우선 적용됩니다.",
     },
     "tooltip.emotion_action_updates": {
         "en": "JSON map of actions to how much they change this emotion.",

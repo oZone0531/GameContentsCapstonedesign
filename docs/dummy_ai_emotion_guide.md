@@ -63,7 +63,7 @@ GUI의 "더미 AI 설정" 창에서 감정별로 보이는 행(row)과 그 안�
 
 | 맵 | 반응 시점 | 키 조회 순서(위에서부터, 먼저 맞는 것 사용) | 아무 키도 없을 때 |
 | --- | --- | --- | --- |
-| `event_updates` | 공개 이벤트마다 | 1) `event_type` (소문자, 점으로 나뉜 마지막 조각) 2) 정규화 별칭(`elimination`->`player_eliminated`, `role_reveal`->`role_revealed`) 3) `"*"` | **`change_rate`만큼 변화** (기본 이벤트 변화량) |
+| `event_updates` | 공개 이벤트마다 | 1) 관계 기반 키(가장 구체적, 3.3 절 참고) 2) `event_type` (소문자, 점으로 나뉜 마지막 조각) 3) 정규화 별칭(`elimination`->`player_eliminated`, `role_reveal`->`role_revealed`) 4) `"*"` | **`change_rate`만큼 변화** (기본 이벤트 변화량) |
 | `action_updates` | 유효한 게임 행동마다(마스크가 있으면 허용된 행동에 한해) | 1) 행동 인덱스 문자열(`"0"`=pass, `"1"`=bang, 그 외 정수도 kind `bang`) 2) 행동 종류(`pass`/`bang`/`invalid`) 3) `"*"` | `0`(변화 없음) |
 | `reward_updates` | 유효한 보상마다 | 1) 정확한 숫자 문자열(예: `"1"`, `"-0.5"`, 끝의 0 제거) 2) 부호 버킷(`positive`/`negative`/`zero`) 3) `"*"` | `0`(변화 없음) |
 | `terminal_updates` | 에피소드 종료 시 | 1) 결과/결과명(소문자, 예: 팀·승패 문자열) 2) 생명주기 상태(`terminated`/`truncated`) 3) `normal`(정상 종료일 때만, truncated에는 안 붙음) 4) `"*"` | `0`(변화 없음) |
@@ -72,6 +72,7 @@ GUI의 "더미 AI 설정" 창에서 감정별로 보이는 행(row)과 그 안�
 중요한 점 몇 가지:
 
 - `event_updates`의 기본값은 0이 아니라 **`change_rate`**입니다. 즉 특정 이벤트 키도 없고 `"*"`도 없으면, 그 감정은 이벤트가 올 때마다 `change_rate`만큼 움직입니다. 특정 이벤트에만 반응시키고 다른 이벤트에는 반응시키고 싶지 않다면 `change_rate`를 `0.0`으로 두고 원하는 이벤트 키만 명시하세요.
+- `event_updates`는 일반 `event_type` 키보다 **관계 기반 키(누가 누구에게)** 를 먼저 조회합니다(가장 구체적인 키 우선, 3.3 절 참고). 관계 기반 키 안에서는 **행위자 기준 키(`_by_*`)를 대상 기준 키(`_at_*`)보다 먼저** 시도하며, 처음 맞는 키의 값을 사용합니다(먼저 맞는 것 사용).
 - `action_updates`/`reward_updates`/`terminal_updates`는 맞는 키가 없으면 변화가 0입니다. 항상 무언가 반응시키려면 `"*"`를 넣으세요.
 - `effects`는 감정 값을 **직접 움직이지 않습니다.** 감정이 높거나 낮을 때 행동 선택에 참고되는 자문 신호로 노출됩니다(행동 선택 연동은 현재 보류 상태). 감정 자체를 올리고 싶으면 `effects`가 아니라 위 네 개 맵을 쓰세요.
 - `decay_rate`는 매 환경 스텝마다 현재 값을 기준선(`initial_value` 또는 `initial_baseline`) 쪽으로 최대 `decay_rate`만큼 선형으로 끌어당깁니다. 즉 사건이 없을 때 감정이 서서히 평상시로 돌아오는 "회복 속도"입니다. 음수는 `0`으로 처리되어 회복이 없습니다.
@@ -86,8 +87,38 @@ GUI의 "더미 AI 설정" 창에서 감정별로 보이는 행(row)과 그 안�
   - 행동 종류: `pass`, `bang`, `invalid`, 그리고 인덱스 `"0"`(pass) / `"1"`(bang) (action_updates, effects)
   - 포괄 키: `"*"` (모든 맵)
 - **게임이 정의하는(가변) 키:** `event_updates`의 `event_type` 문자열과 `terminal_updates`의 결과명 문자열은 게임이 내보내는 값에 따라 달라집니다. 정확한 철자를 확신할 수 없다면 `"*"`(또는 이벤트의 경우 `change_rate`)로 안전하게 처리하고, 실제로 어떤 `event_type`이 나오는지 게임이 방출하는 이벤트로 확인한 뒤 구체 키를 추가하세요.
+- **관계 기반 이벤트 키(구조적 확장):** `event_updates`는 위의 `event_type` 철자를 접두사로 삼아 `_by_me` / `_at_me` / `_by_other` / `_at_other`를 덧붙인 관계 기반 키도 구조적으로 인식합니다(3.3 절 참고). 접두사는 여전히 게임이 정의하는 `event_type` 철자를 따르며, 현재 실제로 방출되는 철자는 `pass`, `bang`, `player_eliminated`, `role_revealed`입니다.
 
 아래 예시에서 게임 정의 키는 "예시"라고 표시합니다.
+
+### 3.3 관계 기반 이벤트 키 (누가 누구에게)
+
+`event_updates`는 일반 `event_type` 키뿐 아니라, **에이전트 자신의 좌석(`player_idx`) 기준으로 "누가 누구에게"** 를 구분하는 관계 기반 키를 지원합니다. 접두사는 `event_type` 철자(소문자)를 그대로 쓰고, 뒤에 다음 네 가지 접미사가 붙습니다.
+
+- `_by_me` = **내가 행위자**(이벤트의 `actor_idx`가 내 좌석)
+- `_at_me` = **내가 대상**(이벤트의 `target_idx`가 내 좌석)
+- `_by_other` = **다른 좌석이 행위자**(`actor_idx`가 나 이외의 좌석)
+- `_at_other` = **다른 좌석이 대상**(`target_idx`가 나 이외의 좌석)
+
+현재 방출되는 `event_type`(`pass`, `bang`, `player_eliminated`, `role_revealed`)에 대해 실제로 인식되는 관계 기반 키 어휘는 다음과 같습니다.
+
+- `bang_by_me`, `bang_at_me`, `bang_by_other`, `bang_at_other`
+- `player_eliminated_by_me`, `player_eliminated_at_me`, `player_eliminated_by_other`, `player_eliminated_at_other`
+- `role_revealed_at_me`, `role_revealed_at_other`
+
+`role_revealed`에는 **행위자(`actor_idx`)가 없으므로** `_by_*` 키는 존재하지 않고 `_at_*` 키만 인식됩니다.
+
+조회 순서(3.1 절)에서 관계 기반 키가 일반 `event_type`/별칭/`"*"`/`change_rate`보다 먼저 조회되며, 관계 기반 키 안에서는 **행위자 기준(`_by_*`)이 대상 기준(`_at_*`)보다 먼저** 시도됩니다(먼저 맞는 것 사용).
+
+예시:
+
+- 내가 맞으면 분노 상승: `{"bang_at_me": 0.3}`
+- 내가 쏘면 자신감 상승: `{"bang_by_me": 0.2}`
+
+주의할 점:
+
+- 이 관계 기반 키는 **공개 정보인 `actor_idx` / `target_idx`에서만** 파생되며, 숨겨진 역할(role) 같은 비공개 정보는 절대 사용하지 않습니다.
+- 에이전트의 좌석을 알 수 없을 때(`player_idx`가 `None`)에는 관계 기반 키가 **발동하지 않고**, 엔진은 기존과 동일하게 일반 `event_type` -> `"*"` -> `change_rate` 순으로 처리합니다(하위 호환).
 
 ---
 
@@ -400,4 +431,5 @@ GUI 입력 항목과 파일 필드 대응:
 - [ ] `action`/`reward`/`terminal` 맵에서 항상 반응이 필요하면 `"*"`를 넣었는가?
 - [ ] `effects`로 감정 값을 직접 올리려 하지 않았는가? (값 변화는 앞 네 개 맵에서만)
 - [ ] 게임 정의 키(`event_type`, 결과명)의 철자를 확신하는가? 확신이 없으면 `"*"` 또는 `change_rate`로 처리했는가?
+- [ ] "내가 대상일 때만" 처럼 더 세밀하게 반응시키고 싶다면 관계 기반 키(`bang_at_me` / `bang_by_me` 등, 3.3 절)를 활용했는가?
 - [ ] 모든 숫자가 유한값이고 초기값이 `[0, 1]` 안에 있는가?
