@@ -65,6 +65,74 @@ def _text(value: Any) -> str:
     return str(value).rsplit(".", 1)[-1].strip().lower()
 
 
+def _seat_index(value: Any) -> int | None:
+    """Return a genuine integer seat index, or ``None`` when unknown.
+
+    Booleans are rejected (mirroring the ``isinstance`` guards used elsewhere in
+    this module) and any non-integer / ``None`` value is treated as unknown.
+    The helper intentionally avoids importing numpy so it can be reused by pure,
+    dependency-free unit tests.
+    """
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return int(value)
+    return None
+
+
+def _relationship_event_keys(
+    event_type: str,
+    actor_idx: Any,
+    target_idx: Any,
+    player_idx: Any,
+) -> tuple[str, ...]:
+    """Derive relationship-qualified event keys from public actor/target seats.
+
+    The keys are ordered most-specific-first and are meant to be tried BEFORE
+    the plain ``event_type`` key.  They are built solely from the PUBLIC
+    ``actor_idx`` / ``target_idx`` relative to the module's own ``player_idx``;
+    nothing private is consulted.
+
+    Vocabulary (prefix is the already-lowercased ``event_type`` wire spelling):
+    * actor-relative (``_by_*``): ``{event_type}_by_me`` when the actor is our
+      own seat, ``{event_type}_by_other`` when the actor is a known other seat.
+    * target-relative (``_at_*``): ``{event_type}_at_me`` when the target is our
+      own seat, ``{event_type}_at_other`` when the target is a known other seat.
+
+    The actor-relative (``_by_*``) key is emitted first so it takes precedence
+    over the target-relative (``_at_*``) key when both are present.  A side
+    whose index is ``None`` / unknown is omitted entirely.  When ``player_idx``
+    is ``None`` an empty tuple is returned, so relationship keys never fire and
+    the pre-existing plain-key behaviour is preserved exactly.
+
+    Concretely this yields, for example: ``bang_by_me``, ``bang_at_me``,
+    ``bang_by_other``, ``bang_at_other``; ``player_eliminated_by_me``,
+    ``player_eliminated_at_me`` (i.e. "I was eliminated"),
+    ``player_eliminated_by_other``, ``player_eliminated_at_other``;
+    ``role_revealed_at_me`` and ``role_revealed_at_other`` (``role_revealed``
+    has no actor so no ``_by_*`` keys are produced).
+    """
+
+    seat = _seat_index(player_idx)
+    if seat is None:
+        return ()
+    keys: list[str] = []
+    actor = _seat_index(actor_idx)
+    if actor is not None:
+        if actor == seat:
+            keys.append(f"{event_type}_by_me")
+        else:
+            keys.append(f"{event_type}_by_other")
+    target = _seat_index(target_idx)
+    if target is not None:
+        if target == seat:
+            keys.append(f"{event_type}_at_me")
+        else:
+            keys.append(f"{event_type}_at_other")
+    return tuple(keys)
+
+
 def _finite_number(value: Any, label: str) -> float:
     if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.integer, np.floating)):
         raise TypeError(f"{label} must be a finite number")
@@ -244,15 +312,31 @@ class EmotionModule:
                 return float(rules[key])
         return None
 
-    def _event_value(self, definition: Any, event_type: str) -> float:
+    def _event_value(
+        self,
+        definition: Any,
+        event_type: str,
+        actor_idx: Any = None,
+        target_idx: Any = None,
+    ) -> float:
         aliases = {
             "elimination": "player_eliminated",
             "role_reveal": "role_revealed",
         }
+        # Relationship keys are built from the actual (already-lowercased)
+        # event_type wire spelling, not the alias.
         normalized = aliases.get(event_type, event_type)
+        # Precedence (first match wins): most-specific relationship key(s) ->
+        # plain event_type -> normalized alias -> "*" -> change_rate.  Among the
+        # relationship keys the actor-relative (_by_*) key is tried before the
+        # target-relative (_at_*) key.  When self.player_idx is None the helper
+        # returns (), so relationship keys are skipped entirely.
+        relationship_keys = _relationship_event_keys(
+            event_type, actor_idx, target_idx, self.player_idx
+        )
         value = self._rule_value(
             definition.event_updates,
-            (event_type, normalized, "*"),
+            relationship_keys + (event_type, normalized, "*"),
         )
         return definition.change_rate if value is None else value
 
@@ -273,7 +357,15 @@ class EmotionModule:
         event_type = _text(values.get("event_type", values.get("type", values.get("event", ""))))
         if not event_type:
             raise ValueError("public emotion events require an event_type")
-        deltas = [self._event_value(definition, event_type) for definition in self._definitions]
+        # actor_idx/target_idx come from the already-validated public mapping;
+        # no _PRIVATE_FIELDS are read here.  The same public indices are passed
+        # to every definition.
+        actor_idx = values.get("actor_idx")
+        target_idx = values.get("target_idx")
+        deltas = [
+            self._event_value(definition, event_type, actor_idx, target_idx)
+            for definition in self._definitions
+        ]
         self._processed_event_ids.add(event_id)
         self.last_event_id = event_id if self.last_event_id is None else max(self.last_event_id, event_id)
         return self._change(deltas)
