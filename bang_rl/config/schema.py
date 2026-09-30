@@ -417,6 +417,15 @@ class EmotionConfig(ConfigModel):
     emotion_count: StrictInt = Field(default=1, ge=1)
     initial_baseline: float = Field(default=0.0, ge=0.0, le=1.0)
     emotions: tuple[EmotionDefinition, ...] = Field(default_factory=tuple)
+    # Per-opponent relation vector configuration (EmotionModule schema "1.1").
+    # ``relation_baseline`` is the neutral value every seat starts at; the
+    # relation vector is SIGNED and clamped to [-1, 1] by the module (a grudge is
+    # negative, trust is positive).  ``relation_updates`` maps a relationship
+    # kind (for example ``shot_by``, ``shot_at``, ``eliminated_by``) to a finite
+    # signed delta.  Both DEFAULT so pre-existing configs behave identically:
+    # with an empty ``relation_updates`` the relation vector never moves.
+    relation_baseline: float = Field(default=0.0, ge=-1.0, le=1.0)
+    relation_updates: dict[str, float] = Field(default_factory=dict)
     encoder: Literal["GRU"] = "GRU"
     hidden_size: Literal[128] = 128
     num_layers: Literal[1] = 1
@@ -461,6 +470,27 @@ class EmotionConfig(ConfigModel):
         if not isfinite(float(value)):
             raise ValueError("initial_baseline must be a finite number in [0, 1]")
         return value
+
+    @field_validator("relation_baseline", mode="before")
+    @classmethod
+    def relation_baseline_must_be_finite_number(cls, value: object) -> object:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("relation_baseline must be a finite number in [-1, 1]")
+        if not isfinite(float(value)):
+            raise ValueError("relation_baseline must be a finite number in [-1, 1]")
+        return value
+
+    @field_validator("relation_updates")
+    @classmethod
+    def relation_updates_must_be_finite(cls, value: dict[str, float]) -> dict[str, float]:
+        normalized: dict[str, float] = {}
+        for key, item in value.items():
+            if not isinstance(key, str) or not key.strip():
+                raise ValueError("relation update keys must be non-empty strings")
+            if isinstance(item, bool) or not isinstance(item, (int, float)) or not isfinite(float(item)):
+                raise ValueError("relation update values must be finite numbers")
+            normalized[key] = float(item)
+        return normalized
 
     @field_validator("schema_version")
     @classmethod

@@ -262,3 +262,159 @@ def test_actor_relative_key_beats_target_relative_key() -> None:
         module, {"event_id": 1, "event_type": "bang", "actor_idx": seat, "target_idx": seat}
     )
     assert delta == pytest.approx(0.7)
+
+
+# ---------------------------------------------------------------------------
+# Per-opponent relation vector coverage (FEAT-002).
+#
+# These cases require numpy + pydantic (EmotionModule/EmotionConfig) and are
+# therefore CI-only: they cannot run in the restricted sandbox where those
+# packages are unavailable.  The numpy-free portion of this behaviour lives in
+# test_emotion_relation_vector.py, which does run in the sandbox.
+# ---------------------------------------------------------------------------
+
+
+def _relation_config(relation_updates: dict[str, float]) -> EmotionConfig:
+    """A single-emotion config carrying relation deltas but neutral emotions.
+
+    ``change_rate`` is 0.0 and ``event_updates`` empty so applying events never
+    moves the flat emotion value; only the relation vector should change, which
+    keeps relation assertions unambiguous.
+    """
+
+    return EmotionConfig(
+        schema_version="relation-test-v1",
+        relation_baseline=0.0,
+        relation_updates=relation_updates,
+        emotions=[
+            {
+                "name": "fear",
+                "initial_value": 0.5,
+                "change_rate": 0.0,
+                "decay_rate": 0.0,
+            }
+        ],
+    )
+
+
+def test_relation_increments_toward_actor_seat_when_shot_by() -> None:
+    seat = 1
+    shooter = 3
+    module = EmotionModule(_relation_config({"shot_by": 0.4}), player_idx=seat)
+    module.apply_event(
+        {"event_id": 1, "event_type": "bang", "actor_idx": shooter, "target_idx": seat}
+    )
+    relation = module.relation
+    assert relation.shape == (5,)
+    assert relation[shooter] == pytest.approx(0.4)
+    # No other seat moved (self and uninvolved seats stay neutral).
+    for other in range(5):
+        if other != shooter:
+            assert relation[other] == pytest.approx(0.0)
+
+
+def test_relation_self_slot_never_changes() -> None:
+    seat = 2
+    module = EmotionModule(
+        _relation_config({"shot_by": 0.4, "shot_at": 0.3}), player_idx=seat
+    )
+    # A self-directed event implicates no seat, so nothing moves.
+    module.apply_event(
+        {"event_id": 1, "event_type": "bang", "actor_idx": seat, "target_idx": seat}
+    )
+    assert module.relation[seat] == pytest.approx(0.0)
+    # We shoot seat 4; only seat 4 moves, our own slot stays neutral.
+    module.apply_event(
+        {"event_id": 2, "event_type": "bang", "actor_idx": seat, "target_idx": 4}
+    )
+    assert module.relation[seat] == pytest.approx(0.0)
+    assert module.relation[4] == pytest.approx(0.3)
+
+
+def test_relation_is_idempotent_on_duplicate_event_id() -> None:
+    seat = 0
+    shooter = 2
+    module = EmotionModule(_relation_config({"shot_by": 0.4}), player_idx=seat)
+    event = {"event_id": 7, "event_type": "bang", "actor_idx": shooter, "target_idx": seat}
+    module.apply_event(event)
+    module.apply_event(event)
+    # Duplicate event_id must not double-count relation.
+    assert module.relation[shooter] == pytest.approx(0.4)
+
+
+def test_relation_untouched_when_player_idx_none() -> None:
+    module = EmotionModule(_relation_config({"shot_by": 0.4}), player_idx=None)
+    module.apply_event(
+        {"event_id": 1, "event_type": "bang", "actor_idx": 2, "target_idx": 3}
+    )
+    np.testing.assert_allclose(module.relation, np.zeros(5, dtype=np.float32))
+
+
+def test_relation_clamped_to_signed_range() -> None:
+    seat = 1
+    shooter = 4
+    module = EmotionModule(_relation_config({"shot_by": -0.9}), player_idx=seat)
+    for event_id in range(3):
+        module.apply_event(
+            {"event_id": event_id, "event_type": "bang", "actor_idx": shooter, "target_idx": seat}
+        )
+    # Three -0.9 deltas would reach -2.7 but the relation is clamped at -1.0.
+    assert module.relation[shooter] == pytest.approx(-1.0)
+
+
+def test_relation_updates_default_empty_is_backward_compatible() -> None:
+    seat = 1
+    # No relation_updates configured -> relation never moves and the flat
+    # emotion behaviour is identical to before this feature.
+    module = EmotionModule(
+        EmotionConfig(
+            schema_version="relation-empty-v1",
+            emotions=[{"name": "fear", "initial_value": 0.5, "event_updates": {"bang": 0.2}}],
+        ),
+        player_idx=seat,
+    )
+    before = module.relation
+    delta = _applied_delta(
+        module, {"event_id": 1, "event_type": "bang", "actor_idx": 3, "target_idx": seat}
+    )
+    assert delta == pytest.approx(0.2)
+    np.testing.assert_allclose(module.relation, before)
+
+
+def test_state_dict_serializes_relation_and_round_trips() -> None:
+    seat = 2
+    shooter = 0
+    module = EmotionModule(_relation_config({"shot_by": 0.5}), player_idx=seat)
+    module.apply_event(
+        {"event_id": 1, "event_type": "bang", "actor_idx": shooter, "target_idx": seat}
+    )
+    encoded = module.state_dict()
+    assert encoded["schema_version"] == "1.1"
+    assert encoded["relation"][shooter] == pytest.approx(0.5)
+    assert encoded["relation_baseline"] == pytest.approx(0.0)
+
+    restored = EmotionModule.from_json(module.to_json())
+    np.testing.assert_allclose(restored.relation, module.relation)
+    assert restored.to_json() == module.to_json()
+
+
+def test_old_1_0_state_loads_with_neutral_relation() -> None:
+    seat = 2
+    module = EmotionModule(_relation_config({"shot_by": 0.5}), player_idx=seat)
+    state = module.state_dict()
+    # Simulate a pre-relation "1.0" state: downgrade the version and drop the
+    # relation fields entirely.
+    state["schema_version"] = "1.0"
+    state.pop("relation", None)
+    state.pop("relation_baseline", None)
+
+    restored = EmotionModule.from_state_dict(state)
+    np.testing.assert_allclose(restored.relation, np.zeros(5, dtype=np.float32))
+
+
+def test_unsupported_state_version_is_rejected() -> None:
+    module = EmotionModule(_relation_config({"shot_by": 0.5}), player_idx=2)
+    state = module.state_dict()
+    state["schema_version"] = "2.0"
+    with pytest.raises(ValueError, match="unsupported emotion module state schema"):
+        EmotionModule.from_state_dict(state)

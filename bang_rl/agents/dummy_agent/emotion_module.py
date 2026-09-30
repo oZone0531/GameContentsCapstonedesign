@@ -17,7 +17,27 @@ import numpy as np
 from bang_rl.config import EmotionConfig
 
 
-EMOTION_MODULE_STATE_VERSION = "1.0"
+EMOTION_MODULE_STATE_VERSION = "1.1"
+
+# Number of seats in a game.  The per-opponent relation vector has one slot per
+# seat; the slot whose index equals the module's own ``player_idx`` stays at the
+# neutral baseline and is never mutated.
+PLAYER_COUNT = 5
+
+# Documented clamping range for the signed per-opponent relation vector.  Unlike
+# the flat emotion values (which are normalized to [0, 1]), relation is SIGNED so
+# a single scalar can represent both a grudge (negative) and trust (positive)
+# toward another seat.  The relation vector is kept in a SEPARATE array so the
+# emotion [0, 1] clamping is untouched.
+RELATION_MIN = -1.0
+RELATION_MAX = 1.0
+
+# Version-compatibility policy for ``from_state_dict``:
+#   * "1.0" states predate the relation vector.  They are ACCEPTED and upgraded
+#     in memory by defaulting the relation vector (and its baseline) to neutral.
+#   * "1.1" states carry ``relation`` / ``relation_baseline`` and round-trip.
+# ``state_dict`` always writes the current schema version ("1.1").
+_SUPPORTED_STATE_VERSIONS = frozenset({"1.0", "1.1"})
 
 # These names are rejected at the agent boundary.  Public role-reveal fields
 # such as ``revealed_role`` are intentionally not included in this list.
@@ -133,6 +153,75 @@ def _relationship_event_keys(
     return tuple(keys)
 
 
+def _relation_event_seats(
+    event_type: str,
+    actor_idx: Any,
+    target_idx: Any,
+    player_idx: Any,
+) -> tuple[tuple[int, str], ...]:
+    """Map a public event to the OTHER seat(s) it implicates and a relation kind.
+
+    This is the per-opponent counterpart of :func:`_relationship_event_keys`.
+    Where the relationship keys collapse "some other seat" into a single
+    ``_by_other`` / ``_at_other`` bucket, this helper preserves WHICH other seat
+    is involved so a per-seat relation vector can be updated.
+
+    Returns a tuple of ``(seat, kind)`` pairs where ``seat`` is a genuine other
+    seat index (never the module's own ``player_idx``) and ``kind`` is a stable,
+    lowercase relationship kind that is looked up in the configured
+    ``relation_updates`` map.  The kinds are built solely from the PUBLIC
+    ``actor_idx`` / ``target_idx`` relative to ``player_idx``; nothing private is
+    consulted.
+
+    Vocabulary (``{event_type}`` is the already-lowercased wire spelling, with
+    ``player_eliminated`` shortened to ``eliminated`` for readability of the
+    common case, and other event types using their own spelling):
+    * ``{kind}_by`` when a DIFFERENT seat is the actor and WE are the target
+      (for example ``shot_by`` when seat s banged us, ``eliminated_by`` when
+      seat s eliminated us).  Direction: increase grudge toward seat s.
+    * ``{kind}_at`` when WE are the actor and a DIFFERENT seat is the target
+      (for example ``shot_at`` when we banged seat s).  Direction is left to the
+      configuration (a positive delta reads as satisfaction/dominance, a
+      negative one as remorse).
+    * ``{kind}_by_other`` / ``{kind}_at_other`` when a DIFFERENT seat acts on
+      ANOTHER different seat (neither is us); this lets the config react to
+      third-party interactions.  Only the acting/affected OTHER seat is
+      implicated, never our own.
+
+    ``bang`` maps to the ``shot`` kind and ``player_eliminated`` to the
+    ``eliminated`` kind; every other event type uses its own spelling.  When our
+    own seat is unknown (``player_idx`` is ``None``) an empty tuple is returned,
+    so relation is never mutated without a known seat.  A self-directed event
+    (actor == target == us) implicates no other seat.  The helper avoids
+    importing numpy so it can be reused by pure, dependency-free unit tests.
+    """
+
+    seat = _seat_index(player_idx)
+    if seat is None:
+        return ()
+    kind_aliases = {
+        "bang": "shot",
+        "player_eliminated": "eliminated",
+    }
+    kind = kind_aliases.get(event_type, event_type)
+    actor = _seat_index(actor_idx)
+    target = _seat_index(target_idx)
+    result: list[tuple[int, str]] = []
+    if actor is not None and actor != seat and target is not None and target == seat:
+        # A different seat acted on us -> "{kind}_by" that seat.
+        result.append((actor, f"{kind}_by"))
+    elif actor is not None and actor == seat and target is not None and target != seat:
+        # We acted on a different seat -> "{kind}_at" that seat.
+        result.append((target, f"{kind}_at"))
+    else:
+        # Third-party interactions: neither the actor nor the target is us.
+        if actor is not None and actor != seat and (target is None or target != seat):
+            result.append((actor, f"{kind}_by_other"))
+        if target is not None and target != seat and (actor is None or actor != seat):
+            result.append((target, f"{kind}_at_other"))
+    return tuple(result)
+
+
 def _finite_number(value: Any, label: str) -> float:
     if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.integer, np.floating)):
         raise TypeError(f"{label} must be a finite number")
@@ -177,6 +266,12 @@ class EmotionModule:
             dtype=np.float32,
         )
         self._values = self._baselines.copy()
+        # Per-opponent relation vector (one signed scalar per seat).  It is held
+        # in a SEPARATE float32 array clamped to [RELATION_MIN, RELATION_MAX] so
+        # the flat emotion [0, 1] clamping is untouched.  The self slot stays at
+        # the neutral baseline and is never mutated.
+        self._relation_baseline = float(self.config.relation_baseline)
+        self._relation = np.full(PLAYER_COUNT, self._relation_baseline, dtype=np.float32)
         self.episode_id: str | None = None
         self.episode_seed: int | None = None
         self.last_event_id: int | None = None
@@ -247,6 +342,26 @@ class EmotionModule:
         return self._baselines.copy()
 
     @property
+    def relation(self) -> np.ndarray:
+        """Return a detached copy of the per-seat relation vector.
+
+        The array has length ``PLAYER_COUNT``; index ``s`` is this agent's signed
+        relation toward seat ``s`` (negative is grudge, positive is trust) clamped
+        to ``[RELATION_MIN, RELATION_MAX]``.  The self slot (index ``player_idx``)
+        stays at the neutral baseline.  Callers such as the action selector / GUI
+        read this without mutating internal state; wiring relation into action
+        selection is intentionally deferred to a later task.
+        """
+
+        return self._relation.copy()
+
+    @property
+    def relation_baseline(self) -> float:
+        """Neutral baseline value for the relation vector."""
+
+        return self._relation_baseline
+
+    @property
     def processed_event_ids(self) -> tuple[int, ...]:
         return tuple(sorted(self._processed_event_ids))
 
@@ -276,6 +391,7 @@ class EmotionModule:
         """Reset values, event deduplication, step clock, and lifecycle flags."""
 
         self._values = self._baselines.copy()
+        self._relation = np.full(PLAYER_COUNT, self._relation_baseline, dtype=np.float32)
         self.last_event_id = None
         self.last_environment_step = None
         self._processed_event_ids.clear()
@@ -366,9 +482,43 @@ class EmotionModule:
             self._event_value(definition, event_type, actor_idx, target_idx)
             for definition in self._definitions
         ]
+        # Per-opponent relation update is guarded by the SAME dedup gate below
+        # (we only reach here for a not-yet-processed event_id), so a duplicated
+        # event never double-counts relation either.
+        self._apply_relation_event(event_type, actor_idx, target_idx)
         self._processed_event_ids.add(event_id)
         self.last_event_id = event_id if self.last_event_id is None else max(self.last_event_id, event_id)
         return self._change(deltas)
+
+    def _apply_relation_event(
+        self,
+        event_type: str,
+        actor_idx: Any,
+        target_idx: Any,
+    ) -> None:
+        """Update the per-seat relation vector for the implicated other seat(s).
+
+        No-op when ``player_idx`` is unknown (the helper returns no seats) or when
+        no ``relation_updates`` key matches the derived kind.  The self slot is
+        never touched because the helper never yields our own seat.  Mutations are
+        clamped to ``[RELATION_MIN, RELATION_MAX]`` in the separate relation array.
+        """
+
+        rules = self.config.relation_updates
+        if not rules:
+            return
+        for seat, kind in _relation_event_seats(
+            event_type, actor_idx, target_idx, self.player_idx
+        ):
+            if seat == self.player_idx or not 0 <= seat < PLAYER_COUNT:
+                continue
+            delta = self._rule_value(rules, (kind, "*"))
+            if delta is None:
+                continue
+            updated = float(self._relation[seat]) + float(delta)
+            self._relation[seat] = np.float32(
+                min(RELATION_MAX, max(RELATION_MIN, updated))
+            )
 
     update_from_event = apply_event
     apply_public_event = apply_event
@@ -531,6 +681,8 @@ class EmotionModule:
             "emotion_names": list(self._names),
             "values": [float(value) for value in self._values],
             "baseline": [float(value) for value in self._baselines],
+            "relation": [float(value) for value in self._relation],
+            "relation_baseline": float(self._relation_baseline),
             "last_event_id": self.last_event_id,
             "processed_event_ids": list(self.processed_event_ids),
             "last_environment_step": self.last_environment_step,
@@ -549,7 +701,11 @@ class EmotionModule:
     def from_state_dict(cls, state: Mapping[str, Any]) -> "EmotionModule":
         if not isinstance(state, Mapping):
             raise TypeError("state must be a mapping")
-        if state.get("schema_version", cls.schema_version) != cls.schema_version:
+        # Backward-compatible version gate: accept both the pre-relation "1.0"
+        # states and current "1.1" states.  "1.0" states have no relation field
+        # and are upgraded in memory to a neutral relation vector below.
+        version = state.get("schema_version", cls.schema_version)
+        if version not in _SUPPORTED_STATE_VERSIONS:
             raise ValueError("unsupported emotion module state schema")
         module = cls(state.get("config"), player_idx=state.get("player_idx"))
         names = tuple(state.get("emotion_names", module.emotion_names))
@@ -559,6 +715,24 @@ class EmotionModule:
         if values.shape != (module.emotion_count,) or not np.all(np.isfinite(values)):
             raise ValueError("emotion state values have the wrong shape")
         module._values = np.clip(values, 0.0, 1.0).astype(np.float32)
+        # Relation vector: absent in "1.0" states -> default to the neutral
+        # baseline the constructor already installed.  When present ("1.1"),
+        # validate shape/finiteness and clamp to the documented signed range.
+        if "relation_baseline" in state:
+            module._relation_baseline = _finite_number(
+                state.get("relation_baseline"), "relation_baseline"
+            )
+        if "relation" in state:
+            relation = np.asarray(state.get("relation"), dtype=np.float32)
+            if relation.shape != (PLAYER_COUNT,) or not np.all(np.isfinite(relation)):
+                raise ValueError("relation state values have the wrong shape")
+            module._relation = np.clip(
+                relation, RELATION_MIN, RELATION_MAX
+            ).astype(np.float32)
+        else:
+            module._relation = np.full(
+                PLAYER_COUNT, module._relation_baseline, dtype=np.float32
+            )
         module.episode_id = state.get("episode_id")
         module.episode_seed = state.get("episode_seed")
         module.last_event_id = state.get("last_event_id")
@@ -585,4 +759,10 @@ class EmotionModule:
         return cls.from_state_dict(json.loads(value))
 
 
-__all__ = ["EMOTION_MODULE_STATE_VERSION", "EmotionModule"]
+__all__ = [
+    "EMOTION_MODULE_STATE_VERSION",
+    "PLAYER_COUNT",
+    "RELATION_MIN",
+    "RELATION_MAX",
+    "EmotionModule",
+]
