@@ -25,7 +25,7 @@ Accepted episode sources:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 
@@ -70,6 +70,14 @@ class ReplaySnapshot:
     terminated: bool = False
     truncated: bool = False
     termination_status: str = "running"
+    # Item 1: the finished game's terminal role of every seat. Defaults to EMPTY
+    # so every running / mid-replay snapshot and every legacy construction
+    # carries NO roles -> no mid-replay leak. ReplayModel sets it ONLY on the
+    # terminal snapshot (from the record's top-level final_roles) so a replay
+    # reveals all roles at its END. GraphicalBoard reads it via
+    # getattr(state, "final_roles", ()) exactly like the live terminal
+    # PublicGameState, so a terminal replay snapshot reveals every seat.
+    final_roles: tuple[int, ...] = ()
 
 
 def _as_mapping(episode: Any) -> Mapping[str, Any] | None:
@@ -205,6 +213,11 @@ class ReplayModel:
         events = tuple(
             event for event in (mapping.get("events") or ()) if isinstance(event, Mapping)
         )
+        # Item 1: the record's TERMINAL-ONLY reveal. Read once here; it is
+        # applied to the terminal snapshot only (never a running one) so a
+        # replay reveals all roles at its END without any mid-replay leak. A
+        # legacy record without the field yields an empty tuple -> no reveal.
+        final_roles = cls._record_final_roles(mapping)
         steps = mapping.get("steps")
         snapshots: list[ReplaySnapshot] = []
         if steps:
@@ -223,18 +236,64 @@ class ReplayModel:
                         events=events,
                         step_override=last_step,
                         terminal=cls._terminal_status(mapping),
+                        final_roles=final_roles,
                     )
                 )
+            else:
+                # No appended settled state: the reveal belongs on the last
+                # snapshot only when it is itself terminal (terminated/truncated).
+                cls._apply_terminal_reveal(snapshots, final_roles)
             return snapshots
         # No 'steps': treat 'initial_state' + observation list style mappings as
         # a plain observation stream keyed under 'observations'.
         observations = mapping.get("observations")
         if isinstance(observations, Sequence):
-            return cls._from_observations(list(observations), events=events)
+            snapshots = cls._from_observations(list(observations), events=events)
+            cls._apply_terminal_reveal(snapshots, final_roles)
+            return snapshots
         initial = mapping.get("initial_state")
         if isinstance(initial, Mapping):
-            return cls._from_observations([initial], events=events)
+            snapshots = cls._from_observations([initial], events=events)
+            cls._apply_terminal_reveal(snapshots, final_roles)
+            return snapshots
         return []
+
+    @staticmethod
+    def _record_final_roles(mapping: Mapping[str, Any]) -> tuple[int, ...]:
+        """Parse the record's top-level ``final_roles`` into a tuple of ints.
+
+        Returns an EMPTY tuple when the field is absent/empty/unparsable, so a
+        legacy record (or any record saved before this feature) carries no
+        reveal and every snapshot's ``final_roles`` stays empty.
+        """
+
+        raw = mapping.get("final_roles")
+        if not isinstance(raw, (list, tuple)) or not raw:
+            return ()
+        roles: list[int] = []
+        for value in raw:
+            parsed = _int_or_none(value)
+            if parsed is None:
+                return ()
+            roles.append(parsed)
+        return tuple(roles)
+
+    @staticmethod
+    def _apply_terminal_reveal(
+        snapshots: list[ReplaySnapshot], final_roles: tuple[int, ...]
+    ) -> None:
+        """Attach ``final_roles`` to the last snapshot IFF it is terminal.
+
+        A running last snapshot keeps ``final_roles == ()`` so a non-terminal
+        snapshot never reports a reveal. Replaces the frozen snapshot in place.
+        """
+
+        if not final_roles or not snapshots:
+            return
+        last = snapshots[-1]
+        if not (last.terminated or last.truncated):
+            return
+        snapshots[-1] = replace(last, final_roles=final_roles)
 
     @classmethod
     def _snapshot_from_step(
@@ -334,6 +393,7 @@ class ReplayModel:
         events: Sequence[Mapping[str, Any]],
         step_override: int | None = None,
         terminal: str | None = None,
+        final_roles: tuple[int, ...] = (),
     ) -> ReplaySnapshot:
         env_step = step_override if step_override is not None else _observation_step(observation, turn)
         base = _base_observation(observation)
@@ -349,6 +409,10 @@ class ReplayModel:
             status = terminal
         else:
             status = "normal" if terminated else "truncated" if truncated else "running"
+        # Item 1: the TERMINAL-ONLY reveal is honoured only when this snapshot
+        # is actually terminal, so an appended settled state carrying final_roles
+        # that somehow is not terminal never leaks a role.
+        reveal = tuple(final_roles) if (final_roles and (terminated or truncated)) else ()
         return ReplaySnapshot(
             observation=base,
             action_mask=mask,
@@ -357,6 +421,7 @@ class ReplayModel:
             terminated=terminated,
             truncated=truncated,
             termination_status=status,
+            final_roles=reveal,
         )
 
     @staticmethod

@@ -949,6 +949,12 @@ class GameSessionController:
                 observations=self._replay_observations,
                 terminated=bool(getattr(state, "terminated", False)),
                 truncated=bool(getattr(state, "truncated", False)),
+                # Item 1: persist the finished game's terminal roles so a replay
+                # can reveal every seat at its END. Only the terminal
+                # PublicGameState carries final_roles (empty during play), so
+                # this captures the authoritative reveal once per finished
+                # episode. Empty/absent for an unfinished or mock state.
+                final_roles=tuple(getattr(state, "final_roles", ()) or ()),
             )
             # Item 5/6: human and spectator games persist the FULL format when
             # authoritative per-turn state was captured; otherwise fall back to

@@ -251,3 +251,102 @@ def test_empty_episode_is_safe() -> None:
     assert model.current() is None
     assert model.next() is None
     assert model.index_for_step(0) is None
+
+
+def _terminal_reveal_episode() -> dict:
+    """A replay record with a top-level final_roles so the END reveals all."""
+
+    def observation(current):
+        return {
+            "healths": (5, 5, 5, 5, 5),
+            "alive": (True,) * 5,
+            # Mid-game only the sheriff (seat 0) is publicly revealed; every
+            # living non-sheriff seat is hidden (255).
+            "role_visibility": (3, 0, 0, 0, 0),
+            "revealed_roles": (0, 255, 255, 255, 255),
+            "self_role": (0,),
+            "current_player_idx": (current,),
+            "environment_step": current,
+        }
+
+    steps = [
+        {
+            "environment_step": step,
+            "actor_idx": step,
+            "action_mask": (1, 1, 0, 0, 0, 0),
+            "pre_observation": observation(step),
+            "terminated": False,
+            "truncated": False,
+        }
+        for step in range(3)
+    ]
+    final_state = {
+        "healths": (5, 5, 5, 0, 5),
+        "alive": (True, True, True, False, True),
+        "role_visibility": (3, 0, 0, 3, 0),
+        "revealed_roles": (0, 255, 255, 3, 255),
+        "self_role": (0,),
+    }
+    return {
+        "steps": steps,
+        "events": _events(),
+        "final_state": final_state,
+        "termination_status": "normal",
+        # Item 1: the finished game's terminal role of every seat.
+        "final_roles": [0, 2, 1, 3, 4],
+    }
+
+
+def test_replay_board_reveals_every_role_at_terminal_snapshot() -> None:
+    # CI-only (needs the real GraphicalBoard / Qt): at the FINAL replay snapshot
+    # every seat caption resolves to a concrete role, while at a MID snapshot a
+    # known-hidden living seat still shows hidden. Skipped in the sandbox where
+    # PyQt6 is absent.
+    import pytest
+
+    pytest.importorskip("PyQt6")
+    from bang_rl.gui.qt_compat import QApplication
+    from bang_rl.gui.widgets.board_layout import HIDDEN_ROLE_SENTINEL, role_for_display
+    from bang_rl.gui.widgets.game_widgets import GraphicalBoard
+
+    app = QApplication.instance() or QApplication([])
+    assert app is not None
+
+    model = ReplayModel(_terminal_reveal_episode())
+    board = GraphicalBoard()
+    board.human_player = 0
+
+    def _caption_role(seat: int) -> int:
+        # Resolve a seat's displayed role exactly as GraphicalBoard._paint_caption
+        # does: from the live board state (self._state) that update_state set,
+        # using the snapshot's observation + final_roles + game_over flag.
+        state = board._state
+        observation = getattr(state, "observation", {}) or {}
+        return role_for_display(
+            seat,
+            observation,
+            getattr(state, "final_roles", ()),
+            board._is_game_over(),
+            human_player=board.human_player,
+            reveal_all=bool(getattr(state, "reveal_all_roles", False)),
+        )
+
+    # Terminal snapshot: game_over is True and final_roles is threaded through,
+    # so every seat caption resolves to a concrete role (none hidden).
+    terminal = model.snapshot_at(len(model) - 1)
+    assert terminal is not None
+    assert terminal.terminated or terminal.truncated
+    board.update_state(terminal)
+    assert board._is_game_over() is True
+    for seat, expected in enumerate([0, 2, 1, 3, 4]):
+        resolved = _caption_role(seat)
+        assert resolved != HIDDEN_ROLE_SENTINEL, f"seat {seat} must be revealed at end"
+        assert resolved == expected
+
+    # Mid snapshot: a known-hidden living non-sheriff seat (1) stays hidden.
+    mid = model.snapshot_at(0)
+    assert mid is not None
+    assert mid.final_roles == ()
+    board.update_state(mid)
+    assert board._is_game_over() is False
+    assert _caption_role(1) == HIDDEN_ROLE_SENTINEL

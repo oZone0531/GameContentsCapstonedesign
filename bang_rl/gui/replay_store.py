@@ -89,6 +89,7 @@ def build_replay_record(
     events: Sequence[Mapping[str, Any]] | None = None,
     terminated: bool = False,
     truncated: bool = False,
+    final_roles: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     """Build a JSON-safe replay record for a finished human game.
 
@@ -96,12 +97,21 @@ def build_replay_record(
     observation dict per turn, each with its cumulative ``event_sequence``)
     plus reproduction metadata. Feeding it to
     :class:`bang_rl.gui.replay.ReplayModel` yields one snapshot per observation.
+
+    Item 1: ``final_roles`` is the finished game's terminal role of every seat
+    (from the terminal :class:`~bang_rl.app.services.PublicGameState`). It is a
+    TERMINAL-ONLY reveal: :class:`~bang_rl.gui.replay.ReplayModel` surfaces it
+    on the final snapshot only, so a replay reveals all roles at its END without
+    leaking any living role mid-replay. It is OPTIONAL -- when absent/empty the
+    record omits the field entirely, so an existing record (and any replay built
+    without it) loads and renders exactly as before (legacy, no reveal).
     """
 
     winner_list = [int(seat) for seat in (winners or ())]
     human_won = human_player in winner_list
     outcome = "truncated" if truncated else "normal"
     safe_observations = [_json_safe(obs) for obs in (observations or ()) if isinstance(obs, Mapping)]
+    role_list = [int(role) for role in (final_roles or ())]
 
     record: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -127,6 +137,11 @@ def build_replay_record(
     }
     if events:
         record["events"] = [_json_safe(event) for event in events if isinstance(event, Mapping)]
+    # Item 1: only write final_roles when non-empty so legacy records (and any
+    # unfinished / mock save) stay byte-for-byte unchanged and loaders that do
+    # not know the field keep working.
+    if role_list:
+        record["final_roles"] = role_list
     return record
 
 
@@ -145,6 +160,7 @@ def build_full_replay_record(
     events: Sequence[Mapping[str, Any]] | None = None,
     terminated: bool = False,
     truncated: bool = False,
+    final_roles: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     """Build a JSON-safe FULL-reproduction-state replay record (item 5).
 
@@ -184,6 +200,7 @@ def build_full_replay_record(
         events=events,
         terminated=terminated,
         truncated=truncated,
+        final_roles=final_roles,
     )
     base["replay_format"] = "full"
     base["states"] = [
