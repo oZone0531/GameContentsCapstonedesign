@@ -19,6 +19,46 @@ else:
     SessionHandle = Any
 
 
+def _plain_copy(value: Any) -> Any:
+    """Return a detached, JSON-safe deep copy with every mapping thawed.
+
+    The GUI's replay buffer stores the public ``observation`` which the app
+    service freezes via ``_freeze`` into a tree of ``types.MappingProxyType``
+    (nested dicts) and tuples. ``copy.deepcopy`` cannot pickle a
+    ``mappingproxy`` and raises ``TypeError('cannot pickle mappingproxy
+    object')``; relying on it silently dropped every event-carrying turn. This
+    helper instead recursively rebuilds the structure using plain ``dict`` /
+    ``list`` containers, producing a mutation-safe, JSON-safe deep copy that
+    preserves the cumulative ``event_sequence``.
+
+    Qt-free and numpy-free: numpy scalars/arrays (should they ever reach here)
+    are defensively unwrapped via their ``.tolist()`` / ``.item()`` protocol
+    WITHOUT importing numpy.
+    """
+
+    if isinstance(value, Mapping):
+        return {str(key): _plain_copy(sub) for key, sub in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_copy(item) for item in value]
+    if isinstance(value, (str, bytes, bool, int, float)) or value is None:
+        return value
+    # Defensive numpy-free unwrap: a numpy array exposes .tolist(); a numpy
+    # scalar exposes .item(). Convert then recurse so the result stays plain.
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        try:
+            return _plain_copy(tolist())
+        except Exception:
+            pass
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return _plain_copy(item())
+        except Exception:
+            pass
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class _GuiSessionConfig:
     """Fallback request shape used by headless/mock service seams."""
@@ -745,8 +785,18 @@ class GameSessionController:
     def _record_replay_snapshot(self) -> None:
         """Append the current public observation to the replay buffer.
 
-        Stores a deep-copyable copy of ``self.state.observation`` (the public
-        projection, already carrying the cumulative ``event_sequence``).
+        Stores a *thawed plain deep copy* of ``self.state.observation`` (the
+        public projection, already carrying the cumulative ``event_sequence``).
+        We deliberately do NOT use ``copy.deepcopy`` here: the app service
+        freezes the observation via ``_freeze`` into a tree of
+        ``types.MappingProxyType`` + tuples, and ``copy.deepcopy`` cannot pickle
+        a ``mappingproxy`` (raising ``TypeError``). The old broad
+        ``except Exception: return`` therefore swallowed that failure and
+        silently dropped every event-carrying turn, leaving saved replays with
+        no game progress. :func:`_plain_copy` thaws the mapping tree to plain
+        dicts/lists so the snapshot always survives and stays JSON-safe for
+        ``build_replay_record``.
+
         Defensive: a missing state or observation is skipped, and consecutive
         identical observations are de-duplicated. Never raises. Qt-free.
         """
@@ -757,12 +807,12 @@ class GameSessionController:
         observation = getattr(state, "observation", None)
         if not isinstance(observation, Mapping):
             return
-        try:
-            import copy
-
-            snapshot = copy.deepcopy(dict(observation))
-        except Exception:
-            return
+        snapshot = _plain_copy(observation)
+        # Dedup guard: this now compares plain dicts, so it only collapses a
+        # TRULY identical consecutive publish (same cumulative event_sequence
+        # AND same scalars). Genuinely distinct turns always differ because the
+        # cumulative event_sequence grows (and environment_step advances), so
+        # real progressing turns are retained -- the guard never merges them.
         if self._replay_observations and self._replay_observations[-1] == snapshot:
             return
         self._replay_observations.append(snapshot)
