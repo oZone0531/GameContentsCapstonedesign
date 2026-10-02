@@ -105,6 +105,75 @@ def _record(*, with_final_roles: bool) -> dict:
     return record
 
 
+def _record_terminal_status_only() -> dict:
+    """Build a record that mirrors the PRODUCTION writer's appended-final_state.
+
+    The real writer (game.py / replay_store.py) saves a ``final_state``
+    observation that carries NO ``terminated`` / ``truncated`` flags of its own;
+    the appended settled snapshot is flagged terminal SOLELY because
+    ``ReplayModel._terminal_status`` reads the record's top-level
+    ``termination_status`` (defaulting to ``"normal"``). The other record builder
+    sets ``terminated: True`` directly on the observation, which bypasses that
+    ``terminal == "normal"`` fallback. This builder exercises the real path so
+    the privacy-critical reveal gate is revert-sensitive on it too.
+    """
+
+    events = [
+        {"environment_step": 0, "event_type": "game_started"},
+        {"environment_step": 1, "event_type": "bang", "actor_idx": 0, "target_idx": 1},
+        {"environment_step": 2, "event_type": "bang", "actor_idx": 1, "target_idx": 0},
+        {
+            "environment_step": 3,
+            "event_type": "player_eliminated",
+            "eliminated_idx": 3,
+        },
+    ]
+    return {
+        "schema_version": "1.0",
+        "replay_format": "public",
+        "mode": "human_random",
+        # The ONLY terminal signal for the appended final_state below.
+        "termination_status": "normal",
+        "events": events,
+        "steps": [_step(step) for step in range(4)],
+        "final_state": {
+            "healths": [5, 5, 5, 0, 5],
+            "alive": [True, True, True, False, True],
+            "role_visibility": [3, 0, 0, 3, 0],
+            "revealed_roles": [0, 255, 255, 3, 255],
+            "self_role": [0],
+            "current_player_idx": [0],
+            "environment_step": [3],
+            # NOTE: no "terminated" / "truncated" here, matching the production
+            # writer; the appended snapshot is terminal only via termination_status.
+        },
+        "final_roles": list(_FINAL_ROLES),
+    }
+
+
+def test_terminal_status_only_final_state_reveals_all_roles() -> None:
+    # Production writer path: the appended final_state omits terminated/truncated
+    # and relies SOLELY on the top-level termination_status ("normal"). The
+    # appended snapshot must still report terminal AND carry final_roles.
+    model = ReplayModel(_record_terminal_status_only())
+    assert len(model) >= 2
+    terminal = model.snapshot_at(len(model) - 1)
+    assert terminal is not None
+    # The reveal gate fires via the terminal == "normal" fallback, not an
+    # explicit flag on the observation.
+    assert terminal.terminated or terminal.truncated
+    assert terminal.final_roles == (0, 2, 1, 3, 4)
+
+
+def test_terminal_status_only_has_no_mid_replay_leak() -> None:
+    # Every non-terminal snapshot still carries NO final_roles on this path.
+    model = ReplayModel(_record_terminal_status_only())
+    for snapshot in model.snapshots[:-1]:
+        assert snapshot.final_roles == ()
+        assert not snapshot.terminated
+        assert not snapshot.truncated
+
+
 def test_terminal_snapshot_reveals_all_roles() -> None:
     model = ReplayModel(_record(with_final_roles=True))
     assert len(model) >= 2
