@@ -31,6 +31,7 @@ from ..qt_compat import (
     pyqtSignal,
     require_qt,
 )
+from ..replay import merge_rendered_log
 from ..roles import faction_name, hidden_role_label, role_name
 from .board_layout import (
     HIDDEN_ROLE_SENTINEL,
@@ -206,8 +207,25 @@ if QT_AVAILABLE:
             self.table.resizeColumnsToContents()
 
 
+    # Foreground brushes for the GameLog hover preview. Rows at or before the
+    # hovered row keep the normal (bright) colour; rows AFTER it are drawn in a
+    # dimmer colour so they stay visible (items 2 & 3) but are visibly
+    # de-emphasized as "future" relative to the hovered moment.
+    _LOG_NORMAL_FG = QColor(235, 235, 235)
+    _LOG_DIMMED_FG = QColor(120, 120, 120)
+
+
     class GameLog(QGroupBox):
-        """Chronological, human-readable log of public game events."""
+        """Chronological, human-readable log of public game events.
+
+        The list always renders the FULL cumulative log. A hover preview NEVER
+        clears or shrinks the list (items 2 & 3): instead it highlights the
+        hovered row and dims the rows after it via :meth:`preview_moment`, and
+        :meth:`clear_preview` restores the normal emphasis. ``update_state``
+        only rebuilds (and auto-scrolls) when the log actually GROWS during live
+        play; a shorter (hover-preview) ``event_sequence`` is treated as a
+        preview and does not drop the later rows.
+        """
 
         def __init__(self, parent: QWidget | None = None) -> None:
             require_qt()
@@ -215,21 +233,80 @@ if QT_AVAILABLE:
             self.list = QListWidget(self)
             layout = QVBoxLayout(self)
             layout.addWidget(self.list)
+            # Number of event rows currently rendered. Tracks the FULL log so a
+            # shorter hover-preview sequence does not shrink the view.
+            self._rendered_count = 0
 
         def update_state(self, state: Any) -> None:
             observation = getattr(state, "observation", None)
             if observation is None:
                 return
-            events = observation.get("event_sequence") or ()
+            events = [
+                event
+                for event in (observation.get("event_sequence") or ())
+                if isinstance(event, Mapping)
+            ]
+            current = self.list.count()
+            # Items 2 & 3: the shared pure helper decides whether the incoming
+            # (possibly truncated hover-preview) sequence shrinks the log. A
+            # shorter sequence keeps the full rendered log and is treated as a
+            # hover preview instead of clearing it.
+            _rows, grew = merge_rendered_log(range(current), events)
+            if len(events) < current:
+                self.preview_moment(len(events) - 1 if events else None)
+                return
+            # The log grew (or was first populated): rebuild from the full
+            # cumulative sequence and reset any lingering hover de-emphasis.
             self.list.clear()
             for event in events:
-                if isinstance(event, Mapping):
-                    item = QListWidgetItem(format_event(event))
-                    self.list.addItem(item)
+                item = QListWidgetItem(format_event(event))
+                item.setForeground(QBrush(_LOG_NORMAL_FG))
+                self.list.addItem(item)
+            self._rendered_count = len(events)
+            if events:
+                self.list.setCurrentRow(len(events) - 1)
+                if grew:
+                    # Only auto-scroll when new rows were appended for live play
+                    # so a hover preview never jumps the viewport (item 3).
+                    self.list.scrollToBottom()
+
+        def preview_moment(self, row: int | None) -> None:
+            """Preview the hovered moment WITHOUT clearing/shrinking the list.
+
+            Highlights ``row`` (the hovered log row) and dims every row AFTER it
+            so the later records stay visible (items 2 & 3) but are shown as
+            "future" relative to the hovered moment. Passing ``None`` clears the
+            selection. The scroll position is left untouched so the row under
+            the cursor stays under the cursor.
+            """
+
             count = self.list.count()
+            if count == 0:
+                return
+            if row is None:
+                self.list.clearSelection()
+                self.list.setCurrentRow(-1)
+            else:
+                row = max(0, min(int(row), count - 1))
+                self.list.setCurrentRow(row)
+            threshold = count if row is None else row
+            for index in range(count):
+                item = self.list.item(index)
+                if item is None:
+                    continue
+                dim = index > threshold
+                item.setForeground(QBrush(_LOG_DIMMED_FG if dim else _LOG_NORMAL_FG))
+
+        def clear_preview(self) -> None:
+            """Restore normal emphasis after a hover preview ends."""
+
+            count = self.list.count()
+            for index in range(count):
+                item = self.list.item(index)
+                if item is not None:
+                    item.setForeground(QBrush(_LOG_NORMAL_FG))
             if count:
                 self.list.setCurrentRow(count - 1)
-                self.list.scrollToBottom()
 
 
     class GraphicalBoard(QWidget):
@@ -800,6 +877,12 @@ else:
 
     class GameLog:  # type: ignore[no-redef]
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            require_qt()
+
+        def preview_moment(self, *_args: Any, **_kwargs: Any) -> None:
+            require_qt()
+
+        def clear_preview(self, *_args: Any, **_kwargs: Any) -> None:
             require_qt()
 
     class GraphicalBoard:  # type: ignore[no-redef]

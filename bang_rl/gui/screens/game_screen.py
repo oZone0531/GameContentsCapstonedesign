@@ -294,17 +294,28 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 return
             # Read-only preview of the hovered moment; the live view is
             # restored when the pointer leaves the log (eventFilter Leave).
+            # Items 2 & 3: preview the moment on the BOARD only and highlight the
+            # hovered row in the log via preview_moment -- the full log stays
+            # visible (later rows are kept, just de-emphasized) and the viewport
+            # is NOT auto-scrolled, so the row stays under the cursor. The step
+            # the row maps to is unchanged: self.log.list.row(item) is the item's
+            # index in the FULL (non-shrunk) list, so model.index_for_log_row(row)
+            # resolves the same moment regardless of scroll position. A CLICK (see
+            # _on_log_row_clicked) is what actually rewinds/forks the game from
+            # this moment and drops the later steps.
             self._log_hover_preview = True
             self.board.update_state(snapshot)
-            self.log.update_state(snapshot)
+            self.log.preview_moment(row)
 
         def _end_log_hover_preview(self) -> None:
             if not self._alive or not self._log_hover_preview:
                 return
             self._log_hover_preview = False
             # Restore whatever the controller is currently showing (the live
-            # turn, or a committed time-travel preview if a row was clicked).
+            # turn, or a committed time-travel preview if a row was clicked) and
+            # reset the log's hover de-emphasis.
             self._render(self.controller.snapshot)
+            self.log.clear_preview()
 
         def _on_log_row_clicked(self, item: Any) -> None:
             if not self._alive or item is None:

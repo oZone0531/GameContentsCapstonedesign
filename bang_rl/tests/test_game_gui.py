@@ -822,3 +822,55 @@ def test_new_ai_speed_i18n_keys_exist_in_both_languages() -> None:
         assert key in _STRINGS
         assert "en" in _STRINGS[key]
         assert "ko" in _STRINGS[key]
+
+
+# --- Items 2 & 3: GameLog hover keeps the full log (CI-only, needs PyQt6) --
+
+def _log_state_with_events(count: int) -> object:
+    """A snapshot-like state whose observation carries ``count`` log events."""
+
+    events = tuple(
+        {"environment_step": step, "event_type": "bang", "actor_idx": 0, "target_idx": 1}
+        for step in range(count)
+    )
+    return SimpleNamespace(observation={"event_sequence": events})
+
+
+def test_game_log_hover_preview_keeps_full_log_and_restores_emphasis() -> None:
+    # Items 2 & 3 at the real widget layer: once the FULL log is rendered,
+    # hovering a mid row (which previously fed a truncated event_sequence into
+    # update_state) must NOT reduce the row count, must keep every row present,
+    # and leaving the log must restore normal emphasis. Needs a real QListWidget,
+    # so skip in the sandbox where PyQt6 is absent.
+    pytest.importorskip("PyQt6")
+    from bang_rl.gui.qt_compat import QApplication
+    from bang_rl.gui.widgets.game_widgets import GameLog
+
+    app = QApplication.instance() or QApplication([])
+    assert app is not None
+    log = GameLog()
+    # Live play renders the full cumulative log of 6 rows.
+    log.update_state(_log_state_with_events(6))
+    assert log.list.count() == 6
+
+    # A hover preview carrying only the first 3 events must NOT shrink the list.
+    log.preview_moment(2)
+    assert log.list.count() == 6, "hover must keep every row visible (item 2)"
+    # Feeding a SHORTER sequence through update_state (the hover path) also must
+    # not drop the later rows.
+    log.update_state(_log_state_with_events(3))
+    assert log.list.count() == 6, "a shorter hover sequence must not shrink the log"
+
+    # Leaving the log restores emphasis on every row (none left dimmed).
+    from bang_rl.gui.widgets.game_widgets import _LOG_NORMAL_FG
+
+    log.clear_preview()
+    assert log.list.count() == 6
+    for row in range(log.list.count()):
+        item = log.list.item(row)
+        assert item is not None
+        assert item.foreground().color() == _LOG_NORMAL_FG
+
+    # Live play that GROWS the log still appends and re-renders the full set.
+    log.update_state(_log_state_with_events(8))
+    assert log.list.count() == 8

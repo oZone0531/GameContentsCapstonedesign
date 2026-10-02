@@ -592,6 +592,37 @@ class ReplayModel:
         return None if index is None else self.snapshot_at(index)
 
 
+def merge_rendered_log(
+    rendered: Sequence[Any], incoming: Sequence[Any]
+) -> tuple[tuple[Any, ...], bool]:
+    """Pure form of the GameLog "never shrink on hover" render contract.
+
+    Given the rows currently rendered by the log and the ``incoming``
+    cumulative ``event_sequence`` from a new snapshot, return
+    ``(rows_to_render, grew)`` where:
+
+    * ``rows_to_render`` is the FULL set of rows the log should show. When the
+      incoming sequence is the same length or longer (live play growing the
+      log) it IS the incoming sequence. When the incoming sequence is SHORTER
+      (a hover preview carrying a truncated event_sequence) the previously
+      rendered rows are KEPT so later rows never disappear (items 2 & 3).
+    * ``grew`` is True only when rows were actually appended, so the caller
+      auto-scrolls to the bottom only for live play and never on a hover
+      preview (keeping the hovered row under the cursor, item 3).
+
+    This mirrors :meth:`bang_rl.gui.widgets.game_widgets.GameLog.update_state`
+    so the behavioural invariant is testable headlessly (no Qt).
+    """
+
+    rendered_rows = tuple(rendered)
+    incoming_rows = tuple(incoming)
+    if len(incoming_rows) < len(rendered_rows):
+        # Hover preview: keep the full rendered log, do not shrink or scroll.
+        return rendered_rows, False
+    grew = len(incoming_rows) > len(rendered_rows)
+    return incoming_rows, grew
+
+
 def _current_player(observation: Mapping[str, Any], actor: Any) -> int | None:
     actor_int = _int_or_none(actor)
     if actor_int is not None:
@@ -614,4 +645,4 @@ def _mask(value: Any) -> tuple[int, ...]:
     return values
 
 
-__all__ = ["ReplayModel", "ReplaySnapshot"]
+__all__ = ["ReplayModel", "ReplaySnapshot", "merge_rendered_log"]

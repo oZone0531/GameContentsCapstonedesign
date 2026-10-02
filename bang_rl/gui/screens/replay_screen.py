@@ -493,7 +493,15 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 self._hover_restore_index = self.model.index
             snapshot = self.model.snapshot_at(index)
             if snapshot is not None:
-                self._render_snapshot(snapshot)
+                # Items 2 & 3: preview the hovered moment on the BOARD only and
+                # highlight the hovered row via preview_moment. The full log
+                # stays visible (later rows kept, de-emphasized) and the
+                # viewport is not auto-scrolled, so the row stays under the
+                # cursor. self.log.list.row(item) is the item's index in the
+                # FULL (non-shrunk) list, so model.index_for_log_row(row)
+                # resolves the same moment regardless of scroll position.
+                self.board.update_state(snapshot)
+                self.log.preview_moment(row)
 
         def _end_hover_preview(self) -> None:
             if self._hover_restore_index is None:
@@ -503,6 +511,7 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             if self.model is not None:
                 self.model.seek(index)
             self._render_current()
+            self.log.clear_preview()
 
         def eventFilter(self, source: Any, event: Any) -> bool:
             # Restore the playback position when the pointer leaves the log.
