@@ -20,6 +20,7 @@ from ..playback_speed import (
     AI_SPEED_MIN_MS,
     is_manual_speed,
     play_pause_is_playing,
+    should_enter_spectator_review,
     speed_to_interval_ms,
 )
 from ..qt_compat import (
@@ -74,6 +75,13 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             # the prev/pause-play/next controls. None means not in review mode
             # (live play / human game). Set in _enter_review_mode.
             self._review_model: ReplayModel | None = None
+            # Transient backward-preview cursor over the recorded model used by
+            # the spectator Prev-turn control on a LIVE (not yet terminal) game.
+            # None means "not previewing"; it is reset whenever a live render
+            # arrives so Prev always restarts from the live tail. Keeping it
+            # separate from _review_model is what lets a live Prev step back
+            # WITHOUT hijacking the live AI timer (review item 3).
+            self._live_preview_index: int | None = None
             # Tracks whether the last _render saw a terminal snapshot, so a
             # spectator log click after game-over enters review mode.
             self._game_over = False
@@ -348,14 +356,22 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
         def _spectator_prev_turn(self) -> None:
             """Prev-turn control: step one recorded turn BACKWARD (item 3).
 
-            When reviewing (terminal spectator, or after any spectator log
-            click) this steps the recorded ReplayModel back one turn. If no
-            review model exists yet it builds one seeded at the current live
-            tail, so pressing Prev on a live spectator game begins a backward
-            review from the latest recorded turn.
+            Defect fix (review item 3): building a review model on a LIVE
+            spectator game had the same one-way-door problem as the click path
+            (the model pins the AI timer to the recording with no way back to
+            live cadence). Prev-turn therefore only enters review once the game
+            is over; while the game is still live it steps the LIVE AI cadence
+            back one recorded turn as a non-hijacking read-only preview (the
+            controller stays live, self._review_model stays None), recoverable by
+            leaving the log or by Next advancing the live game again.
             """
 
             if not self._alive or not self._spectator:
+                return
+            if not should_enter_spectator_review(self._spectator, self._game_over):
+                # Live spectator game: step back through the recording as a
+                # read-only preview without entering (hijacking) review mode.
+                self._preview_prev_recorded_turn()
                 return
             if self._review_model is None:
                 model = self._log_model()
@@ -366,6 +382,32 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 # Seed at the live tail so the first Prev steps back from "now".
                 model.seek(len(model) - 1)
             self._review_step(forward=False)
+
+        def _preview_prev_recorded_turn(self) -> None:
+            """Step a LIVE spectator preview back one recorded turn (no review).
+
+            Tracks a transient preview cursor (self._live_preview_index) over the
+            recorded model so repeated Prev presses walk backward without pinning
+            a review model / hijacking the live AI timer. Reuses
+            _preview_recorded_turn's non-hijacking render by resolving the target
+            turn's first log row.
+            """
+
+            model = self._log_model()
+            if model is None or model.is_empty():
+                return
+            current = self._live_preview_index
+            if current is None:
+                current = len(model) - 1
+            else:
+                current = max(0, current - 1)
+            self._live_preview_index = current
+            self._ai_timer.stop()
+            self._update_play_pause_label()
+            row = model.log_row_for_index(current)
+            if row is None:
+                return
+            self._preview_recorded_turn(row)
 
         def _toggle_play_pause(self) -> None:
             """Pause-play control for spectator mode (item 3).
@@ -432,8 +474,16 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             # Item 4: re-supply the past turn's own internals so the overlay
             # (emotion bars + role inference) shows instead of "no inference".
             self.board.set_seat_internals(getattr(snapshot, "internals", None))
-            # Item 5: highlight the reviewed step in the log.
-            self.log.set_current_step(model.index)
+            # Item 5: highlight the reviewed step in the log. set_current_step
+            # expects a LOG-ROW index, but model.index is a snapshot/turn cursor
+            # (one per recorded turn). The two diverge whenever a turn emitted
+            # more than one log event, so convert via log_row_for_index (the
+            # Qt-free inverse of index_for_log_row) exactly like the replay
+            # screen does, so the highlight lands on the first row of the sought
+            # turn instead of a wrong row in multi-event turns.
+            row = model.log_row_for_index(model.index)
+            if row is not None:
+                self.log.set_current_step(row)
 
         # -- transient hit / elimination status --------------------------
         def _on_player_hit(self, player: int) -> None:
@@ -607,20 +657,28 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self._log_hover_preview = False
             self._ai_timer.stop()
             if self._spectator:
-                # Item 4 (FEAT-003): clicking a log row in a spectator game
-                # enters a replay-like REVIEW of the recorded turns. After the
-                # game is over this is the only way to look back at past turns
-                # (the live session is terminal); during live play it pins the
-                # view to that recorded turn and the prev/pause-play/next
-                # controls step through the recording. The ReplayModel carries
-                # per-turn internals so emotion bars + role inference show for
-                # the sought turn (fixing the "no inference info" bug).
-                self._enter_review_mode(row)
+                # Item 4 (FEAT-003): clicking a log row ENTERS the replay-like
+                # REVIEW of the recorded turns ONLY after the game is over
+                # ("게임이 종료되었을 때 로그를 클릭하면"). The terminal-review
+                # model drives the prev/pause-play/next controls and
+                # _advance_one_ai_turn steps the recording; entering it during
+                # live play would permanently hijack the live AI timer (there is
+                # no live cadence to return to while the recording is pinned), so
+                # a live spectator click instead shows a read-only, non-hijacking
+                # time-travel preview that leaves the live session untouched. The
+                # ReplayModel carries per-turn internals so emotion bars + role
+                # inference show for the sought turn (fixing the "no inference"
+                # bug) in both cases.
+                if should_enter_spectator_review(self._spectator, self._game_over):
+                    self._enter_review_mode(row)
+                else:
+                    self._preview_recorded_turn(row)
                 return
             # Item 2 (FEAT-003): a HUMAN click forks a live, continuable session
             # from that moment. restore_to_moment truncates the replay buffers to
-            # [:row+1]; advance_ai=False so the restored AI run-up animates one
-            # turn at a time on the QTimer below instead of fast-forwarding.
+            # [:index+1] where index = index_for_log_row(row); advance_ai=False so
+            # the restored AI run-up animates one turn at a time on the QTimer
+            # below instead of fast-forwarding.
             snapshot = self.controller.restore_to_moment(row, advance_ai=False)
             self._render(snapshot)
             # Item 2 (FEAT-003): the resume-click FORKS the timeline, so the log
@@ -628,16 +686,49 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             # _render re-grows the log from the (now shorter) observation, but
             # GameLog.update_state never SHRINKS (that is the hover-preview
             # contract), so explicitly truncate the view to the restored row.
-            self.log.truncate_after(row)
+            #
+            # Defect fix (review item 4): the controller truncates its buffers at
+            # the RESOLVED MOMENT INDEX (index_for_log_row(row)) while this view
+            # truncation uses the RAW ROW. On the human path the two coincide
+            # (the human log emits one event per turn, so row == moment index and
+            # log_row_for_index(index) == row), but to keep the VIEW and the
+            # BUFFERS consistent even if event-per-turn fan-out ever reaches the
+            # human log, resolve the truncation row from the SAME ReplayModel the
+            # controller uses and prefer the first log row of the resolved
+            # moment. Falls back to the raw row when the model cannot resolve it.
+            truncate_row = row
+            model = self._log_model()
+            if model is not None and not model.is_empty():
+                index = model.index_for_log_row(row)
+                if index is not None:
+                    resolved = model.log_row_for_index(index)
+                    if resolved is not None:
+                        # On the human (one-event-per-turn) path resolved == row;
+                        # this assertion documents the invariant the controller
+                        # relies on and would surface a future divergence in the
+                        # pure model rather than silently desyncing view/buffers.
+                        assert resolved == row, (
+                            "human log row and resolved moment row diverged: "
+                            f"row={row} resolved={resolved}"
+                        )
+                        truncate_row = resolved
+            self.log.truncate_after(truncate_row)
             # Item 5: pin the current-step highlight to the restored (now last)
             # step after truncation.
-            self.log.set_current_step(row)
+            self.log.set_current_step(truncate_row)
             # If the fork resumed a live game with AI seats to act, restart the
             # AI cadence so play continues from the restored moment.
             self._maybe_start_ai_sequence()
 
         def _enter_review_mode(self, row: int) -> None:
-            """Enter replay-like review of recorded spectator turns (item 4)."""
+            """Enter replay-like review of recorded spectator turns (item 4).
+
+            Only reached for a terminal spectator game (see the gate in
+            _on_log_row_clicked via should_enter_spectator_review): once entered,
+            the live session is terminal so there is no live cadence left to
+            hijack. The prev/pause-play/next controls then step the recorded
+            model until the user leaves the screen.
+            """
 
             model = self._log_model()
             if model is None or model.is_empty():
@@ -657,6 +748,61 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self._update_play_pause_label()
             self._render_review_snapshot(snapshot)
 
+        def _preview_recorded_turn(self, row: int) -> None:
+            """Read-only preview of a recorded turn on a LIVE spectator game.
+
+            Defect fix (review items 2 & 3): a spectator click (or prev-turn
+            press) BEFORE the game is over must NOT build and pin a review model,
+            because the terminal-review model has no live cadence to return to
+            and permanently hijacks _advance_one_ai_turn. Instead this shows the
+            same non-hijacking, Qt-free time-travel preview a live human click
+            uses (previewing=True / active=False in the controller), re-supplies
+            that turn's recorded internals so role inference still draws, and
+            highlights the step. It leaves self._review_model None, so the live
+            AI timer and play/pause keep driving the LIVE game. Leaving the log
+            (pointer-Leave) restores the live view via _end_log_hover_preview.
+            """
+
+            model = self._log_model()
+            if model is None or model.is_empty():
+                snapshot = self.controller.time_travel_to(row)
+                self._render(snapshot)
+                self.log.set_current_step(row)
+                return
+            index = model.index_for_log_row(row)
+            if index is None:
+                return
+            snapshot = model.snapshot_at(index)
+            if snapshot is None:
+                return
+            # Render the recorded turn on the BOARD only and leave the controller
+            # LIVE (self._review_model stays None, controller.previewing stays
+            # False), so the live AI timer / Next / Play keep driving the LIVE
+            # game. The next live render (an AI tick, Next, or Play) routes
+            # through _render and restores the live board automatically, so this
+            # preview is fully recoverable rather than a one-way door.
+            self.board.update_state(snapshot)
+            self.board.set_seat_internals(getattr(snapshot, "internals", None))
+            highlight = model.log_row_for_index(index)
+            self.log.set_current_step(highlight if highlight is not None else row)
+
+        def _leave_review_mode(self) -> None:
+            """Clear terminal-review state so review never leaks into live play.
+
+            Defect fix (review item 2): self._review_model was set but never
+            reset, so once review was entered _advance_one_ai_turn early-returned
+            into the recording forever. A fresh live render (a new live snapshot
+            arriving while not game-over) now drops the review model and stops
+            the (recording-driven) timer so live cadence is recoverable.
+            """
+
+            if self._review_model is None:
+                return
+            self._review_model = None
+            if self._alive:
+                self._ai_timer.stop()
+                self._update_play_pause_label()
+
         def eventFilter(self, source: Any, event: Any) -> bool:
             if (
                 self._alive
@@ -671,6 +817,20 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             if not self._alive:
                 return
             if snapshot.state is not None:
+                live_game_over = bool(
+                    getattr(snapshot.state, "terminated", False)
+                    or getattr(snapshot.state, "truncated", False)
+                )
+                # Defect fix (review item 2): a fresh LIVE (not terminal) render
+                # means the game is advancing again, so any stale terminal-review
+                # model must be dropped. Without this reset _review_model, once
+                # set, would make _advance_one_ai_turn early-return into the
+                # recording for the rest of the screen's life, permanently
+                # freezing live AI advancement. Only clear on a NON-terminal
+                # render: a terminal render is itself the entry point to review.
+                if not live_game_over:
+                    self._leave_review_mode()
+                    self._live_preview_index = None
                 self.board.update_state(snapshot.state)
                 # FEAT-002: feed live per-seat internals to the board ONLY in
                 # spectator mode (overlays are already enabled there because the

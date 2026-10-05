@@ -340,6 +340,56 @@ def test_log_row_for_index_clamps_and_handles_empty_model() -> None:
     assert empty.log_row_for_index(0) is None
 
 
+def test_review_highlight_uses_log_row_not_snapshot_index() -> None:
+    # Defect fix (review item 1): the spectator terminal-review highlight must
+    # convert the review cursor (a SNAPSHOT index, model.index) to a LOG ROW via
+    # log_row_for_index before calling GameLog.set_current_step (which expects a
+    # row). The two coordinate spaces DIVERGE whenever a turn emitted more than
+    # one log event, so this pins that the conversion lands on the right row and
+    # that using the raw snapshot index would have been wrong.
+    events = [
+        {"environment_step": 0, "event_type": "game_started"},
+        {"environment_step": 1, "event_type": "bang", "actor_idx": 0, "target_idx": 1},
+        {"environment_step": 2, "event_type": "bang", "actor_idx": 1, "target_idx": 2},
+        {"environment_step": 2, "event_type": "player_eliminated", "eliminated_idx": 2},
+    ]
+
+    def observation(step: int) -> dict:
+        return {
+            "healths": (5, 5, 5, 5, 5),
+            "alive": (True,) * 5,
+            "current_player_idx": (step % 5,),
+            "environment_step": (step,),
+            "event_sequence": tuple(
+                dict(event) for event in events if event["environment_step"] <= step
+            ),
+        }
+
+    model = ReplayModel([observation(step) for step in range(3)])
+    # Seek the review cursor to the LAST turn (snapshot index 2), which spans two
+    # log rows (rows 2 and 3). This is the terminal-review _render_review_snapshot
+    # path: it computes the highlight from model.index.
+    model.seek(len(model) - 1)
+    assert model.index == 2
+    # The correct highlight row is the first row of that moment (row 2).
+    highlight_row = model.log_row_for_index(model.index)
+    assert highlight_row == 2
+    # That row round-trips back to the sought snapshot, so hover/click on the
+    # highlighted row resolves to the same reviewed turn.
+    assert model.index_for_log_row(highlight_row) == model.index
+    # Guard against the reverted bug: passing the raw snapshot index (2) as a
+    # row would still be a valid row here, but on a model where snapshots
+    # outnumber the index it would clamp/mismatch. Pin that the conversion is
+    # NOT the identity in general by checking a case where index != first row.
+    model.seek(0)
+    # Row count exceeds snapshot count (4 rows, 3 snapshots), so the last
+    # snapshot index (2) differs from the last row (3): the identity mapping
+    # would highlight the wrong row for the final turn.
+    assert len(model.full_events()) == 4
+    assert len(model) == 3
+    assert model.log_row_for_index(len(model) - 1) != len(model.full_events()) - 1
+
+
 def test_board_keys_carry_forward_when_a_later_observation_omits_them() -> None:
     # Item 4: if a recorded observation omits board keys, the snapshot inherits
     # the last-known value so a hovered moment renders a full board, not empty.

@@ -98,11 +98,32 @@ def play_pause_is_playing(timer_active: object) -> bool:
     return bool(timer_active)
 
 
+def should_enter_spectator_review(is_spectator: object, game_over: object) -> bool:
+    """Return True when a spectator log-click should enter terminal review mode.
+
+    FEAT-003 (item 4) and the user request scope the replay-like review ("게임이
+    종료되었을 때 로그를 클릭하면") to AFTER a SPECTATOR game is terminal. A click
+    (or a prev-turn press) during live spectator play must NOT build and pin a
+    review model, because the terminal-review model hijacks the live AI timer
+    (``_advance_one_ai_turn`` steps the recording instead of the game) and the
+    screen has no path to leave it. Gating entry here keeps a live spectator
+    click on the Qt-free, non-hijacking time-travel preview.
+
+    Pulling this gate into the Qt-free module lets the pure test characterize
+    the review-entry contract (spectator AND game-over) without a QWidget: the
+    defect the reviewer confirmed (review entered on ANY click regardless of the
+    ``_game_over`` flag) is exactly a wrong answer from this function.
+    """
+
+    return bool(is_spectator) and bool(game_over)
+
+
 __all__ = [
     "AI_SPEED_DEFAULT_MS",
     "AI_SPEED_MAX_MS",
     "AI_SPEED_MIN_MS",
     "is_manual_speed",
     "play_pause_is_playing",
+    "should_enter_spectator_review",
     "speed_to_interval_ms",
 ]

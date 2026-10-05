@@ -130,6 +130,37 @@ def test_play_pause_is_playing_mirrors_timer_active() -> None:
     assert speed.play_pause_is_playing("running") is True
 
 
+# -- should_enter_spectator_review: terminal-only review gate --------------
+def test_review_entry_requires_spectator_and_game_over() -> None:
+    # FEAT-003 (item 4) scopes the replay-like review to AFTER a SPECTATOR game
+    # is terminal. Review is entered ONLY when BOTH flags hold.
+    assert speed.should_enter_spectator_review(True, True) is True
+
+
+def test_review_entry_declined_during_live_spectator_play() -> None:
+    # REVERT-SENSITIVE: this is exactly the confirmed defect (review entered on
+    # ANY spectator click regardless of game-over). A live spectator click must
+    # NOT enter review (it would permanently hijack the live AI timer), so the
+    # gate returns False while the game is still running.
+    assert speed.should_enter_spectator_review(True, False) is False
+
+
+def test_review_entry_declined_for_human_game() -> None:
+    # A human game never enters spectator review regardless of game-over (the
+    # human resume-click forks a live session instead).
+    assert speed.should_enter_spectator_review(False, True) is False
+    assert speed.should_enter_spectator_review(False, False) is False
+
+
+def test_review_entry_coerces_truthy_falsy() -> None:
+    # Tolerates the truthy/falsy flags the screen passes (bool in practice) and
+    # always returns a real bool, never raises.
+    assert speed.should_enter_spectator_review(1, 1) is True
+    assert speed.should_enter_spectator_review(0, 1) is False
+    assert speed.should_enter_spectator_review(None, True) is False
+    assert speed.should_enter_spectator_review("yes", "") is False
+
+
 def test_manual_and_interval_agree() -> None:
     # The two helpers must stay consistent: interval is None exactly when the
     # value is manual, for a sweep across and around the range.
