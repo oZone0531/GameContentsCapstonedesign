@@ -198,6 +198,116 @@ def test_role_belief_row_for_seat_none_for_non_dummy_or_bad_index() -> None:
     assert overlay.role_belief_row_for_seat({"kind": "dummy", "state": {}}, 0) is None
 
 
+# -- aggregate_role_inference_row: OTHER AIs' beliefs about a seat ----------
+def _estimator_descriptor(beliefs: list[list[float]]) -> dict:
+    """A dummy seat descriptor carrying only a role_estimator belief matrix."""
+    return {"kind": "dummy", "state": {"role_estimator": {"beliefs": beliefs}}}
+
+
+def _one_hot_row(role_index: int) -> list[float]:
+    """A one-hot belief row on ``role_index`` (canonical 0..4 order)."""
+    row = [0.0, 0.0, 0.0, 0.0, 0.0]
+    row[role_index] = 1.0
+    return row
+
+
+def test_aggregate_averages_other_seats_rows_about_target() -> None:
+    # Target is seat 0. Two OTHER seats (1 and 2) each carry a belief row ABOUT
+    # seat 0 at row index 0 of their matrices. The aggregate is their equal-
+    # weight average. (Rows about other seats are filler and must be ignored.)
+    filler = [0.2, 0.2, 0.2, 0.2, 0.2]
+    seat1 = _estimator_descriptor(
+        [[0.0, 0.2, 0.4, 0.2, 0.2], filler, filler, filler, filler]
+    )
+    seat2 = _estimator_descriptor(
+        [[0.0, 0.0, 0.6, 0.2, 0.2], filler, filler, filler, filler]
+    )
+    internals = {"seats": {"0": _estimator_descriptor([filler] * 5), "1": seat1, "2": seat2}}
+    row = overlay.aggregate_role_inference_row(internals, 0)
+    assert row is not None
+    # Equal-weight average of the two row-0 distributions.
+    expected = (0.0, 0.1, 0.5, 0.2, 0.2)
+    assert all(abs(a - b) < 1e-9 for a, b in zip(row, expected))
+    # Reduced inference merges the two outlaw slots (0.5 + 0.2 = 0.7) and sorts
+    # descending: outlaw 0.7, then deputy/traitor tie at 0.1 and 0.2.
+    items = overlay.role_inference_items(row)
+    assert items[0][0] == "outlaw"
+    assert abs(dict(items)["outlaw"] - 0.7) < 1e-9
+    assert [key for key, _ in items] == ["outlaw", "traitor", "deputy"]
+
+
+def test_aggregate_does_not_leak_targets_true_role_one_hot_self_row() -> None:
+    # REALISTIC revert-sensitive case: in a real game seat 0's OWN estimator
+    # confirms its own role from self_role, so its self-row (row 0 of its own
+    # matrix) is one-hot on its TRUE hidden role (here outlaw_a, index 2).
+    # The OTHER AIs instead hold an uncertain belief about seat 0. The
+    # aggregated-inference path must average the OTHERS' rows and must NOT
+    # surface the true role at 100%. If the code reverts to reading the self-
+    # row, this fails loudly.
+    true_role = 2  # outlaw_a
+    self_descriptor = _estimator_descriptor(
+        [_one_hot_row(true_role)] + [[0.2, 0.2, 0.2, 0.2, 0.2]] * 4
+    )
+    other1 = _estimator_descriptor(
+        [[0.0, 0.3, 0.3, 0.1, 0.3]] + [[0.2, 0.2, 0.2, 0.2, 0.2]] * 4
+    )
+    other2 = _estimator_descriptor(
+        [[0.0, 0.1, 0.3, 0.3, 0.3]] + [[0.2, 0.2, 0.2, 0.2, 0.2]] * 4
+    )
+    internals = {"seats": {"0": self_descriptor, "1": other1, "2": other2}}
+    row = overlay.aggregate_role_inference_row(internals, 0)
+    assert row is not None
+    # The one-hot self-row (value 1.0 at index 2) must NOT dominate the result.
+    assert row[true_role] < 0.5
+    items = overlay.role_inference_items(row)
+    # No bucket is pinned at 100% (the leak signature).
+    assert all(prob < 0.999 for _, prob in items)
+    # Sanity: the averaged distribution is the mean of the two OTHER rows only.
+    expected = (0.0, 0.2, 0.3, 0.2, 0.3)
+    assert all(abs(a - b) < 1e-9 for a, b in zip(row, expected))
+
+
+def test_aggregate_single_dummy_or_no_other_estimator_returns_none() -> None:
+    # (c) Only the target seat has an estimator -> no OTHER inference available.
+    only_self = {"seats": {"0": _estimator_descriptor([[0.2, 0.2, 0.2, 0.2, 0.2]] * 5)}}
+    assert overlay.aggregate_role_inference_row(only_self, 0) is None
+    # All OTHER seats are random / main / human (no estimator) -> None.
+    mixed = {
+        "seats": {
+            "0": _estimator_descriptor([[0.2, 0.2, 0.2, 0.2, 0.2]] * 5),
+            "1": {"kind": "random"},
+            "2": {"kind": "main"},
+            "3": {"kind": "human"},
+        }
+    }
+    assert overlay.aggregate_role_inference_row(mixed, 0) is None
+    # Degenerate / malformed internals never raise.
+    assert overlay.aggregate_role_inference_row(None, 0) is None
+    assert overlay.aggregate_role_inference_row({"seats": {}}, 0) is None
+    assert overlay.aggregate_role_inference_row({"nope": 1}, 0) is None
+    assert overlay.aggregate_role_inference_row({"seats": {"1": _estimator_descriptor([[0.2, 0.2, 0.2, 0.2, 0.2]] * 5)}}, True) is None
+
+
+def test_aggregate_can_include_self_when_not_excluded() -> None:
+    # The exclude_self flag defaults to True (the safe behavior). When a caller
+    # explicitly opts in, the self-row is included in the average; this guards
+    # the flag's wiring so a future caller cannot silently flip it on.
+    self_descriptor = _estimator_descriptor(
+        [_one_hot_row(2)] + [[0.2, 0.2, 0.2, 0.2, 0.2]] * 4
+    )
+    other = _estimator_descriptor(
+        [[0.0, 0.0, 0.0, 0.0, 1.0]] + [[0.2, 0.2, 0.2, 0.2, 0.2]] * 4
+    )
+    internals = {"seats": {"0": self_descriptor, "1": other}}
+    excluded = overlay.aggregate_role_inference_row(internals, 0)
+    included = overlay.aggregate_role_inference_row(internals, 0, exclude_self=False)
+    # Excluding self -> only the other row (one-hot traitor).
+    assert excluded == (0.0, 0.0, 0.0, 0.0, 1.0)
+    # Including self -> average of the one-hot outlaw_a self-row and the
+    # one-hot traitor other-row.
+    assert included == (0.0, 0.0, 0.5, 0.0, 0.5)
+
+
 # -- format_percent ---------------------------------------------------------
 def test_format_percent_rounds() -> None:
     assert overlay.format_percent(0.87) == 87

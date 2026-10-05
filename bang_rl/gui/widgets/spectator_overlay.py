@@ -323,6 +323,76 @@ def role_belief_row_for_seat(descriptor: Any, seat_index: Any) -> tuple[float, .
     return _coerce_belief_row(beliefs[seat_index])
 
 
+def _iter_seat_descriptors(internals: Any):
+    """Yield ``(seat_index, descriptor)`` pairs from an internals mapping.
+
+    ``internals`` is shaped like ``GameService.export_agent_internals`` output
+    (``{'seats': {seat_str: descriptor}}``). Seat keys are stringified integer
+    indices; non-integer keys are skipped. Tolerant of a missing / malformed
+    ``internals`` or ``seats`` mapping (yields nothing). Never raises.
+    """
+
+    if not isinstance(internals, Mapping):
+        return
+    seats = internals.get("seats")
+    if not isinstance(seats, Mapping):
+        return
+    for seat_key, descriptor in seats.items():
+        try:
+            seat_index = int(seat_key)
+        except (TypeError, ValueError):
+            continue
+        yield seat_index, descriptor
+
+
+def aggregate_role_inference_row(
+    internals: Any,
+    target_seat: Any,
+    *,
+    exclude_self: bool = True,
+) -> tuple[float, ...] | None:
+    """Return the averaged belief row about ``target_seat`` across OTHER AIs.
+
+    This is the public-information-derived role inference about a hovered seat.
+    For every OTHER seat ``O`` in ``internals`` that has a dummy descriptor with
+    a usable ``role_estimator``, read row ``target_seat`` of ``O``'s belief
+    matrix (``O``'s probability distribution over ``target_seat``'s role) and
+    average those rows with EQUAL weight.
+
+    Crucially, when ``exclude_self`` is True (the default) seat ``target_seat``'s
+    OWN estimator is skipped. A dummy confirms its own role from ``self_role``
+    every turn, so its self-row is one-hot on its true hidden role; reading it
+    would leak the role and show it at 100%. Averaging only the OTHER AIs'
+    beliefs yields a genuinely uncertain distribution that never uses the seat's
+    self-knowledge, so it cannot be one-hot on the true role and never leaks it.
+
+    Returns a length-5 averaged belief row in canonical order
+    ``(sheriff, deputy, outlaw_a, outlaw_b, traitor)``, or ``None`` when NO other
+    dummy estimator is available (for example only one dummy in the game, or all
+    other seats are random / main). The caller then falls back to a
+    "no inference info" message. Never raises on bad input.
+    """
+
+    if isinstance(target_seat, bool) or not isinstance(target_seat, int):
+        return None
+
+    totals = [0.0] * ROLE_COUNT
+    count = 0
+    for seat_index, descriptor in _iter_seat_descriptors(internals):
+        if exclude_self and seat_index == target_seat:
+            continue
+        row = role_belief_row_for_seat(descriptor, target_seat)
+        if row is None:
+            continue
+        for role_index in range(ROLE_COUNT):
+            totals[role_index] += row[role_index]
+        count += 1
+
+    if count == 0:
+        return None
+    return tuple(value / count for value in totals)
+
+
 @dataclass(frozen=True)
 class BarRect:
     """Axis-aligned rectangle of one painted emotion bar row for hit-testing.

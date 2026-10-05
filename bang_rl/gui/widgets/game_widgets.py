@@ -38,9 +38,9 @@ from .spectator_overlay import (
     bar_rect_at_point,
     emotion_bar_rects,
     emotion_bar_string,
+    aggregate_role_inference_row,
     emotion_bars_for_seat,
     format_percent,
-    role_belief_row_for_seat,
     role_inference_items,
 )
 from .board_layout import (
@@ -1174,14 +1174,25 @@ if QT_AVAILABLE:
         def _role_inference_lines(self, seat: int) -> list[str]:
             """Return the localized role-inference lines for a hovered seat.
 
-            Uses the FEAT-001 pure helpers to read seat ``seat``'s own belief
-            row and reduce it (sheriff dropped, outlaws merged, descending).
-            Returns the localized "no inference info" fallback for a non-dummy /
-            unavailable seat so the overlay always has something to show.
+            Shows what the OTHER AIs infer about seat ``seat``, NOT that seat's
+            own self-belief. A dummy confirms its own role from ``self_role``
+            every turn, so its self-row is one-hot on its TRUE hidden role;
+            reading it would leak the role at 100%. Instead we average the
+            OTHER dummy seats' row-``seat`` distributions
+            (``aggregate_role_inference_row``), a public-information-derived and
+            genuinely uncertain distribution that never uses seat ``seat``'s
+            self-knowledge. That averaged row is then reduced by the FEAT-001
+            pure helpers (sheriff dropped, outlaws merged, descending). When no
+            other dummy estimator is available (single dummy, or all other seats
+            random / main) the localized "no inference info" fallback is shown,
+            same as a non-dummy / unavailable seat.
             """
 
-            descriptor = self._descriptor_for_seat(seat)
-            row = role_belief_row_for_seat(descriptor, int(seat))
+            # Defense in depth: never read internals when overlays are off, so
+            # a human live game can never surface another seat's inference even
+            # if internals were somehow set.
+            internals = self._seat_internals if self._overlays_enabled else None
+            row = aggregate_role_inference_row(internals, int(seat))
             items = role_inference_items(row) if row is not None else ()
             if not items:
                 return [tr("board.no_inference")]
