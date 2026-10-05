@@ -41,6 +41,7 @@ from .spectator_overlay import (
     emotion_bars_for_seat,
     format_percent,
     inverted_role_inference,
+    sheriff_seat_from_observation,
 )
 from .board_layout import (
     HIDDEN_ROLE_SENTINEL,
@@ -254,6 +255,13 @@ if QT_AVAILABLE:
     # de-emphasized as "future" relative to the hovered moment.
     _LOG_NORMAL_FG = QColor(235, 235, 235)
     _LOG_DIMMED_FG = QColor(120, 120, 120)
+    # FEAT-002 (item 5): a persistent "current step" highlight that COEXISTS
+    # with the hover-preview dimming. The current row that is actually shown on
+    # the play surface (live current turn, pinned replay/spectator seek target)
+    # is drawn in a warm highlight with a subtle background so it stays visible
+    # even while a hover preview dims the later rows.
+    _LOG_CURRENT_FG = QColor(255, 210, 110)
+    _LOG_CURRENT_BG = QColor(70, 55, 20)
 
 
     class GameLog(QGroupBox):
@@ -266,6 +274,13 @@ if QT_AVAILABLE:
         only rebuilds (and auto-scrolls) when the log actually GROWS during live
         play; a shorter (hover-preview) ``event_sequence`` is treated as a
         preview and does not drop the later rows.
+
+        FEAT-002 (item 5): a SEPARATE persistent "current step" highlight marks
+        the row that is actually shown on the play surface (the live current
+        turn, or a pinned replay / spectator seek target set via
+        :meth:`set_current_step`). It COEXISTS with the hover preview: the two
+        concerns are unified in :meth:`_apply_emphasis`, so starting or ending a
+        hover never erases the current-step highlight.
         """
 
         def __init__(self, parent: QWidget | None = None) -> None:
@@ -277,6 +292,8 @@ if QT_AVAILABLE:
             # Number of event rows currently rendered. Tracks the FULL log so a
             # shorter hover-preview sequence does not shrink the view.
             self._rendered_count = 0
+            # FEAT-002 (item 5): the persistent current-step row (None = none).
+            self._current_step: int | None = None
 
         def update_state(self, state: Any) -> None:
             observation = getattr(state, "observation", None)
@@ -305,11 +322,75 @@ if QT_AVAILABLE:
                 self.list.addItem(item)
             self._rendered_count = len(events)
             if events:
-                self.list.setCurrentRow(len(events) - 1)
+                # Item 5: during live play the current turn is always the last
+                # row, so pin the current-step highlight there after rebuilding
+                # (set_current_step re-applies emphasis so the highlight survives
+                # the clear + re-add above).
+                self.set_current_step(len(events) - 1)
                 if grew:
                     # Only auto-scroll when new rows were appended for live play
                     # so a hover preview never jumps the viewport (item 3).
                     self.list.scrollToBottom()
+            else:
+                self.set_current_step(None)
+
+        def set_current_step(self, row: int | None) -> None:
+            """Pin the persistent current-step highlight to ``row`` (item 5).
+
+            Records the row that is actually shown on the play surface (the live
+            current turn, or a pinned replay / spectator seek target) and
+            repaints emphasis so the row is highlighted even when it is not the
+            hovered row. Passing ``None`` clears the highlight. The highlight is
+            SEPARATE from the hover preview and persists across hover start/end;
+            see :meth:`_apply_emphasis`. The scroll position is left untouched.
+            """
+
+            count = self.list.count()
+            if row is None or count == 0:
+                self._current_step = None
+            else:
+                self._current_step = max(0, min(int(row), count - 1))
+            # Re-apply with no active hover preview (hover re-applies its own
+            # dimming on top via preview_moment).
+            self._apply_emphasis(None)
+
+        def _apply_emphasis(self, preview_row: int | None) -> None:
+            """Re-paint every row's emphasis for the two coexisting concerns.
+
+            FEAT-002 (item 5): for each row decide, in order, whether to DIM it
+            (a hover preview is active and the row is AFTER ``preview_row``),
+            HIGHLIGHT it (it is the persistent ``_current_step``), or paint it
+            NORMAL. The current-step highlight is applied AFTER the preview
+            decision so a hovered-and-dimmed future row still shows the
+            current-step color if it happens to be the current step; dimming
+            only affects rows that are neither the current step nor at/before the
+            preview row. Both :meth:`preview_moment` and :meth:`clear_preview`
+            call through here, so the current-step highlight PERSISTS across
+            hover start and end (hover never erases it).
+            """
+
+            count = self.list.count()
+            for index in range(count):
+                item = self.list.item(index)
+                if item is None:
+                    continue
+                is_current = (
+                    self._current_step is not None and index == self._current_step
+                )
+                dim = (
+                    preview_row is not None
+                    and index > preview_row
+                    and not is_current
+                )
+                if is_current:
+                    item.setForeground(QBrush(_LOG_CURRENT_FG))
+                    item.setBackground(QBrush(_LOG_CURRENT_BG))
+                else:
+                    item.setForeground(QBrush(_LOG_DIMMED_FG if dim else _LOG_NORMAL_FG))
+                    item.setBackground(QBrush())
+                font = item.font()
+                font.setBold(is_current)
+                item.setFont(font)
 
         def preview_moment(self, row: int | None) -> None:
             """Preview the hovered moment WITHOUT clearing/shrinking the list.
@@ -318,7 +399,8 @@ if QT_AVAILABLE:
             so the later records stay visible (items 2 & 3) but are shown as
             "future" relative to the hovered moment. Passing ``None`` clears the
             selection. The scroll position is left untouched so the row under
-            the cursor stays under the cursor.
+            the cursor stays under the cursor. The persistent current-step
+            highlight is preserved via :meth:`_apply_emphasis` (item 5).
             """
 
             count = self.list.count()
@@ -330,22 +412,17 @@ if QT_AVAILABLE:
             else:
                 row = max(0, min(int(row), count - 1))
                 self.list.setCurrentRow(row)
-            threshold = count if row is None else row
-            for index in range(count):
-                item = self.list.item(index)
-                if item is None:
-                    continue
-                dim = index > threshold
-                item.setForeground(QBrush(_LOG_DIMMED_FG if dim else _LOG_NORMAL_FG))
+            self._apply_emphasis(row)
 
         def clear_preview(self) -> None:
-            """Restore normal emphasis after a hover preview ends."""
+            """Restore normal emphasis after a hover preview ends.
+
+            Clears the hover dimming but PRESERVES the persistent current-step
+            highlight via :meth:`_apply_emphasis` (item 5).
+            """
 
             count = self.list.count()
-            for index in range(count):
-                item = self.list.item(index)
-                if item is not None:
-                    item.setForeground(QBrush(_LOG_NORMAL_FG))
+            self._apply_emphasis(None)
             if count:
                 self.list.setCurrentRow(count - 1)
 
@@ -650,6 +727,15 @@ if QT_AVAILABLE:
                     self.update()
                 return
             if self._overlays_enabled:
+                # FEAT-002 (item 4 enabler): this branch sets _hover_seat and
+                # returns BEFORE the `if not self._active:` guard below, so
+                # overlay hover (emotion bars + role inference) keeps working
+                # after the game is terminal. update_state clears _hover_seat and
+                # sets _active=False on a terminal state, but it does not disable
+                # overlays, and the paint methods gate only on _overlays_enabled
+                # plus _hover_seat (never on _active / terminated). Reviewing a
+                # finished spectator game by hovering seats therefore still draws
+                # the overlays.
                 self._update_bar_tooltip(position, event)
                 seat = seat_at_point(
                     position.x(),
@@ -1127,7 +1213,8 @@ if QT_AVAILABLE:
 
             No-op unless overlays are enabled and a seat is hovered. Hovering
             seat S shows S's own current role inferences drawn OVER each OTHER
-            seat T's circle (T != S and T != sheriff seat 0), using row T of S's
+            seat T's circle (T != S and T != the sheriff seat, which is derived
+            from revealed_roles), using row T of S's
             own beliefs matrix reduced by the pure helpers (sheriff dropped,
             outlaws merged, descending). Nothing is drawn on S's own circle.
             Each per-target plate shows localized ``role N%`` lines. When S is
@@ -1152,7 +1239,13 @@ if QT_AVAILABLE:
             # human live game can never surface another seat's inference even if
             # internals were somehow set.
             internals = self._seat_internals if self._overlays_enabled else None
-            projection = inverted_role_inference(internals, int(seat))
+            # Derive the sheriff SEAT from the current state's observation so the
+            # inverted projection excludes whichever seat actually holds the
+            # Sheriff role (roles are shuffled; it is not necessarily seat 0).
+            sheriff = sheriff_seat_from_observation(
+                getattr(self._state, "observation", None)
+            )
+            projection = inverted_role_inference(internals, int(seat), sheriff_seat=sheriff)
             if not projection:
                 # No usable inference for the source seat: show the fallback
                 # once over the hovered seat's own circle.
@@ -1221,13 +1314,19 @@ if QT_AVAILABLE:
             localized label via ``inference_role_label`` + ``format_percent`` for
             display. Returns a ``{target_seat: [lines]}`` mapping; an empty dict
             when S is not a dummy or has no usable beliefs (the caller then shows
-            the "no inference info" fallback). The sheriff seat is excluded both
-            as a target and from every per-target list (``role_inference_items``
-            drops index 0), and S's own seat never appears.
+            the "no inference info" fallback). The sheriff seat (derived from
+            revealed_roles) is excluded both as a target and from every
+            per-target list (``role_inference_items`` drops the sheriff role
+            column), and S's own seat never appears.
             """
 
             internals = self._seat_internals if self._overlays_enabled else None
-            projection = inverted_role_inference(internals, int(source_seat))
+            sheriff = sheriff_seat_from_observation(
+                getattr(self._state, "observation", None)
+            )
+            projection = inverted_role_inference(
+                internals, int(source_seat), sheriff_seat=sheriff
+            )
             return {
                 target_seat: [
                     f"{inference_role_label(key)} {format_percent(prob)}%"
@@ -1259,6 +1358,9 @@ else:
             require_qt()
 
         def clear_preview(self, *_args: Any, **_kwargs: Any) -> None:
+            require_qt()
+
+        def set_current_step(self, *_args: Any, **_kwargs: Any) -> None:
             require_qt()
 
     class GraphicalBoard:  # type: ignore[no-redef]
