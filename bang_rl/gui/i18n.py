@@ -458,6 +458,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Select a replay in the list first.",
         "ko": "먼저 목록에서 리플레이를 선택하세요.",
     },
+    "replay.delete_failed": {
+        "en": "Could not delete the replay file.",
+        "ko": "리플레이 파일을 삭제하지 못했습니다.",
+    },
     # Item 5: continue a live game from the chosen full-state moment.
     "replay.continue_from_here": {
         "en": "Continue from here",

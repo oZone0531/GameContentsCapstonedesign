@@ -330,7 +330,21 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
 
         # -- rename / delete (item 10) -----------------------------------
         def _selected_browser_path(self) -> Path | None:
-            row = self.browser.currentRow()
+            # Resolve the selected row robustly: prefer the explicitly selected
+            # / current item (which stays correct after a click even if the
+            # currentRow index drifts), then fall back to currentRow(). This
+            # fixes delete/rename acting on the wrong (or no) file when the row
+            # cursor and the visual selection are out of sync.
+            row = -1
+            item = self.browser.currentItem()
+            if item is None:
+                selected = self.browser.selectedItems()
+                if selected:
+                    item = selected[0]
+            if item is not None:
+                row = self.browser.row(item)
+            if not (0 <= row < len(self._replay_paths)):
+                row = self.browser.currentRow()
             if not (0 <= row < len(self._replay_paths)):
                 self.status.setText(tr("replay.select_first"))
                 return None
@@ -372,6 +386,17 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 replay_store.delete_replay(path)
             except OSError as exc:
                 self.status.setText(str(exc) or tr("replay.no_episode"))
+                return
+            # Defensive: confirm the file is actually gone. If something kept it
+            # on disk (e.g. a stale path), surface it instead of silently
+            # pretending the delete succeeded.
+            try:
+                still_present = Path(path).exists()
+            except OSError:
+                still_present = False
+            if still_present:
+                self.status.setText(tr("replay.delete_failed"))
+                self._reload_browser()
                 return
             # If the deleted file was the loaded one, clear the board / log.
             if self._loaded_path is not None and self._loaded_path == path:
@@ -587,8 +612,18 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
         def _render_snapshot(self, snapshot: Any) -> None:
             if not self._alive:
                 return
+            # Item 2: the BOARD plays from turn 1 via the stepped snapshot, but
+            # the LOG shows the ENTIRE episode log from the first frame. Feeding
+            # the full-log snapshot (instead of the stepped one) makes every
+            # turn visible at once; GameLog.update_state never shrinks on a
+            # shorter incoming sequence, so the full log stays stable as the
+            # board advances / rewinds. index_for_log_row still resolves hovered
+            # rows against full_events, so hover-preview is unaffected.
             self.board.update_state(snapshot)
-            self.log.update_state(snapshot)
+            if self.model is not None:
+                self.log.update_state(self.model.full_log_snapshot())
+            else:
+                self.log.update_state(snapshot)
 
         def _set_controls_enabled(self, enabled: bool) -> None:
             self.play_button.setEnabled(enabled)

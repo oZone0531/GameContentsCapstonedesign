@@ -80,6 +80,26 @@ class ReplaySnapshot:
     final_roles: tuple[int, ...] = ()
 
 
+@dataclass(frozen=True)
+class LogSnapshot:
+    """A log-only snapshot carrying the COMPLETE cumulative event log.
+
+    Item 2: during replay playback the LEFT game log must show the ENTIRE
+    episode log from the very first frame while the graphical BOARD plays from
+    turn 1. The board renders the stepped :class:`ReplaySnapshot` (its
+    cumulative ``event_sequence`` grows turn-by-turn), but the log is rendered
+    from this snapshot instead so every turn is visible at once.
+
+    It duck-types exactly what
+    :meth:`bang_rl.gui.widgets.game_widgets.GameLog.update_state` reads:
+    ``getattr(state, "observation", None)`` then ``observation.get(
+    "event_sequence")``. It is Qt-free and numpy-free, carrying only the full
+    log mapping and no board-state keys (the log never reads them).
+    """
+
+    observation: Mapping[str, Any]
+
+
 def _as_mapping(episode: Any) -> Mapping[str, Any] | None:
     """Return a ``to_dict``-style mapping for a CanonicalEpisode-like input."""
 
@@ -646,6 +666,21 @@ class ReplayModel:
                 longest = events
         return longest
 
+    def full_log_snapshot(self) -> LogSnapshot:
+        """Return a log-only snapshot carrying the COMPLETE episode log.
+
+        Item 2: the returned snapshot's ``observation['event_sequence']`` is
+        :meth:`full_events` (the longest cumulative log), independent of the
+        cursor ``index``, so the live GameLog can render the ENTIRE log from the
+        very first replay frame while the board keeps stepping from turn 1.
+        Because :meth:`GameLog.update_state` never shrinks on a shorter incoming
+        sequence (the ``merge_rendered_log`` contract), feeding this once keeps
+        the full log stable as the board advances. For an empty model the
+        ``event_sequence`` is ``()``. Pure, Qt-free and numpy-free.
+        """
+
+        return LogSnapshot(observation={"event_sequence": self.full_events()})
+
     def snapshot_for_moment(self, moment: Any) -> ReplaySnapshot | None:
         """Return the snapshot at ``moment`` (an event mapping or a step int)."""
 
@@ -710,4 +745,4 @@ def _mask(value: Any) -> tuple[int, ...]:
     return values
 
 
-__all__ = ["ReplayModel", "ReplaySnapshot", "merge_rendered_log"]
+__all__ = ["LogSnapshot", "ReplayModel", "ReplaySnapshot", "merge_rendered_log"]
