@@ -308,6 +308,130 @@ def test_aggregate_can_include_self_when_not_excluded() -> None:
     assert included == (0.0, 0.0, 0.5, 0.0, 0.5)
 
 
+# -- FEAT-001: inverted_role_inference (hovered seat's beliefs over others) --
+def test_inverted_projection_uses_sources_own_rows_about_each_target() -> None:
+    # Hovering source seat S=1 must show seat 1's OWN beliefs ABOUT each other
+    # non-sheriff seat T, drawn from ROW T of seat 1's matrix. We give seat 1 a
+    # distinctive matrix and give the OTHER seats contradictory rows so that if
+    # the code reverted to the old aggregate-of-OTHERS projection the asserted
+    # percentages would be wrong.
+    filler = [0.2, 0.2, 0.2, 0.2, 0.2]
+    # Seat 1's own matrix: row T is seat 1's distribution over seat T's role.
+    source = _estimator_descriptor(
+        [
+            filler,  # row 0 (about sheriff) - never a target
+            filler,  # row 1 (about self) - never read as a target
+            [0.0, 0.0, 0.45, 0.42, 0.13],  # row 2: outlaw-heavy (sums to 0.87)
+            [0.0, 0.6, 0.1, 0.1, 0.2],  # row 3: deputy-heavy
+            [0.0, 0.1, 0.1, 0.1, 0.7],  # row 4: traitor-heavy
+        ]
+    )
+    # OTHER seats carry DIFFERENT beliefs; an aggregate-of-others projection
+    # would surface these instead and fail the assertions below.
+    other = _estimator_descriptor([[0.0, 0.9, 0.05, 0.0, 0.05]] * 5)
+    internals = {
+        "seats": {
+            "0": other,  # sheriff seat (never a target)
+            "1": source,
+            "2": other,
+            "3": other,
+            "4": other,
+        }
+    }
+    projection = overlay.inverted_role_inference(internals, 1)
+    mapping = dict(projection)
+    # Targets are every OTHER non-sheriff seat: 2, 3, 4 (NOT 0, NOT 1).
+    assert sorted(mapping.keys()) == [2, 3, 4]
+    # Target 2: seat 1's row 2 reduces to a merged outlaw bucket of 0.87 first.
+    items2 = mapping[2]
+    assert items2[0][0] == "outlaw"
+    assert abs(dict(items2)["outlaw"] - 0.87) < 1e-9
+    # deputy at index 1 is 0.0 here, so it is dropped; traitor (0.13) remains.
+    assert [key for key, _ in items2] == ["outlaw", "traitor"]
+    # Target 3: deputy-heavy (0.6), outlaw merged 0.2, traitor 0.2.
+    items3 = mapping[3]
+    assert items3[0][0] == "deputy"
+    assert abs(dict(items3)["deputy"] - 0.6) < 1e-9
+    # Target 4: traitor-heavy (0.7).
+    items4 = mapping[4]
+    assert items4[0][0] == "traitor"
+    assert abs(dict(items4)["traitor"] - 0.7) < 1e-9
+    # Revert guard: if the code used the OTHERS' rows (all deputy 0.9), every
+    # target would be deputy-first. It is not, so the source-own projection holds.
+    assert items2[0][0] != "deputy"
+    assert items4[0][0] != "deputy"
+
+
+def test_inverted_projection_excludes_source_seat_itself() -> None:
+    filler = [0.2, 0.2, 0.2, 0.2, 0.2]
+    source = _estimator_descriptor([filler] * 5)
+    internals = {"seats": {"0": source, "1": source, "2": source}}
+    projection = overlay.inverted_role_inference(internals, 1)
+    targets = [target for target, _ in projection]
+    # The source seat (1) must never appear as a target.
+    assert 1 not in targets
+
+
+def test_inverted_projection_excludes_sheriff_target_seat_zero() -> None:
+    filler = [0.2, 0.2, 0.2, 0.2, 0.2]
+    source = _estimator_descriptor([filler] * 5)
+    internals = {"seats": {"0": source, "1": source, "2": source}}
+    projection = overlay.inverted_role_inference(internals, 1)
+    targets = [target for target, _ in projection]
+    # Sheriff seat 0 is always public and is never a target.
+    assert 0 not in targets
+    assert targets == [2]
+    # Sheriff also stays dropped from every per-target list.
+    for _target, items in projection:
+        assert "sheriff" not in [key for key, _ in items]
+
+
+def test_inverted_projection_non_dummy_or_missing_beliefs_is_empty() -> None:
+    filler = [0.2, 0.2, 0.2, 0.2, 0.2]
+    other = _estimator_descriptor([filler] * 5)
+    # Source seat 1 is random (not a dummy) -> empty no-info result.
+    non_dummy = {"seats": {"0": other, "1": {"kind": "random"}, "2": other}}
+    assert overlay.inverted_role_inference(non_dummy, 1) == ()
+    # Source seat is a dummy but lacks a beliefs matrix -> empty.
+    no_beliefs = {"seats": {"0": other, "1": {"kind": "dummy", "state": {}}, "2": other}}
+    assert overlay.inverted_role_inference(no_beliefs, 1) == ()
+    # Source seat absent from internals -> empty.
+    assert overlay.inverted_role_inference({"seats": {"0": other}}, 1) == ()
+    # Degenerate / malformed internals and bad source index never raise.
+    assert overlay.inverted_role_inference(None, 1) == ()
+    assert overlay.inverted_role_inference({"seats": {}}, 1) == ()
+    assert overlay.inverted_role_inference({"nope": 1}, 1) == ()
+    assert overlay.inverted_role_inference({"seats": {"1": other}}, True) == ()
+
+
+def test_inverted_projection_omits_targets_without_estimator() -> None:
+    # Only seats present with a usable belief row for the target appear. The
+    # source's own matrix is what is read, so a target seat that is random still
+    # gets a projection (its row comes from the SOURCE's matrix), but a target
+    # whose source row is unusable is omitted. Here the source has valid rows
+    # for all seats, so targets 2 and 3 both appear even though they are random.
+    source = _estimator_descriptor(
+        [
+            [0.2, 0.2, 0.2, 0.2, 0.2],
+            [0.2, 0.2, 0.2, 0.2, 0.2],
+            [0.0, 0.0, 0.5, 0.5, 0.0],
+            [0.0, 1.0, 0.0, 0.0, 0.0],
+        ]
+    )
+    internals = {
+        "seats": {
+            "0": {"kind": "random"},
+            "1": source,
+            "2": {"kind": "random"},
+            "3": {"kind": "random"},
+        }
+    }
+    projection = overlay.inverted_role_inference(internals, 1)
+    assert [target for target, _ in projection] == [2, 3]
+    # Target 2's merged outlaw bucket is 0.5 + 0.5 = 1.0 from the SOURCE's row 2.
+    assert dict(dict(projection)[2])["outlaw"] == 1.0
+
+
 # -- format_percent ---------------------------------------------------------
 def test_format_percent_rounds() -> None:
     assert overlay.format_percent(0.87) == 87

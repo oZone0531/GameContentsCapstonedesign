@@ -27,6 +27,13 @@ stating up front:
 
 The canonical belief order used across the project is
 ``(sheriff, deputy, outlaw_a, outlaw_b, traitor)`` = indices ``0..4``.
+
+The hover overlay uses the INVERTED projection (``inverted_role_inference``):
+hovering seat S shows S's OWN current beliefs ABOUT each OTHER non-sheriff seat
+T, drawn over T's circle. This reads the SOURCE seat's row T (its distribution
+over T's role), never a seat's own self-row, so it cannot leak any seat's true
+hidden role. A belief distribution over OTHERS is an opinion, not a reveal, so
+it is safe to show in spectator / replay (where this overlay is gated).
 """
 
 from __future__ import annotations
@@ -391,6 +398,63 @@ def aggregate_role_inference_row(
     if count == 0:
         return None
     return tuple(value / count for value in totals)
+
+
+def inverted_role_inference(
+    internals: Any,
+    source_seat: Any,
+) -> tuple[tuple[int, tuple[tuple[str, float], ...]], ...]:
+    """Return SOURCE seat's own role inference about every OTHER non-sheriff seat.
+
+    This is the inverted projection used by the hover overlay: hovering seat
+    ``source_seat`` (S) shows S's OWN current role inferences drawn over each
+    OTHER seat's circle. For every seat ``T`` present in ``internals`` with
+    ``T != source_seat`` AND ``T != 0`` (the sheriff seat is always public and
+    is never a target), read row ``T`` of SOURCE seat's 5x5 beliefs matrix
+    (S's probability distribution over T's role) via
+    ``role_belief_row_for_seat`` and reduce it with ``role_inference_items``
+    (sheriff dropped, the two outlaw slots merged, descending). The reduction /
+    sort logic is NOT duplicated here; it is reused from ``role_inference_items``.
+
+    Hidden-information rationale: this reads the SOURCE seat's beliefs ABOUT
+    OTHERS, never a seat's own self-row, so it cannot surface any seat's true
+    hidden role. A belief distribution over OTHERS is an opinion, not a reveal,
+    so it is safe to show in spectator / replay (where this overlay is gated).
+
+    Returns an ordered tuple of ``(target_seat, items)`` pairs, sorted by target
+    seat index ascending, where ``items`` is the ``role_inference_items`` tuple
+    for that target. Targets whose reduced list is empty are omitted. Returns an
+    empty tuple when ``source_seat`` is not a plain int, when the source seat is
+    not a dummy or lacks a usable beliefs matrix, or when no other non-sheriff
+    seat yields a usable inference, so the caller can show the no-info fallback.
+    Never raises on bad input.
+    """
+
+    if isinstance(source_seat, bool) or not isinstance(source_seat, int):
+        return ()
+
+    source_descriptor = None
+    for seat_index, descriptor in _iter_seat_descriptors(internals):
+        if seat_index == source_seat:
+            source_descriptor = descriptor
+            break
+    if _unwrap_state(source_descriptor) is None:
+        return ()
+
+    projection: list[tuple[int, tuple[tuple[str, float], ...]]] = []
+    for seat_index, _descriptor in _iter_seat_descriptors(internals):
+        if seat_index == source_seat or seat_index == 0:
+            continue
+        row = role_belief_row_for_seat(source_descriptor, seat_index)
+        if row is None:
+            continue
+        items = role_inference_items(row)
+        if not items:
+            continue
+        projection.append((seat_index, items))
+
+    projection.sort(key=lambda pair: pair[0])
+    return tuple(projection)
 
 
 @dataclass(frozen=True)

@@ -38,10 +38,9 @@ from .spectator_overlay import (
     bar_rect_at_point,
     emotion_bar_rects,
     emotion_bar_string,
-    aggregate_role_inference_row,
     emotion_bars_for_seat,
     format_percent,
-    role_inference_items,
+    inverted_role_inference,
 )
 from .board_layout import (
     HIDDEN_ROLE_SENTINEL,
@@ -1122,16 +1121,20 @@ if QT_AVAILABLE:
                 top += line_height
             painter.restore()
 
-        # -- FEAT-002 part 3: role-inference hover overlay ---------------
+        # -- FEAT-001: inverted role-inference hover overlay -------------
         def _paint_role_inference(self, painter: QPainter) -> None:
-            """Draw the hovered seat's dummy AI role inference inside its circle.
+            """Draw the hovered seat's OWN role inference over the OTHER seats.
 
-            No-op unless overlays are enabled and a seat is hovered. The list is
-            built from the pure helpers (sheriff dropped, outlaws merged, sorted
-            descending) and shown as localized ``role N%`` lines. A non-dummy or
-            unavailable seat shows the localized "no inference info" line. This
-            NEVER shows the seat's true hidden role, only the AI's own inferred
-            distribution.
+            No-op unless overlays are enabled and a seat is hovered. Hovering
+            seat S shows S's own current role inferences drawn OVER each OTHER
+            seat T's circle (T != S and T != sheriff seat 0), using row T of S's
+            own beliefs matrix reduced by the pure helpers (sheriff dropped,
+            outlaws merged, descending). Nothing is drawn on S's own circle.
+            Each per-target plate shows localized ``role N%`` lines. When S is
+            not a dummy or has no usable beliefs, the localized "no inference
+            info" fallback is drawn once over S's own circle so the user still
+            gets feedback. This NEVER shows a seat's true hidden role, only S's
+            own inferred distribution ABOUT others.
             """
 
             if not self._overlays_enabled:
@@ -1145,8 +1148,46 @@ if QT_AVAILABLE:
             positions = seat_positions(width, height, human_player=self.human_player)
             if seat not in positions:
                 return
-            cx, cy = positions[seat]
-            lines = self._role_inference_lines(seat)
+            # Defense in depth: never read internals when overlays are off, so a
+            # human live game can never surface another seat's inference even if
+            # internals were somehow set.
+            internals = self._seat_internals if self._overlays_enabled else None
+            projection = inverted_role_inference(internals, int(seat))
+            if not projection:
+                # No usable inference for the source seat: show the fallback
+                # once over the hovered seat's own circle.
+                cx, cy = positions[seat]
+                self._paint_inference_plate(
+                    painter, cx, cy, radius, [tr("board.no_inference")]
+                )
+                return
+            # Draw S's inference about each OTHER non-sheriff target T over T's
+            # circle. The source seat's own circle is never drawn on.
+            for target_seat, items in projection:
+                if target_seat not in positions:
+                    continue
+                tx, ty = positions[target_seat]
+                lines = [
+                    f"{inference_role_label(key)} {format_percent(prob)}%"
+                    for key, prob in items
+                ]
+                self._paint_inference_plate(painter, tx, ty, radius, lines)
+
+        def _paint_inference_plate(
+            self,
+            painter: QPainter,
+            cx: float,
+            cy: float,
+            radius: float,
+            lines: list[str],
+        ) -> None:
+            """Draw one translucent role-inference plate centered on a circle.
+
+            Shared by the per-target projection and the no-info fallback so the
+            plate style (dark rounded rect + localized ``role N%`` text lines)
+            stays identical. Pure presentation; all math is done upstream.
+            """
+
             painter.save()
             font = QFont()
             font.setBold(True)
@@ -1171,35 +1212,29 @@ if QT_AVAILABLE:
             )
             painter.restore()
 
-        def _role_inference_lines(self, seat: int) -> list[str]:
-            """Return the localized role-inference lines for a hovered seat.
+        def _inverted_inference_lines(self, source_seat: int) -> dict[int, list[str]]:
+            """Return per-target localized inference lines for a hovered seat.
 
-            Shows what the OTHER AIs infer about seat ``seat``, NOT that seat's
-            own self-belief. A dummy confirms its own role from ``self_role``
-            every turn, so its self-row is one-hot on its TRUE hidden role;
-            reading it would leak the role at 100%. Instead we average the
-            OTHER dummy seats' row-``seat`` distributions
-            (``aggregate_role_inference_row``), a public-information-derived and
-            genuinely uncertain distribution that never uses seat ``seat``'s
-            self-knowledge. That averaged row is then reduced by the FEAT-001
-            pure helpers (sheriff dropped, outlaws merged, descending). When no
-            other dummy estimator is available (single dummy, or all other seats
-            random / main) the localized "no inference info" fallback is shown,
-            same as a non-dummy / unavailable seat.
+            Delegates all math to ``spectator_overlay.inverted_role_inference``
+            (hovering seat ``source_seat`` S yields S's own beliefs ABOUT each
+            OTHER non-sheriff seat T) and only maps each ``role_key`` to its
+            localized label via ``inference_role_label`` + ``format_percent`` for
+            display. Returns a ``{target_seat: [lines]}`` mapping; an empty dict
+            when S is not a dummy or has no usable beliefs (the caller then shows
+            the "no inference info" fallback). The sheriff seat is excluded both
+            as a target and from every per-target list (``role_inference_items``
+            drops index 0), and S's own seat never appears.
             """
 
-            # Defense in depth: never read internals when overlays are off, so
-            # a human live game can never surface another seat's inference even
-            # if internals were somehow set.
             internals = self._seat_internals if self._overlays_enabled else None
-            row = aggregate_role_inference_row(internals, int(seat))
-            items = role_inference_items(row) if row is not None else ()
-            if not items:
-                return [tr("board.no_inference")]
-            return [
-                f"{inference_role_label(key)} {format_percent(prob)}%"
-                for key, prob in items
-            ]
+            projection = inverted_role_inference(internals, int(source_seat))
+            return {
+                target_seat: [
+                    f"{inference_role_label(key)} {format_percent(prob)}%"
+                    for key, prob in items
+                ]
+                for target_seat, items in projection
+            }
 
 
 else:
