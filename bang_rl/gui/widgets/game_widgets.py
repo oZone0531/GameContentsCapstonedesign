@@ -768,7 +768,14 @@ if QT_AVAILABLE:
                 # plus _hover_seat (never on _active / terminated). Reviewing a
                 # finished spectator game by hovering seats therefore still draws
                 # the overlays.
-                self._update_bar_tooltip(position, event)
+                #
+                # FEAT-001: resolve and assign _hover_seat (and request a repaint
+                # on change) FIRST, so the role-inference overlay always gets its
+                # hovered seat. The emotion-bar tooltip hit-test is a secondary,
+                # best-effort nicety: run it AFTER and wrapped in try/except so a
+                # tooltip failure (QToolTip / cached-rect geometry) can never
+                # abort the handler before _hover_seat is set and so can never
+                # block the role-inference overlay from painting.
                 seat = seat_at_point(
                     position.x(),
                     position.y(),
@@ -779,6 +786,10 @@ if QT_AVAILABLE:
                 if seat != self._hover_seat:
                     self._hover_seat = seat
                     self.update()
+                try:
+                    self._update_bar_tooltip(position, event)
+                except Exception:
+                    pass
                 return
             if not self._active:
                 if self._hover_seat is not None:
@@ -842,6 +853,16 @@ if QT_AVAILABLE:
                 self._paint_seats(painter)
                 self._paint_shot(painter)
                 self._paint_game_over_banner(painter)
+                # FEAT-001: the role-inference hover overlay must paint LAST, so
+                # it is drawn ON TOP of the game-over banner. On the terminal
+                # replay frame (where reviewers commonly land) the large centred
+                # banner would otherwise overdraw the inference plates near the
+                # board centre, making the overlay look like it never rendered.
+                # Still only runs here because paintEvent returns early above when
+                # _state is None, and the overlay stays gated by
+                # _paint_role_inference's own _overlays_enabled + _hover_seat
+                # checks.
+                self._paint_role_inference(painter)
             finally:
                 painter.end()
 
@@ -900,9 +921,11 @@ if QT_AVAILABLE:
                 # FEAT-002: emotion bars render below the caption lines, gated
                 # to spectator / replay via _paint_emotion_bars itself.
                 self._paint_emotion_bars(painter, player, base_x, base_y, radius)
-            # FEAT-002: the role-inference hover overlay is drawn once, on top of
-            # the seats, for the currently-hovered seat.
-            self._paint_role_inference(painter)
+            # FEAT-001: the role-inference hover overlay is NOT painted here any
+            # more. It is now drawn as the LAST step in paintEvent, after
+            # _paint_game_over_banner, so the terminal-frame banner can never
+            # overdraw the inference plates. _paint_seats still draws the
+            # circles / guns / captions / emotion bars exactly as before.
 
         def _paint_circle(
             self,
