@@ -147,7 +147,7 @@ _STRINGS: dict[str, dict[str, str]] = {
     "event.target": {"en": "→ Player {player}", "ko": "→ 플레이어 {player}"},
     "event.eliminated": {"en": "(Player {player} eliminated)", "ko": "(플레이어 {player} 탈락)"},
     "event.role": {"en": "[role: {role}]", "ko": "[역할: {role}]"},
-    "event.step": {"en": "[step {step}] ", "ko": "[스텝 {step}] "},
+    "event.step": {"en": "Turn {step} ", "ko": "{step}턴 "},
 
     # Bang! hit / elimination status shown during the shot animation.
     "board.hit": {
