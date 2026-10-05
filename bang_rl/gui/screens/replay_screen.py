@@ -343,12 +343,17 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                     item = selected[0]
             if item is not None:
                 row = self.browser.row(item)
-            if not (0 <= row < len(self._replay_paths)):
+            # Delegate the final "row + paths -> Path" bounds mapping to the
+            # pure, Qt-free replay_store.select_replay_path seam so the bounds
+            # logic is unit-testable in-sandbox and revert-protected.
+            path = replay_store.select_replay_path(self._replay_paths, row)
+            if path is None:
                 row = self.browser.currentRow()
-            if not (0 <= row < len(self._replay_paths)):
+                path = replay_store.select_replay_path(self._replay_paths, row)
+            if path is None:
                 self.status.setText(tr("replay.select_first"))
                 return None
-            return self._replay_paths[row]
+            return path
 
         def _on_rename_clicked(self) -> None:
             path = self._selected_browser_path()

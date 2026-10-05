@@ -446,6 +446,27 @@ def rename_replay(path: str | Path, new_name: str) -> Path:
     return target
 
 
+def select_replay_path(paths: Sequence[Path], row: int) -> Path | None:
+    """Return ``paths[row]`` when ``row`` is in range, else ``None``.
+
+    Pure, Qt-free seam for the replay browser's "selected row -> file to act
+    on" bounds mapping (item 10 delete/rename). The ReplayScreen resolves which
+    row the user acted on from the Qt selection, but the final
+    ``row + paths -> Path`` bounds check lives here so it can be unit-tested
+    in-sandbox (no PyQt6). A negative row (e.g. ``-1`` from an empty
+    ``currentRow()``), a row past the end, or a non-int ``row`` all yield
+    ``None`` so the caller never deletes the wrong / a nonexistent file.
+    """
+
+    try:
+        index = int(row)
+    except (TypeError, ValueError):
+        return None
+    if 0 <= index < len(paths):
+        return paths[index]
+    return None
+
+
 def delete_replay(path: str | Path) -> None:
     """Delete the replay file at ``path`` (item 10).
 
@@ -500,4 +521,5 @@ __all__ = [
     "rename_replay",
     "replay_summary",
     "save_replay",
+    "select_replay_path",
 ]

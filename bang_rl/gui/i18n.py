@@ -50,6 +50,7 @@ _STRINGS: dict[str, dict[str, str]] = {
     "game.alive": {"en": "alive", "ko": "생존"},
     "game.eliminated": {"en": "eliminated", "ko": "탈락"},
     "game.no_session": {"en": "No game session", "ko": "진행 중인 게임이 없습니다"},
+    "game.loading": {"en": "Loading...", "ko": "로딩 중..."},
     "game.error_generic": {
         "en": "The operation could not be completed.",
         "ko": "작업을 완료할 수 없습니다.",

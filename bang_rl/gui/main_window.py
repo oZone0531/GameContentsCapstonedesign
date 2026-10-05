@@ -9,6 +9,7 @@ from typing import Any
 from .i18n import tr
 from .qt_compat import (
     Qt,
+    QApplication,
     QFileDialog,
     QMainWindow,
     QLabel,
@@ -183,6 +184,32 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             layout.addStretch(1)
             self._set_screen(menu)
 
+        def _show_loading(self) -> None:
+            """Show a minimal centered 'Loading...' screen (item 5, FEAT-003).
+
+            Pressing a game-play mode button runs the blocking
+            controller.start() (session creation / env build) before the
+            GameScreen can appear, which reads as a frozen UI. This intermediate
+            screen is set BEFORE that blocking work (see _start_game) and, once
+            painted via QApplication.processEvents(), tells the user the wait is
+            a normal loading step rather than an error. Mirrors the menu title
+            styling lightly (bold, larger point size, centered).
+            """
+
+            loading = QWidget(self)
+            layout = QVBoxLayout(loading)
+            layout.addStretch(1)
+            label = QLabel(tr("game.loading"), loading)
+            font = label.font()
+            font.setPointSize(MENU_BUTTON_FONT_POINT_SIZE * 2)
+            font.setBold(True)
+            label.setFont(font)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(label)
+            layout.setAlignment(label, Qt.AlignmentFlag.AlignHCenter)
+            layout.addStretch(1)
+            self._set_screen(loading)
+
         def _show_training(self) -> None:
             self._training_monitor = TrainingMonitor(
                 self.training_controller, parent=self, on_back=self._show_menu
@@ -284,6 +311,16 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             game (spectator or human).
             """
 
+            # Item 5 (FEAT-003): show a 'Loading...' screen BEFORE the blocking
+            # controller.start() (session creation / env build) so the UI does
+            # not look frozen. processEvents() lets Qt actually paint the
+            # loading widget before start() blocks the event loop. This runs
+            # inside _start_game, i.e. AFTER any ModelSelectionDialog in
+            # _select_mode has been accepted, so the dialog is never hidden
+            # behind the loading screen; on_restart funnels here too.
+            self._show_loading()
+            if QApplication is not None:
+                QApplication.processEvents()
             # Detach any callback still bound to a previously-shown (and now
             # torn-down) GameScreen so controller.start()'s internal publish
             # cannot render into deleted C++ widgets.
@@ -307,6 +344,10 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 # message when the exception carries no text.
                 message = str(exc) or tr("game.error_generic")
                 self.statusBar().showMessage(message, 0)
+                # Item 5 (FEAT-003): do not strand the user on the 'Loading...'
+                # screen when start() fails; restore the menu so the status-bar
+                # error is shown on a sensible screen they can act from.
+                self._show_menu()
                 return
             self._last_mode = mode
             self._last_artifact = artifact_path

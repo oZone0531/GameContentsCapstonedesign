@@ -824,6 +824,20 @@ def test_new_ai_speed_i18n_keys_exist_in_both_languages() -> None:
         assert "ko" in _STRINGS[key]
 
 
+def test_loading_screen_i18n_key_exists_in_both_languages() -> None:
+    # Item 5 (FEAT-003): the intermediate 'Loading...' screen shown before the
+    # blocking controller.start() needs a localized, em-dash-free label. CI-only
+    # (importing bang_rl.gui.i18n pulls the package __init__ which needs
+    # PyQt6/pydantic, absent in the sandbox).
+    from bang_rl.gui.i18n import _STRINGS
+
+    assert "game.loading" in _STRINGS
+    assert _STRINGS["game.loading"]["en"] == "Loading..."
+    assert _STRINGS["game.loading"]["ko"] == "로딩 중..."
+    for text in _STRINGS["game.loading"].values():
+        assert "\u2014" not in text
+
+
 # --- Items 2 & 3: GameLog hover keeps the full log (CI-only, needs PyQt6) --
 
 def _log_state_with_events(count: int) -> object:
