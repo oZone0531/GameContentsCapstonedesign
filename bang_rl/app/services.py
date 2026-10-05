@@ -489,6 +489,31 @@ class GameService:
             diagnostics_logger=diagnostics_logger,
             diagnostics_metadata={"run_id": session_id, "job_id": snapshot.job_id, "config_version": config.config_version},
         )
+        # Initialize every seat's episode so each agent folds its OWN role and
+        # the public sheriff into its internal state from the very first turn.
+        # Without this, a dummy that has not yet taken a turn still holds its
+        # RoleBeliefEstimator constructor default (a uniform 1/5 matrix), which
+        # reads as the naive 40/20/20 outlaw/traitor/deputy prior in the GUI and
+        # replay.  environment.observe(index) hands each seat its OWN per-seat
+        # public projection (self_role is that seat's role, sheriff is public),
+        # so the eliminated prior falls out of the existing belief math.  The
+        # per-agent guard mirrors the project's defensive export style: a single
+        # agent failing here must never abort session creation.  Do NOT mirror
+        # this into restore_session, which re-applies saved per-seat internals.
+        for index, agent in enumerate(agents):
+            on_episode_start = getattr(agent, "on_episode_start", None)
+            if on_episode_start is None:
+                continue
+            try:
+                on_episode_start(
+                    {
+                        "episode_id": episode_id,
+                        "seed": seed_manager.environment_seed(episode_id),
+                        "observation": environment.observe(index),
+                    }
+                )
+            except Exception:  # noqa: BLE001 - defensive: never abort session setup
+                self._log("agent_episode_start_failed", session_id=session_id, seat=index)
         handle = SessionHandle(session_id, self._normalize_mode(options.mode), seed, snapshot)
         with self._lock:
             self._sessions[session_id] = _Session(handle, config, environment, agents, artifact, owned_loggers)
