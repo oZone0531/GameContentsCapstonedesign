@@ -286,6 +286,60 @@ def test_multiple_events_in_one_turn_map_to_that_turns_snapshot() -> None:
     assert model.index_for_log_row(len(full) - 1) == len(model) - 1
 
 
+def test_log_row_for_index_round_trips_through_index_for_log_row() -> None:
+    # FEAT-004 (item 5): log_row_for_index is the inverse of index_for_log_row.
+    # For every snapshot index, the row it returns must map back to the SAME
+    # snapshot index, so the current-step highlight lands on a row that the
+    # hover / click would resolve to the playing snapshot.
+    model = ReplayModel(_observations())
+    for index in range(len(model)):
+        row = model.log_row_for_index(index)
+        assert row is not None
+        assert model.index_for_log_row(row) == index
+    # Resolving rows / indices never moves the playback cursor.
+    assert model.index == 0
+
+
+def test_log_row_for_index_returns_first_row_of_the_moment() -> None:
+    # When several log rows belong to one snapshot's moment, the inverse must
+    # return the FIRST such row (the earliest row representing that moment),
+    # because the row -> index mapping is non-decreasing.
+    events = [
+        {"environment_step": 0, "event_type": "game_started"},
+        {"environment_step": 1, "event_type": "bang", "actor_idx": 0, "target_idx": 1},
+        {"environment_step": 2, "event_type": "bang", "actor_idx": 1, "target_idx": 2},
+        {"environment_step": 2, "event_type": "player_eliminated", "eliminated_idx": 2},
+    ]
+
+    def observation(step: int) -> dict:
+        return {
+            "healths": (5, 5, 5, 5, 5),
+            "alive": (True,) * 5,
+            "current_player_idx": (step % 5,),
+            "environment_step": (step,),
+            "event_sequence": tuple(
+                dict(event) for event in events if event["environment_step"] <= step
+            ),
+        }
+
+    model = ReplayModel([observation(step) for step in range(3)])
+    # Snapshot index 2 is represented by rows 2 and 3; the first is row 2.
+    first_row = model.log_row_for_index(2)
+    assert first_row == 2
+    assert model.index_for_log_row(first_row) == 2
+
+
+def test_log_row_for_index_clamps_and_handles_empty_model() -> None:
+    model = ReplayModel(_observations())
+    last = len(model) - 1
+    # Out-of-range indices clamp into range rather than returning None.
+    assert model.log_row_for_index(999) == model.log_row_for_index(last)
+    assert model.log_row_for_index(-5) == model.log_row_for_index(0)
+    # An empty model has no rows to highlight.
+    empty = ReplayModel([])
+    assert empty.log_row_for_index(0) is None
+
+
 def test_board_keys_carry_forward_when_a_later_observation_omits_them() -> None:
     # Item 4: if a recorded observation omits board keys, the snapshot inherits
     # the last-known value so a hovered moment renders a full board, not empty.

@@ -41,7 +41,7 @@ from ..replay import ReplayModel
 from .. import replay_store
 from ..playback_speed import is_manual_speed, speed_to_interval_ms
 from ..widgets.game_widgets import GameLog, GraphicalBoard
-from .game_screen import AI_SPEED_DEFAULT_MS, AI_SPEED_MAX_MS, AI_SPEED_MIN_MS
+from .game_screen import AI_SPEED_MAX_MS, AI_SPEED_MIN_MS
 
 
 # The human seat used when rendering a replay. Recordings are captured from the
@@ -92,6 +92,15 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             # roles here leaks nothing. A spectator replay already has
             # human_player=None (overlays on by layout); this makes the human
             # replay case consistent.
+            #
+            # Item 6 (FEAT-004): this forced flag survives every _load_model
+            # (set_human_player never clears it), and _render_snapshot feeds the
+            # current snapshot's internals via set_seat_internals on EVERY cursor
+            # change (auto-advance, Prev / Next, click, hover), so the inverted
+            # role-inference overlay draws on hover for a FULL-format replay that
+            # carries per-turn internals. A PUBLIC (observations-only) replay has
+            # internals=None on every snapshot, so the overlay shows nothing on
+            # hover; that is expected (no internals were recorded).
             self.board.set_overlays_enabled(True)
             self.log = GameLog(self)
             self.status = QLabel(self)
@@ -154,7 +163,13 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.speed_slider = QSlider(Qt.Orientation.Horizontal, self)
             self.speed_slider.setMinimum(AI_SPEED_MIN_MS)
             self.speed_slider.setMaximum(AI_SPEED_MAX_MS)
-            self.speed_slider.setValue(AI_SPEED_DEFAULT_MS)
+            # Item 3 (FEAT-004): the replay opens in MANUAL mode (slider at the
+            # minimum). A loaded replay therefore starts PAUSED on the first
+            # frame and the user steps with Prev / Next; auto-play only begins
+            # once the slider is dragged above the minimum. _start_autoplay
+            # returns early while the slider sits at the minimum
+            # (speed_to_interval_ms is None), so the Play button stays on Play.
+            self.speed_slider.setValue(AI_SPEED_MIN_MS)
             self.speed_slider.setSingleStep(100)
             self.speed_slider.valueChanged.connect(self._on_speed_changed)
             # Item 3 (FEAT-002): a static "Manual" tick label pinned near the
@@ -162,7 +177,8 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             # with the existing Next turn / Prev buttons (one turn = model.next
             # / prev + render, which _step_next / _step_prev already do).
             self.speed_manual_label = QLabel(tr("replay.speed_manual_label"), self)
-            self._update_speed_label(AI_SPEED_DEFAULT_MS)
+            # Item 3 (FEAT-004): label reflects the manual default slider value.
+            self._update_speed_label(AI_SPEED_MIN_MS)
 
             # Left = folder browser, then log, center = graphical board.
             browser_column = QVBoxLayout()
@@ -295,6 +311,14 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             # The recorded observations already carry all-revealed roles for a
             # spectator game (the service marked them REVEALED during play), so
             # dropping the human seat is enough to show all roles here too.
+            # Item 6 (FEAT-004) regression guard: set_human_player only updates
+            # the human seat + clears the hover seat; it does NOT touch
+            # GraphicalBoard._overlays_forced. So the __init__ set_overlays_enabled
+            # (True) call keeps the role-inference / emotion overlays ON across
+            # every _load_model, for BOTH a spectator replay (human_player None,
+            # overlays on by layout) and a human replay (human_player 0, overlays
+            # kept on by the forced flag). Do not call set_overlays_enabled here;
+            # the forced flag must survive model swaps.
             if replay_store.is_spectator_record(self._loaded_record):
                 self.board.set_human_player(None)
             else:
@@ -615,6 +639,12 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.play_button.setText(tr("replay.play"))
             self.model.seek(index)
             self._render_current()
+            # Item 5 (FEAT-004): keep the clicked / pinned row highlighted while
+            # playback is paused there. _render_current already pins the current
+            # step to log_row_for_index(index) (the first row of that moment);
+            # re-pin to the actual clicked row so a mid-turn row the user picked
+            # stays emphasized rather than snapping to the turn's opening row.
+            self.log.set_current_step(row)
             # Force manual mode: setting the slider to its minimum fires
             # _on_speed_changed which (via is_manual_speed) stops the timer and
             # shows the Manual label. The FEAT-002 gating guarantees no code path
@@ -724,6 +754,18 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 self.log.update_state(self.model.full_log_snapshot())
             else:
                 self.log.update_state(snapshot)
+            # Item 5 (FEAT-004): highlight the currently playing / seeked step in
+            # the log so the row the board is showing is always emphasized, like
+            # the live game's current-step highlight. ReplayModel.log_row_for_index
+            # is the Qt-free inverse of index_for_log_row: it returns the first
+            # full-log row representing the current snapshot's moment. Every
+            # cursor change (auto-advance, Prev / Next, click, hover-restore)
+            # routes through here via _render_current, so the highlight tracks
+            # the cursor. set_current_step COEXISTS with the hover preview
+            # (FEAT-002 _apply_emphasis), so a hover never erases it.
+            if self.model is not None:
+                row = self.model.log_row_for_index(self.model.index)
+                self.log.set_current_step(row)
 
         def _set_controls_enabled(self, enabled: bool) -> None:
             self.play_button.setEnabled(enabled)

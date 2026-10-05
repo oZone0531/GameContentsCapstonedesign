@@ -630,6 +630,40 @@ class ReplayModel:
             return None
         return self._row_to_index_map()[row_int]
 
+    def log_row_for_index(self, index: int) -> int | None:
+        """Return the first full-log row that maps to snapshot ``index``.
+
+        FEAT-004 (item 5): the inverse of :meth:`index_for_log_row`, used to
+        highlight the currently playing / seeked step in the log. It mirrors
+        :meth:`index_for_log_row` exactly by scanning the SAME monotonic
+        ``row -> snapshot index`` mapping (:meth:`_row_to_index_map`) and
+        returning the first row whose snapshot index equals ``index`` (clamped
+        into range). Because the mapping is non-decreasing, the first matching
+        row is the earliest log row representing that snapshot's moment, so the
+        highlight lands on the row the hover-preview / click would resolve back
+        to the same snapshot (round-trip stable). Returns ``None`` for an empty
+        model. Pure, Qt-free and numpy-free.
+        """
+
+        if not self._snapshots:
+            return None
+        clamped = self._clamp(index)
+        mapping = self._row_to_index_map()
+        if not mapping:
+            return None
+        for row, snapshot_index in enumerate(mapping):
+            if snapshot_index == clamped:
+                return row
+        # No row maps exactly to this snapshot (e.g. an appended settled state
+        # with no distinct log row): fall back to the last row whose snapshot
+        # index is <= the target so the highlight tracks the nearest earlier
+        # moment instead of vanishing.
+        fallback: int | None = None
+        for row, snapshot_index in enumerate(mapping):
+            if snapshot_index <= clamped:
+                fallback = row
+        return fallback
+
     def _row_to_index_map(self) -> tuple[int, ...]:
         """Return a monotonic ``row -> snapshot index`` mapping for the log.
 
