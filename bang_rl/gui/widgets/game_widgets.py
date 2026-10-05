@@ -426,6 +426,38 @@ if QT_AVAILABLE:
             if count:
                 self.list.setCurrentRow(count - 1)
 
+        def truncate_after(self, row: int | None) -> None:
+            """Delete the log rows AFTER ``row`` and shrink the view (item 2).
+
+            FEAT-003 (item 2): the never-shrink contract in :meth:`update_state`
+            is correct for a HOVER preview (a shorter incoming sequence is a
+            read-only look at a past moment, so the later rows are kept). But a
+            HUMAN resume-click FORKS the timeline: the controller has truncated
+            its replay buffers to ``[:row+1]`` and the later events never
+            happened, so those rows must genuinely disappear. This removes every
+            list item with index > ``row`` and updates ``_rendered_count`` so the
+            shorter log becomes authoritative; a subsequent :meth:`update_state`
+            that re-grows from the forked timeline appends from the new count.
+            Passing ``None`` clears the whole log. The current-step highlight is
+            re-pinned to the surviving last row via :meth:`set_current_step`.
+            """
+
+            count = self.list.count()
+            if count == 0:
+                return
+            if row is None:
+                self.list.clear()
+                self._rendered_count = 0
+                self.set_current_step(None)
+                return
+            keep = max(0, min(int(row), count - 1))
+            for index in range(count - 1, keep, -1):
+                item = self.list.takeItem(index)
+                del item
+            self._rendered_count = self.list.count()
+            # Item 5: the resume target is now the last surviving row.
+            self.set_current_step(self.list.count() - 1 if self.list.count() else None)
+
 
     class GraphicalBoard(QWidget):
         """Canvas board: five gun-holding circles, the human at the bottom.
@@ -1361,6 +1393,9 @@ else:
             require_qt()
 
         def set_current_step(self, *_args: Any, **_kwargs: Any) -> None:
+            require_qt()
+
+        def truncate_after(self, *_args: Any, **_kwargs: Any) -> None:
             require_qt()
 
     class GraphicalBoard:  # type: ignore[no-redef]

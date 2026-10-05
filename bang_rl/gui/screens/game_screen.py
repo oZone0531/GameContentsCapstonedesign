@@ -19,6 +19,7 @@ from ..playback_speed import (
     AI_SPEED_MAX_MS,
     AI_SPEED_MIN_MS,
     is_manual_speed,
+    play_pause_is_playing,
     speed_to_interval_ms,
 )
 from ..qt_compat import (
@@ -67,6 +68,15 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             # True while the pointer hovers a log row and the board is showing
             # that recorded moment as a read-only preview (item 8).
             self._log_hover_preview = False
+            # Item 4 (FEAT-003): when a terminal SPECTATOR game is being
+            # reviewed (the user clicked a log step after game-over), this holds
+            # a ReplayModel over the recorded observations + internals and drives
+            # the prev/pause-play/next controls. None means not in review mode
+            # (live play / human game). Set in _enter_review_mode.
+            self._review_model: ReplayModel | None = None
+            # Tracks whether the last _render saw a terminal snapshot, so a
+            # spectator log click after game-over enters review mode.
+            self._game_over = False
             self.setWindowTitle(tr("game.title"))
             self.setMinimumWidth(1024)
 
@@ -111,7 +121,13 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.speed_slider = QSlider(Qt.Orientation.Horizontal, self)
             self.speed_slider.setMinimum(AI_SPEED_MIN_MS)
             self.speed_slider.setMaximum(AI_SPEED_MAX_MS)
-            self.speed_slider.setValue(AI_SPEED_DEFAULT_MS)
+            # Item 3 (FEAT-003): BOTH spectator and human games now start in
+            # MANUAL playback (slider pinned at the minimum). The manual-mode
+            # gating (is_manual_speed / speed_to_interval_ms -> None) then makes
+            # _maybe_start_ai_sequence a no-op, so entering a game is paused and
+            # the user advances AI turns with the Next-turn button. The user can
+            # drag the slider off the minimum at any time to auto-advance.
+            self.speed_slider.setValue(AI_SPEED_MIN_MS)
             self.speed_slider.setSingleStep(100)
             self.speed_slider.valueChanged.connect(self._on_speed_changed)
             # Item 3 (FEAT-002): a static "Manual" tick label pinned at the
@@ -122,8 +138,18 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.speed_manual_label = QLabel(tr("game.speed_manual_label"), self)
             self.next_turn_button = QPushButton(tr("game.next_turn"), self)
             self.next_turn_button.clicked.connect(self._manual_advance)
-            self._update_speed_label(AI_SPEED_DEFAULT_MS)
-            self._update_manual_controls(AI_SPEED_DEFAULT_MS)
+            # Item 3 (FEAT-003): spectator playback controls (prev turn /
+            # pause-play / next turn) mirror the replay screen. They are only
+            # added to the layout in spectator mode (see below); the next-turn
+            # button is shared with manual human play. The prev/pause-play
+            # buttons drive the FEAT-003 terminal review / recorded-turn
+            # stepping. Created unconditionally so the attributes always exist.
+            self.prev_turn_button = QPushButton(tr("game.prev_turn"), self)
+            self.prev_turn_button.clicked.connect(self._spectator_prev_turn)
+            self.play_pause_button = QPushButton(tr("game.play"), self)
+            self.play_pause_button.clicked.connect(self._toggle_play_pause)
+            self._update_speed_label(AI_SPEED_MIN_MS)
+            self._update_manual_controls(AI_SPEED_MIN_MS)
 
             # Left = log, center = graphical board.
             top = QHBoxLayout()
@@ -135,7 +161,24 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             speed_row.addWidget(self.speed_label)
             speed_row.addWidget(self.speed_manual_label)
             speed_row.addWidget(self.speed_slider, 1)
-            speed_row.addWidget(self.next_turn_button)
+            # Item 3 (FEAT-003): in a human game the Next-turn button lives in
+            # the speed row next to the slider (manual mode). In a spectator game
+            # it moves into the dedicated playback-control row (prev / pause-play
+            # / next) below, so it is not added here.
+            if not self._spectator:
+                speed_row.addWidget(self.next_turn_button)
+
+            # Item 3 (FEAT-003): a spectator game gets a replay-style control row
+            # (prev turn / pause-play / next turn) and the ActionPanel bang/pass
+            # buttons are hidden entirely. These mirror the replay screen's
+            # controls (same i18n labels, manual default, same semantics). A
+            # human game keeps the ActionPanel and never shows this row.
+            self.spectator_controls_row = QHBoxLayout()
+            self.spectator_controls_row.addStretch(1)
+            self.spectator_controls_row.addWidget(self.prev_turn_button)
+            self.spectator_controls_row.addWidget(self.play_pause_button)
+            self.spectator_controls_row.addWidget(self.next_turn_button)
+            self.spectator_controls_row.addStretch(1)
 
             # Item 7: game-over button row sits beneath the board.
             self.game_over_row = QHBoxLayout()
@@ -150,6 +193,11 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             layout.addWidget(self.hint)
             layout.addWidget(self.event_status)
             layout.addLayout(self.game_over_row)
+            if self._spectator:
+                # Item 3 (FEAT-003): spectator playback controls replace the
+                # ActionPanel. The AI-speed slider stays visible so the viewer
+                # can leave manual mode.
+                layout.addLayout(self.spectator_controls_row)
             layout.addLayout(speed_row)
             layout.addWidget(self.actions)
             layout.addWidget(self.status)
@@ -157,13 +205,15 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             # Item 6: a spectator human never banks/passes, so the board's
             # action clicks and the ActionPanel buttons are not wired to submit
             # an action. The AI-speed slider and log hover stay fully active.
+            # Item 3 (FEAT-003): in spectator mode the ActionPanel (bang/pass
+            # buttons) is hidden entirely; its pause control is replaced by the
+            # play_pause_button in the spectator control row.
             if not self._spectator:
                 self.board.actionRequested.connect(self._submit_action)
                 self.actions.actionRequested.connect(self._submit_action)
                 self.actions.pauseRequested.connect(self._toggle_pause)
             else:
-                # Keep pause available so the viewer can freeze the AI cadence.
-                self.actions.pauseRequested.connect(self._toggle_pause)
+                self.actions.setVisible(False)
 
             # Item 8: hovering a left-log row previews that moment on the board;
             # clicking a row rewinds the game to that moment so play continues
@@ -219,6 +269,7 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 # _alive so a torn-down screen never touches dead C++ objects.
                 if self._alive:
                     self._ai_timer.stop()
+                    self._update_play_pause_label()
                 return
             # Leaving manual mode (or just changing a non-manual value): if it
             # is an AI turn, (re)start/resume the timer at the new interval.
@@ -228,8 +279,18 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             if self._ai_timer.isActive():
                 # Apply the new cadence live to the running AI sequence.
                 self._ai_timer.setInterval(interval)
+            elif self._review_model is not None:
+                # Item 4 (FEAT-003): leaving manual while reviewing a terminal
+                # spectator game resumes auto-advance of the review model (not a
+                # live AI turn) at the new interval, unless we are at the end.
+                if not self._review_model.is_at_end():
+                    self._ai_timer.setInterval(interval)
+                    self._ai_timer.start()
             else:
                 self._maybe_start_ai_sequence()
+            # Item 3 (FEAT-003): keep the spectator pause-play label in sync with
+            # the (possibly now running) timer.
+            self._update_play_pause_label()
 
         def _update_speed_label(self, value: int) -> None:
             # At the minimum tick the label reads "Manual" instead of a per-turn
@@ -242,20 +303,36 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 )
 
         def _update_manual_controls(self, value: int) -> None:
-            """Enable the Next-turn button only while in manual mode."""
+            """Enable the Next-turn button (human: only in manual mode).
 
+            Item 3 (FEAT-003): in SPECTATOR mode the prev / next controls stay
+            enabled regardless of the slider position so the viewer can always
+            step the recording / review (matching the replay screen, which keeps
+            its prev / next buttons enabled). In a human game the Next-turn
+            button is only meaningful in manual mode, so it is enabled only then.
+            """
+
+            if self._spectator:
+                self.next_turn_button.setEnabled(True)
+                self.prev_turn_button.setEnabled(True)
+                return
             self.next_turn_button.setEnabled(is_manual_speed(value))
 
         def _manual_advance(self) -> None:
-            """Advance exactly one AI turn per press, only in manual mode.
+            """Advance exactly one turn per press (Next-turn button).
 
-            Mirrors a single _ai_timer tick but is user-driven: it only acts
-            when the slider is at the manual (minimum) position and it is an AI
-            turn, advancing one turn via step_single_ai_turn(). Above the
-            minimum the button is disabled, so this is a no-op if ever reached.
+            Item 4 (FEAT-003): while reviewing a terminal spectator game the
+            Next-turn button steps the recorded ReplayModel forward one turn and
+            re-renders that past snapshot (with its own internals). Otherwise it
+            mirrors a single _ai_timer tick but is user-driven: it only acts when
+            the slider is at the manual (minimum) position and it is an AI turn,
+            advancing one turn via step_single_ai_turn().
             """
 
             if not self._alive:
+                return
+            if self._review_model is not None:
+                self._review_step(forward=True)
                 return
             if not is_manual_speed(self.speed_slider.value()):
                 return
@@ -266,6 +343,97 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             except Exception:
                 snapshot = self.controller.snapshot
             self._render(snapshot)
+
+        # -- spectator playback controls (item 3) ------------------------
+        def _spectator_prev_turn(self) -> None:
+            """Prev-turn control: step one recorded turn BACKWARD (item 3).
+
+            When reviewing (terminal spectator, or after any spectator log
+            click) this steps the recorded ReplayModel back one turn. If no
+            review model exists yet it builds one seeded at the current live
+            tail, so pressing Prev on a live spectator game begins a backward
+            review from the latest recorded turn.
+            """
+
+            if not self._alive or not self._spectator:
+                return
+            if self._review_model is None:
+                model = self._log_model()
+                if model is None or model.is_empty():
+                    return
+                self._ai_timer.stop()
+                self._review_model = model
+                # Seed at the live tail so the first Prev steps back from "now".
+                model.seek(len(model) - 1)
+            self._review_step(forward=False)
+
+        def _toggle_play_pause(self) -> None:
+            """Pause-play control for spectator mode (item 3).
+
+            Mirrors the replay screen's pause-play semantics via the shared
+            Qt-free play_pause_is_playing helper: while the AI timer runs the
+            button reads Pause and a click stops it; while stopped a click
+            resumes auto-advance at the slider interval. In manual mode (slider
+            at the minimum) play is a no-op and the label stays Play, matching
+            replay. In terminal review mode play auto-advances the review via the
+            same timer.
+            """
+
+            if not self._alive or not self._spectator:
+                return
+            if play_pause_is_playing(self._ai_timer.isActive()):
+                self._ai_timer.stop()
+                self._update_play_pause_label()
+                return
+            interval = speed_to_interval_ms(self.speed_slider.value())
+            if interval is None:
+                # Manual mode: play does nothing, label stays Play.
+                self._update_play_pause_label()
+                return
+            if self._review_model is not None:
+                self._ai_timer.setInterval(interval)
+                self._ai_timer.start()
+            else:
+                self._maybe_start_ai_sequence()
+            self._update_play_pause_label()
+
+        def _update_play_pause_label(self) -> None:
+            if not self._spectator:
+                return
+            playing = play_pause_is_playing(self._ai_timer.isActive())
+            self.play_pause_button.setText(
+                tr("game.pause") if playing else tr("game.play")
+            )
+
+        def _review_step(self, *, forward: bool) -> None:
+            """Step the terminal-review ReplayModel one turn and re-render.
+
+            Item 4 (FEAT-003): advances / rewinds the recorded model, renders the
+            sought snapshot on the board, re-supplies that turn's internals so
+            emotion bars + role inference show for the past turn, and highlights
+            the current step in the log.
+            """
+
+            model = self._review_model
+            if model is None or model.is_empty():
+                return
+            snapshot = model.next() if forward else model.prev()
+            if snapshot is None:
+                return
+            self._render_review_snapshot(snapshot)
+
+        def _render_review_snapshot(self, snapshot: Any) -> None:
+            """Render one review snapshot: board + internals + step highlight."""
+
+            model = self._review_model
+            if model is None:
+                return
+            self.board.update_state(snapshot)
+            # Item 4: re-supply the past turn's own internals so the overlay
+            # (emotion bars + role inference) shows instead of "no inference".
+            self.board.set_seat_internals(getattr(snapshot, "internals", None))
+            # Item 5: highlight the reviewed step in the log.
+            self.log.set_current_step(model.index)
 
         # -- transient hit / elimination status --------------------------
         def _on_player_hit(self, player: int) -> None:
@@ -328,6 +496,20 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
         def _advance_one_ai_turn(self) -> None:
             if not self._alive:
                 return
+            # Item 4 (FEAT-003): in terminal review mode the timer auto-advances
+            # the recorded ReplayModel (pause-play "playing") rather than driving
+            # a live AI turn. Stop at the last recorded turn.
+            if self._review_model is not None:
+                model = self._review_model
+                if model.is_at_end():
+                    self._ai_timer.stop()
+                    self._update_play_pause_label()
+                    return
+                self._review_step(forward=True)
+                if model.is_at_end():
+                    self._ai_timer.stop()
+                    self._update_play_pause_label()
+                return
             if not self.controller.is_ai_turn():
                 self._ai_timer.stop()
                 return
@@ -341,13 +523,26 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
 
         # -- log-row time travel (item 8) --------------------------------
         def _log_model(self) -> ReplayModel | None:
-            """Build a ReplayModel over the recorded per-turn observations."""
+            """Build a ReplayModel over the recorded observations + internals.
+
+            Item 4 (FEAT-003): the model carries the recorded per-turn internals
+            index-parallel (ReplayModel._attach_internals) so a hovered / sought
+            past turn can re-supply its own emotion bars + role inference to the
+            board. Mirrors replay_screen's internals-aware model so the spectator
+            hover / terminal review shows the same overlays a replay would.
+            """
 
             observations = getattr(self.controller, "_replay_observations", None)
             if not observations:
                 return None
+            internals = getattr(self.controller, "_replay_internals", None)
             try:
-                return ReplayModel(list(observations))
+                return ReplayModel(
+                    {
+                        "observations": list(observations),
+                        "internals": list(internals) if internals else [],
+                    }
+                )
             except (TypeError, ValueError):
                 return None
 
@@ -377,15 +572,31 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             # this moment and drops the later steps.
             self._log_hover_preview = True
             self.board.update_state(snapshot)
+            # Item 4 (FEAT-003): re-supply the hovered turn's OWN internals so
+            # the overlay shows emotion bars + role inference for that past turn.
+            # update_state resets _seat_internals to None (clearing them), so
+            # without this the overlay falls back to "no inference info" after a
+            # hover (and after the game ends). For a human game overlays are
+            # disabled so set_seat_internals is a safe no-op. Mirrors
+            # replay_screen._on_log_row_hovered.
+            self.board.set_seat_internals(getattr(snapshot, "internals", None))
             self.log.preview_moment(row)
 
         def _end_log_hover_preview(self) -> None:
             if not self._alive or not self._log_hover_preview:
                 return
             self._log_hover_preview = False
-            # Restore whatever the controller is currently showing (the live
-            # turn, or a committed time-travel preview if a row was clicked) and
-            # reset the log's hover de-emphasis.
+            # Item 4 (FEAT-003): when reviewing a (terminal) spectator game,
+            # leaving the log restores the PINNED review turn (board + its own
+            # internals + step highlight) rather than snapping back to the live
+            # terminal snapshot. Otherwise restore whatever the controller is
+            # currently showing (the live turn or a committed time-travel view).
+            if self._review_model is not None:
+                snapshot = self._review_model.current()
+                if snapshot is not None:
+                    self._render_review_snapshot(snapshot)
+                self.log.clear_preview()
+                return
             self._render(self.controller.snapshot)
             self.log.clear_preview()
 
@@ -395,22 +606,56 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             row = self.log.list.row(item)
             self._log_hover_preview = False
             self._ai_timer.stop()
-            # Item 5: in a human game a click forks a live, continuable session
-            # from that moment (restore_to_moment; falls back to a read-only
-            # review when the service lacks restore support). A spectator game
-            # only reviews the moment (time_travel_to) since the human never
-            # plays. Both are Qt-free controller calls.
             if self._spectator:
-                snapshot = self.controller.time_travel_to(row)
-            else:
-                # Item 2 (FEAT-003): advance_ai=False so the restored AI run-up
-                # animates one turn at a time on the QTimer below (the same
-                # cadence as the item-1 startup) instead of fast-forwarding.
-                snapshot = self.controller.restore_to_moment(row, advance_ai=False)
+                # Item 4 (FEAT-003): clicking a log row in a spectator game
+                # enters a replay-like REVIEW of the recorded turns. After the
+                # game is over this is the only way to look back at past turns
+                # (the live session is terminal); during live play it pins the
+                # view to that recorded turn and the prev/pause-play/next
+                # controls step through the recording. The ReplayModel carries
+                # per-turn internals so emotion bars + role inference show for
+                # the sought turn (fixing the "no inference info" bug).
+                self._enter_review_mode(row)
+                return
+            # Item 2 (FEAT-003): a HUMAN click forks a live, continuable session
+            # from that moment. restore_to_moment truncates the replay buffers to
+            # [:row+1]; advance_ai=False so the restored AI run-up animates one
+            # turn at a time on the QTimer below instead of fast-forwarding.
+            snapshot = self.controller.restore_to_moment(row, advance_ai=False)
             self._render(snapshot)
+            # Item 2 (FEAT-003): the resume-click FORKS the timeline, so the log
+            # rows AFTER the restored step never happened and must be deleted.
+            # _render re-grows the log from the (now shorter) observation, but
+            # GameLog.update_state never SHRINKS (that is the hover-preview
+            # contract), so explicitly truncate the view to the restored row.
+            self.log.truncate_after(row)
+            # Item 5: pin the current-step highlight to the restored (now last)
+            # step after truncation.
+            self.log.set_current_step(row)
             # If the fork resumed a live game with AI seats to act, restart the
             # AI cadence so play continues from the restored moment.
             self._maybe_start_ai_sequence()
+
+        def _enter_review_mode(self, row: int) -> None:
+            """Enter replay-like review of recorded spectator turns (item 4)."""
+
+            model = self._log_model()
+            if model is None or model.is_empty():
+                # No recording to review (e.g. empty buffers): fall back to the
+                # Qt-free time-travel preview so the click is not a dead no-op.
+                snapshot = self.controller.time_travel_to(row)
+                self._render(snapshot)
+                self.log.set_current_step(row)
+                return
+            index = model.index_for_log_row(row)
+            if index is None:
+                return
+            self._review_model = model
+            snapshot = model.seek(index)
+            if snapshot is None:
+                return
+            self._update_play_pause_label()
+            self._render_review_snapshot(snapshot)
 
         def eventFilter(self, source: Any, event: Any) -> bool:
             if (
@@ -468,6 +713,10 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                     getattr(snapshot.state, "terminated", False)
                     or getattr(snapshot.state, "truncated", False)
                 )
+                # Item 4 (FEAT-003): remember game-over so a later spectator log
+                # click knows to enter review mode (the live session is now
+                # terminal and can only be reviewed, not continued).
+                self._game_over = game_over
                 self.restart_button.setVisible(game_over)
                 self.return_menu_button.setVisible(game_over)
             else:

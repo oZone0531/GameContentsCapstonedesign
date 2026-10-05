@@ -112,6 +112,24 @@ def test_speed_to_interval_tolerates_non_int() -> None:
     assert speed.speed_to_interval_ms(True) is None
 
 
+# -- play_pause_is_playing: shared spectator / replay control state --------
+def test_play_pause_is_playing_mirrors_timer_active() -> None:
+    # FEAT-003 (item 3): the spectator game screen and the replay screen share
+    # the SAME play/pause semantics via this helper. The control reads as
+    # "playing" (label = Pause, a click stops) exactly when the auto-advance
+    # timer is running. Pulling this into the Qt-free module lets the two
+    # screens agree without instantiating a QWidget.
+    assert speed.play_pause_is_playing(True) is True
+    assert speed.play_pause_is_playing(False) is False
+    # Tolerates truthy/falsy inputs (QTimer.isActive() returns a bool, but a
+    # None / 0 / "" must read as "not playing", never raise).
+    assert speed.play_pause_is_playing(None) is False
+    assert speed.play_pause_is_playing(0) is False
+    assert speed.play_pause_is_playing("") is False
+    assert speed.play_pause_is_playing(1) is True
+    assert speed.play_pause_is_playing("running") is True
+
+
 def test_manual_and_interval_agree() -> None:
     # The two helpers must stay consistent: interval is None exactly when the
     # value is manual, for a sweep across and around the range.

@@ -71,6 +71,11 @@ _STRINGS: dict[str, dict[str, str]] = {
     # Item 3 (FEAT-002): manual turn-advance mode. The speed slider at its
     # minimum means "manual": auto-advance stops and the user presses Next turn.
     "game.next_turn": {"en": "Next turn", "ko": "다음 턴"},
+    # Item 3 (FEAT-003): spectator playback controls mirror the replay screen
+    # (prev turn / pause-play / next turn), so the game screen gets its own
+    # prev-turn and play labels. game.pause / game.next_turn already exist.
+    "game.prev_turn": {"en": "Previous turn", "ko": "이전 턴"},
+    "game.play": {"en": "Play", "ko": "재생"},
     "game.ai_speed_manual": {
         "en": "AI turn speed: Manual (press Next turn)",
         "ko": "AI 턴 속도: 수동 (다음 턴 버튼)",

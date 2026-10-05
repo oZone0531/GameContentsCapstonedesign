@@ -84,10 +84,25 @@ def speed_to_interval_ms(value: object) -> int | None:
     return coerced
 
 
+def play_pause_is_playing(timer_active: object) -> bool:
+    """Return True when the play/pause control should read as "playing".
+
+    FEAT-003 (item 3): the spectator game screen and the replay screen share the
+    same play/pause semantics. The control reads as "playing" (so its label is
+    the Pause string and a click should stop) exactly when the auto-advance
+    timer is running. Pulling this trivial decision into the Qt-free module lets
+    the pure test assert the spectator and replay controls agree without
+    instantiating a QWidget, and keeps the two screens from diverging.
+    """
+
+    return bool(timer_active)
+
+
 __all__ = [
     "AI_SPEED_DEFAULT_MS",
     "AI_SPEED_MAX_MS",
     "AI_SPEED_MIN_MS",
     "is_manual_speed",
+    "play_pause_is_playing",
     "speed_to_interval_ms",
 ]

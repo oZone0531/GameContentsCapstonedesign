@@ -236,3 +236,51 @@ def test_every_hovered_row_snapshot_has_board_keys() -> None:
         assert "alive" in snapshot.observation
         # A mid / late row never collapses to the opening snapshot's step 0.
         assert snapshot.environment_step >= 0
+
+
+# -- FEAT-003 item 4: game-screen spectator review / hover internals seam ---
+def _game_screen_review_model() -> ReplayModel:
+    """Mirror GameScreen._log_model: observations + index-parallel internals.
+
+    The spectator game screen builds a ReplayModel from a mapping carrying the
+    recorded per-turn observations AND the recorded per-turn internals so a
+    hovered / sought PAST turn can re-supply its own emotion bars + role
+    inference to the board (fixing the "no inference info" bug). This proves the
+    mapping form the screen passes resolves each log row to a snapshot whose
+    ``internals`` is that turn's recorded entry.
+    """
+
+    return ReplayModel({"observations": _observations(), "internals": _internals()})
+
+
+def test_game_screen_review_model_attaches_internals_per_row() -> None:
+    model = _game_screen_review_model()
+    # Row 0 (game start) -> turn-0 internals; the last row (step-2 bang) ->
+    # turn-2 internals. The None placeholder at index 1 stays None.
+    first = model.snapshot_at(model.index_for_log_row(0))
+    assert first is not None and first.internals is not None
+    assert first.internals["health"] == [5, 5, 5, 5, 5]
+    assert first.internals["seats"]["1"]["kind"] == "dummy"
+    last_row = len(model.full_events()) - 1
+    last = model.snapshot_at(model.index_for_log_row(last_row))
+    assert last is not None and last.internals is not None
+    assert last.internals["health"] == [5, 4, 5, 5, 5]
+
+
+def test_game_screen_review_model_prev_next_carry_internals() -> None:
+    # Item 4: wiring prev/next to model.prev()/model.next() must yield snapshots
+    # whose internals the screen re-supplies via set_seat_internals, so stepping
+    # through the review always has per-turn inference data (never None once it
+    # was recorded for that turn).
+    model = _game_screen_review_model()
+    model.seek(0)
+    assert model.current().internals is not None
+    nxt = model.next()
+    assert nxt is not None
+    # index 1 was a recorded export MISS (None placeholder) -> internals None,
+    # which the board treats as "no overlay for this turn" (not a bug).
+    assert nxt.internals is None
+    nxt2 = model.next()
+    assert nxt2 is not None and nxt2.internals is not None
+    back = model.prev()
+    assert back is not None and back.internals is None
