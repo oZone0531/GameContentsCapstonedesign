@@ -208,6 +208,10 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             # current playback position.
             self.log.list.setMouseTracking(True)
             self.log.list.itemEntered.connect(self._on_log_row_hovered)
+            # Item 4 (FEAT-003): clicking a log row PINS the view to that turn
+            # and forces manual mode (see _on_log_row_clicked). This coexists
+            # with the hover-preview above: hover = preview, click = pin.
+            self.log.list.itemClicked.connect(self._on_log_row_clicked)
             self.log.list.viewport().installEventFilter(self)
 
             # Populate the browser from the initial folder (if any). This does
@@ -585,6 +589,38 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 # snapshot, not the current playback cursor.
                 self.board.set_seat_internals(getattr(snapshot, "internals", None))
                 self.log.preview_moment(row)
+
+        def _on_log_row_clicked(self, item: Any) -> None:
+            # Item 4 (FEAT-003): clicking a log row PINS the board + full log to
+            # that recorded turn and switches into the FEAT-002 manual mode, so
+            # auto-play stops and does not resume on its own. From there the user
+            # advances with the Next turn button (self._step_next) and steps back
+            # with Prev (self._step_prev). This mirrors the hover handler's
+            # row -> moment mapping (index_for_log_row) so a click resolves the
+            # same moment the hover preview showed, regardless of scroll.
+            if not self._alive or self.model is None:
+                return
+            row = self.log.list.row(item)
+            index = self.model.index_for_log_row(row)
+            if index is None:
+                return
+            # Clear hover-restore state so a subsequent pointer-Leave restores to
+            # the PINNED turn (the model's current index) rather than snapping
+            # back to the pre-click auto-play position. Also drop the hover
+            # row de-emphasis now that the full log is pinned.
+            self._hover_restore_index = None
+            self.log.clear_preview()
+            # Stop auto-play and pin the board + full log to the clicked turn.
+            self._play_timer.stop()
+            self.play_button.setText(tr("replay.play"))
+            self.model.seek(index)
+            self._render_current()
+            # Force manual mode: setting the slider to its minimum fires
+            # _on_speed_changed which (via is_manual_speed) stops the timer and
+            # shows the Manual label. The FEAT-002 gating guarantees no code path
+            # restarts the timer while the slider sits at the minimum, so
+            # playback stays paused until the user steps with Next turn / Prev.
+            self.speed_slider.setValue(AI_SPEED_MIN_MS)
 
         def _end_hover_preview(self) -> None:
             if self._hover_restore_index is None:
