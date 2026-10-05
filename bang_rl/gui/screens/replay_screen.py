@@ -39,6 +39,7 @@ from ..qt_compat import (
 )
 from ..replay import ReplayModel
 from .. import replay_store
+from ..playback_speed import is_manual_speed, speed_to_interval_ms
 from ..widgets.game_widgets import GameLog, GraphicalBoard
 from .game_screen import AI_SPEED_DEFAULT_MS, AI_SPEED_MAX_MS, AI_SPEED_MIN_MS
 
@@ -156,6 +157,11 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.speed_slider.setValue(AI_SPEED_DEFAULT_MS)
             self.speed_slider.setSingleStep(100)
             self.speed_slider.valueChanged.connect(self._on_speed_changed)
+            # Item 3 (FEAT-002): a static "Manual" tick label pinned near the
+            # slider minimum. In manual mode auto-play stops and the user steps
+            # with the existing Next turn / Prev buttons (one turn = model.next
+            # / prev + render, which _step_next / _step_prev already do).
+            self.speed_manual_label = QLabel(tr("replay.speed_manual_label"), self)
             self._update_speed_label(AI_SPEED_DEFAULT_MS)
 
             # Left = folder browser, then log, center = graphical board.
@@ -187,6 +193,7 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
 
             speed_row = QHBoxLayout()
             speed_row.addWidget(self.speed_label)
+            speed_row.addWidget(self.speed_manual_label)
             speed_row.addWidget(self.speed_slider, 1)
 
             layout = QVBoxLayout(self)
@@ -464,12 +471,20 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             if not self._alive or self.model is None or self.model.is_empty():
                 self.play_button.setText(tr("replay.play"))
                 return
+            # Item 3 (FEAT-002): in manual mode (slider at minimum) never start
+            # the auto-play timer; the user advances with the Next turn / Prev
+            # buttons. Leave the Play button showing Play.
+            interval = speed_to_interval_ms(self.speed_slider.value())
+            if interval is None:
+                self._play_timer.stop()
+                self.play_button.setText(tr("replay.play"))
+                return
             if self.model.is_at_end():
                 # Nothing left to auto-play; leave the button as Play.
                 self.play_button.setText(tr("replay.play"))
                 return
             self.play_button.setText(tr("replay.pause"))
-            self._play_timer.setInterval(int(self.speed_slider.value()))
+            self._play_timer.setInterval(interval)
             self._play_timer.start()
 
         def _toggle_play(self) -> None:
@@ -512,11 +527,37 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
         # -- speed slider ------------------------------------------------
         def _on_speed_changed(self, value: int) -> None:
             self._update_speed_label(value)
+            if is_manual_speed(value):
+                # Item 3 (FEAT-002): entering manual mode stops auto-play; the
+                # user steps with the Next turn / Prev buttons. Guard with
+                # _alive so a torn-down screen never touches dead C++ objects.
+                if self._alive:
+                    self._play_timer.stop()
+                    self.play_button.setText(tr("replay.play"))
+                return
+            interval = speed_to_interval_ms(value)
+            if interval is None:  # pragma: no cover - manual handled above
+                return
             if self._play_timer.isActive():
-                self._play_timer.setInterval(int(value))
+                self._play_timer.setInterval(interval)
+            elif (
+                self._alive
+                and self.model is not None
+                and not self.model.is_empty()
+                and not self.model.is_at_end()
+            ):
+                # Leaving manual mode (and not at the end): resume auto-play.
+                self._start_autoplay()
 
         def _update_speed_label(self, value: int) -> None:
-            self.speed_label.setText(tr("replay.speed", seconds=int(value) / 1000.0))
+            # At the minimum tick the label reads "Manual" so the user sees that
+            # auto-play is off and they must step with Next turn / Prev.
+            if is_manual_speed(value):
+                self.speed_label.setText(tr("replay.speed_manual"))
+            else:
+                self.speed_label.setText(
+                    tr("replay.speed", seconds=int(value) / 1000.0)
+                )
 
         # -- log-row hover -----------------------------------------------
         def _on_log_row_hovered(self, item: Any) -> None:

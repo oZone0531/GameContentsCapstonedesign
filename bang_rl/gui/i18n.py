@@ -68,6 +68,14 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "AI turn speed: {seconds:.1f}s per turn",
         "ko": "AI 턴 속도: 턴당 {seconds:.1f}초",
     },
+    # Item 3 (FEAT-002): manual turn-advance mode. The speed slider at its
+    # minimum means "manual": auto-advance stops and the user presses Next turn.
+    "game.next_turn": {"en": "Next turn", "ko": "다음 턴"},
+    "game.ai_speed_manual": {
+        "en": "AI turn speed: Manual (press Next turn)",
+        "ko": "AI 턴 속도: 수동 (다음 턴 버튼)",
+    },
+    "game.speed_manual_label": {"en": "Manual", "ko": "수동"},
     "game.you_name": {"en": "You", "ko": "나"},
     "game.player_name": {"en": "Player {player}", "ko": "플레이어 {player}"},
     "game.click_hint": {
@@ -439,6 +447,13 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Playback speed: {seconds:.1f}s per turn",
         "ko": "재생 속도: 턴당 {seconds:.1f}초",
     },
+    # Item 3 (FEAT-002): manual mode indication for the replay speed slider at
+    # its minimum. The user advances with the existing Next turn / Prev buttons.
+    "replay.speed_manual": {
+        "en": "Playback: Manual (press Next turn)",
+        "ko": "재생: 수동 (다음 턴 버튼)",
+    },
+    "replay.speed_manual_label": {"en": "Manual", "ko": "수동"},
     "replay.status": {"en": "Turn {index}/{total}", "ko": "턴 {index}/{total}"},
     "replay.no_episode": {
         "en": "No replay loaded. Open a recorded episode to watch it.",

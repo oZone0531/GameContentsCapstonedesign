@@ -14,6 +14,13 @@ from typing import Any
 
 from ..game import GameSessionController
 from ..i18n import tr
+from ..playback_speed import (
+    AI_SPEED_DEFAULT_MS,
+    AI_SPEED_MAX_MS,
+    AI_SPEED_MIN_MS,
+    is_manual_speed,
+    speed_to_interval_ms,
+)
 from ..qt_compat import (
     QHBoxLayout,
     QLabel,
@@ -30,11 +37,11 @@ from ..replay import ReplayModel
 from ..widgets.game_widgets import ActionPanel, GameLog, GraphicalBoard
 
 
-# AI-turn-speed slider bounds, in milliseconds per AI turn. Defined outside the
-# Qt gate so they can be referenced/tested headlessly. Default is ~1s per turn.
-AI_SPEED_MIN_MS = 200
-AI_SPEED_MAX_MS = 3000
-AI_SPEED_DEFAULT_MS = 1000
+# AI-turn-speed slider bounds, in milliseconds per AI turn. The single source of
+# truth now lives in bang_rl/gui/playback_speed.py (a Qt-free module so the pure
+# slider/manual-mode test can path-load it headlessly); the names are re-exported
+# here so replay_screen's existing `from .game_screen import AI_SPEED_...` keeps
+# working. See __all__ at the bottom of the module.
 
 
 if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
@@ -107,7 +114,16 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.speed_slider.setValue(AI_SPEED_DEFAULT_MS)
             self.speed_slider.setSingleStep(100)
             self.speed_slider.valueChanged.connect(self._on_speed_changed)
+            # Item 3 (FEAT-002): a static "Manual" tick label pinned at the
+            # slider minimum, plus a Next-turn button that advances exactly one
+            # AI turn per press while in manual mode. The button is enabled only
+            # in manual mode (toggled in _on_speed_changed / _maybe_start_ai_
+            # sequence); above the minimum the cadence is driven by the timer.
+            self.speed_manual_label = QLabel(tr("game.speed_manual_label"), self)
+            self.next_turn_button = QPushButton(tr("game.next_turn"), self)
+            self.next_turn_button.clicked.connect(self._manual_advance)
             self._update_speed_label(AI_SPEED_DEFAULT_MS)
+            self._update_manual_controls(AI_SPEED_DEFAULT_MS)
 
             # Left = log, center = graphical board.
             top = QHBoxLayout()
@@ -117,7 +133,9 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             speed_row = QHBoxLayout()
             speed_row.addWidget(self.speed_title)
             speed_row.addWidget(self.speed_label)
+            speed_row.addWidget(self.speed_manual_label)
             speed_row.addWidget(self.speed_slider, 1)
+            speed_row.addWidget(self.next_turn_button)
 
             # Item 7: game-over button row sits beneath the board.
             self.game_over_row = QHBoxLayout()
@@ -194,12 +212,60 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
         # -- speed slider ------------------------------------------------
         def _on_speed_changed(self, value: int) -> None:
             self._update_speed_label(value)
+            self._update_manual_controls(value)
+            if is_manual_speed(value):
+                # Item 3 (FEAT-002): entering manual mode stops auto-advance;
+                # the user drives turns with the Next-turn button. Guard with
+                # _alive so a torn-down screen never touches dead C++ objects.
+                if self._alive:
+                    self._ai_timer.stop()
+                return
+            # Leaving manual mode (or just changing a non-manual value): if it
+            # is an AI turn, (re)start/resume the timer at the new interval.
+            interval = speed_to_interval_ms(value)
+            if interval is None:  # pragma: no cover - manual handled above
+                return
             if self._ai_timer.isActive():
                 # Apply the new cadence live to the running AI sequence.
-                self._ai_timer.setInterval(int(value))
+                self._ai_timer.setInterval(interval)
+            else:
+                self._maybe_start_ai_sequence()
 
         def _update_speed_label(self, value: int) -> None:
-            self.speed_label.setText(tr("game.ai_speed_value", seconds=int(value) / 1000.0))
+            # At the minimum tick the label reads "Manual" instead of a per-turn
+            # seconds value, so the user sees that auto-advance is off.
+            if is_manual_speed(value):
+                self.speed_label.setText(tr("game.ai_speed_manual"))
+            else:
+                self.speed_label.setText(
+                    tr("game.ai_speed_value", seconds=int(value) / 1000.0)
+                )
+
+        def _update_manual_controls(self, value: int) -> None:
+            """Enable the Next-turn button only while in manual mode."""
+
+            self.next_turn_button.setEnabled(is_manual_speed(value))
+
+        def _manual_advance(self) -> None:
+            """Advance exactly one AI turn per press, only in manual mode.
+
+            Mirrors a single _ai_timer tick but is user-driven: it only acts
+            when the slider is at the manual (minimum) position and it is an AI
+            turn, advancing one turn via step_single_ai_turn(). Above the
+            minimum the button is disabled, so this is a no-op if ever reached.
+            """
+
+            if not self._alive:
+                return
+            if not is_manual_speed(self.speed_slider.value()):
+                return
+            if not self.controller.is_ai_turn():
+                return
+            try:
+                snapshot = self.controller.step_single_ai_turn()
+            except Exception:
+                snapshot = self.controller.snapshot
+            self._render(snapshot)
 
         # -- transient hit / elimination status --------------------------
         def _on_player_hit(self, player: int) -> None:
@@ -247,8 +313,14 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
         def _maybe_start_ai_sequence(self) -> None:
             if not self._alive:
                 return
+            # Item 3 (FEAT-002): in manual mode (slider at minimum) never start
+            # the timer; the user advances AI turns with the Next-turn button.
+            interval = speed_to_interval_ms(self.speed_slider.value())
+            if interval is None:
+                self._ai_timer.stop()
+                return
             if self.controller.is_ai_turn():
-                self._ai_timer.setInterval(int(self.speed_slider.value()))
+                self._ai_timer.setInterval(interval)
                 self._ai_timer.start()
             else:
                 self._ai_timer.stop()
@@ -418,4 +490,6 @@ else:
             require_qt()
 
 
+# Re-export the slider bounds (sourced from bang_rl.gui.playback_speed) so
+# replay_screen's existing `from .game_screen import AI_SPEED_...` keeps working.
 __all__ = ["AI_SPEED_DEFAULT_MS", "AI_SPEED_MAX_MS", "AI_SPEED_MIN_MS", "GameScreen"]
