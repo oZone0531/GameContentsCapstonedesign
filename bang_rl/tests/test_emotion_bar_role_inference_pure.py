@@ -338,7 +338,7 @@ def test_inverted_projection_uses_sources_own_rows_about_each_target() -> None:
             "4": other,
         }
     }
-    projection = overlay.inverted_role_inference(internals, 1)
+    projection = overlay.inverted_role_inference(internals, 1, sheriff_seat=0)
     mapping = dict(projection)
     # Targets are every OTHER non-sheriff seat: 2, 3, 4 (NOT 0, NOT 1).
     assert sorted(mapping.keys()) == [2, 3, 4]
@@ -372,18 +372,108 @@ def test_inverted_projection_excludes_source_seat_itself() -> None:
     assert 1 not in targets
 
 
-def test_inverted_projection_excludes_sheriff_target_seat_zero() -> None:
+def test_inverted_projection_excludes_passed_sheriff_seat() -> None:
+    filler = [0.2, 0.2, 0.2, 0.2, 0.2]
+    source = _estimator_descriptor([filler] * 5)
+    internals = {"seats": {"0": source, "1": source, "2": source}}
+    # When the sheriff seat is supplied, that seat is never a target.
+    projection = overlay.inverted_role_inference(internals, 1, sheriff_seat=0)
+    targets = [target for target, _ in projection]
+    assert 0 not in targets
+    assert targets == [2]
+    # Sheriff ROLE still stays dropped from every per-target list.
+    for _target, items in projection:
+        assert "sheriff" not in [key for key, _ in items]
+
+
+def test_inverted_projection_without_sheriff_seat_includes_seat_zero() -> None:
+    # Backward-compatible default: with sheriff_seat=None NO seat is skipped for
+    # being the sheriff, so seat 0 (which the old hardcoded ``== 0`` skip wrongly
+    # dropped) now appears. This FAILS if the hardcoded sheriff-seat-0 skip is
+    # restored. REVERT-SENSITIVE.
     filler = [0.2, 0.2, 0.2, 0.2, 0.2]
     source = _estimator_descriptor([filler] * 5)
     internals = {"seats": {"0": source, "1": source, "2": source}}
     projection = overlay.inverted_role_inference(internals, 1)
     targets = [target for target, _ in projection]
-    # Sheriff seat 0 is always public and is never a target.
-    assert 0 not in targets
-    assert targets == [2]
-    # Sheriff also stays dropped from every per-target list.
-    for _target, items in projection:
-        assert "sheriff" not in [key for key, _ in items]
+    assert 0 in targets
+    assert targets == [0, 2]
+
+
+# -- FEAT-001: sheriff SEAT is derived, not hardcoded to seat 0 ------------
+def test_inverted_projection_omits_actual_sheriff_seat_not_seat_zero() -> None:
+    # The sheriff can sit anywhere. Here the sheriff is seat 2, so hovering
+    # source seat 1 must OMIT target seat 2 but INCLUDE seat 0 (which the old
+    # hardcoded code would have wrongly dropped). REVERT-SENSITIVE: fails if the
+    # literal ``== 0`` skip is restored (that would drop 0 and keep 2).
+    source = _estimator_descriptor(
+        [
+            [0.0, 0.5, 0.2, 0.2, 0.1],  # row 0 (about seat 0)
+            [0.2, 0.2, 0.2, 0.2, 0.2],  # row 1 (self)
+            [0.0, 0.1, 0.4, 0.4, 0.1],  # row 2 (about seat 2 - the sheriff)
+            [0.0, 0.1, 0.1, 0.1, 0.7],  # row 3 (about seat 3)
+            [0.0, 0.6, 0.1, 0.1, 0.2],  # row 4 (about seat 4)
+        ]
+    )
+    other = _estimator_descriptor([[0.2, 0.2, 0.2, 0.2, 0.2]] * 5)
+    internals = {
+        "seats": {"0": other, "1": source, "2": other, "3": other, "4": other}
+    }
+    projection = overlay.inverted_role_inference(internals, 1, sheriff_seat=2)
+    targets = sorted(target for target, _ in projection)
+    # Seat 2 (sheriff) is omitted; seat 0 is INCLUDED (not treated as sheriff).
+    assert targets == [0, 3, 4]
+    assert 0 in targets
+    assert 2 not in targets
+
+
+def test_sheriff_seat_from_observation_reads_revealed_roles() -> None:
+    # revealed_roles marks a NON-zero seat as the sheriff (value 0); hidden roles
+    # are the 255 sentinel. REVERT-SENSITIVE for the "seat 0 is not the sheriff"
+    # root cause: the sheriff here is seat 1.
+    obs = {"revealed_roles": [255, 0, 255, 255, 255]}
+    assert overlay.sheriff_seat_from_observation(obs) == 1
+    # Sheriff at the last seat.
+    assert overlay.sheriff_seat_from_observation(
+        {"revealed_roles": [255, 255, 255, 255, 0]}
+    ) == 4
+    # 1-element array-wrapped entries (the Box (1,) shape) unwrap correctly, and
+    # a .tolist()-exposing array-like entry also unwraps (numpy-free duck type).
+    class _ArrayLike:
+        def __init__(self, value):
+            self._value = value
+
+        def tolist(self):
+            return self._value
+
+    wrapped = {"revealed_roles": [[255], [255], _ArrayLike(0), [255], [255]]}
+    assert overlay.sheriff_seat_from_observation(wrapped) == 2
+
+
+def test_sheriff_seat_from_observation_role_visibility_fallback() -> None:
+    # No revealed_roles sheriff, but role_visibility marks exactly one visible
+    # seat -> that seat is the sheriff.
+    obs = {"role_visibility": [False, False, True, False, False]}
+    assert overlay.sheriff_seat_from_observation(obs) == 2
+    # Several visible seats are ambiguous -> decline (None), do not guess.
+    assert overlay.sheriff_seat_from_observation(
+        {"role_visibility": [True, False, True, False, False]}
+    ) is None
+
+
+def test_sheriff_seat_from_observation_none_on_bad_input() -> None:
+    assert overlay.sheriff_seat_from_observation(None) is None
+    assert overlay.sheriff_seat_from_observation(42) is None
+    assert overlay.sheriff_seat_from_observation("nope") is None
+    assert overlay.sheriff_seat_from_observation({}) is None
+    # revealed_roles present but no seat holds the sheriff role (all hidden).
+    assert overlay.sheriff_seat_from_observation(
+        {"revealed_roles": [255, 255, 255, 255, 255]}
+    ) is None
+    # Garbage revealed_roles entries never raise and never match.
+    assert overlay.sheriff_seat_from_observation(
+        {"revealed_roles": ["x", None, {}, [1, 2]]}
+    ) is None
 
 
 def test_inverted_projection_non_dummy_or_missing_beliefs_is_empty() -> None:
@@ -426,7 +516,7 @@ def test_inverted_projection_omits_targets_without_estimator() -> None:
             "3": {"kind": "random"},
         }
     }
-    projection = overlay.inverted_role_inference(internals, 1)
+    projection = overlay.inverted_role_inference(internals, 1, sheriff_seat=0)
     assert [target for target, _ in projection] == [2, 3]
     # Target 2's merged outlaw bucket is 0.5 + 0.5 = 1.0 from the SOURCE's row 2.
     assert dict(dict(projection)[2])["outlaw"] == 1.0

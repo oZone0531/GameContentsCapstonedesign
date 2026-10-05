@@ -14,11 +14,21 @@ the pure tests path-load it directly (importlib.util.spec_from_file_location),
 bypassing ``bang_rl/gui/__init__`` which would otherwise pull in Qt.
 
 Two design decisions are baked into the role-inference helpers and worth
-stating up front:
+stating up front. They concern two DISTINCT concepts that both happen to touch
+the sheriff, so keep them separate:
 
-* Sheriff is DROPPED from every inference list. The sheriff role is always
-  public in this game, so an AI never has to infer it and showing a sheriff
-  probability would be meaningless. ``role_inference_items`` discards index 0.
+* The sheriff ROLE COLUMN is DROPPED from every inference list. The sheriff
+  role is always public in this game, so an AI never has to infer it and
+  showing a sheriff probability would be meaningless. ``role_inference_items``
+  discards column 0 of a belief row. Column 0 is always the sheriff role purely
+  because that is the canonical role order; this has nothing to do with which
+  seat holds the Sheriff.
+* The sheriff SEAT is EXCLUDED from the inverted hover projection. The seat that
+  holds the Sheriff role is public, so it is never a useful inference target.
+  That seat is NOT necessarily seat 0: roles are shuffled, so the sheriff seat
+  is whatever seat holds the Sheriff role. It is passed in as ``sheriff_seat``
+  (derivable from an observation via ``sheriff_seat_from_observation``); when it
+  is unknown (``None``) no seat is excluded for being the sheriff.
 * The two outlaw seats (``outlaw_a`` + ``outlaw_b``) are MERGED into a single
   ``outlaw`` bucket by summing their probabilities. The user-facing example
   shows a single ``무법자`` entry, and from a spectator's point of view "how
@@ -46,6 +56,13 @@ from typing import Any, Mapping, Sequence
 CANONICAL_ROLE_ORDER = ("sheriff", "deputy", "outlaw_a", "outlaw_b", "traitor")
 # The number of roles / seats in a belief row.
 ROLE_COUNT = 5
+# Role value marking a seat as the Sheriff, and the sentinel used for a hidden
+# role in an observation's ``revealed_roles``. Mirrors
+# ``bang_rl/agents/dummy_agent/role_belief.py`` (SHERIFF_ROLE = 0,
+# HIDDEN_ROLE_SENTINEL = 255). The sheriff role is always public, so the sheriff
+# SEAT is the index in ``revealed_roles`` whose value equals SHERIFF_ROLE_VALUE.
+SHERIFF_ROLE_VALUE = 0
+HIDDEN_ROLE_VALUE = 255
 # Stable role keys produced by ``role_inference_items`` after the sheriff is
 # dropped and the two outlaw slots are merged, in the fixed order used to break
 # ties when two buckets share a probability.
@@ -330,6 +347,112 @@ def role_belief_row_for_seat(descriptor: Any, seat_index: Any) -> tuple[float, .
     return _coerce_belief_row(beliefs[seat_index])
 
 
+def _scalar_int_or_none(value: Any) -> int | None:
+    """Return ``value`` coerced to a plain int, or ``None``.
+
+    Recorded observations store scalar-like role fields as 1-element array-likes
+    (shape ``(1,)`` ``Box`` arrays, numpy arrays, or plain 1-element lists). This
+    mirrors ``replay.py._int_or_none``: duck-type ``.tolist()`` to unwrap numpy
+    scalars / arrays without importing numpy (this module stays numpy-free), then
+    unwrap a plain 1-element sequence, then ``int()``. Returns ``None`` on any
+    malformed / non-scalar input and never raises.
+    """
+
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist) and not isinstance(value, (list, tuple, dict)):
+        try:
+            value = tolist()
+        except Exception:
+            return None
+        if value is None:
+            return None
+    if isinstance(value, (list, tuple)):
+        if len(value) != 1:
+            return None
+        value = value[0]
+        if value is None:
+            return None
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _visibility_is_set(flag: Any) -> bool:
+    """Return True when a ``role_visibility`` flag marks a seat as visible.
+
+    Accepts a bool, a 0/1-style int, or a 1-element array-like wrapping either
+    (unwrapped numpy-free the same way scalar role fields are). Any malformed
+    input is treated as not visible and never raises.
+    """
+
+    if isinstance(flag, bool):
+        return flag
+    tolist = getattr(flag, "tolist", None)
+    if callable(tolist) and not isinstance(flag, (list, tuple, dict)):
+        try:
+            flag = tolist()
+        except Exception:
+            return False
+    if isinstance(flag, (list, tuple)):
+        if len(flag) != 1:
+            return False
+        flag = flag[0]
+    if isinstance(flag, bool):
+        return flag
+    if isinstance(flag, (int, float)):
+        return bool(flag)
+    return False
+
+
+def sheriff_seat_from_observation(observation: Any) -> int | None:
+    """Return the seat index that holds the Sheriff role, or ``None``.
+
+    The sheriff role is always public, so the sheriff SEAT is derivable from the
+    observation: it is the first index of ``revealed_roles`` whose value equals
+    ``SHERIFF_ROLE_VALUE`` (0). ``revealed_roles`` is a per-seat sequence whose
+    entries may be plain ints or 1-element array-likes (unwrapped via
+    ``_scalar_int_or_none``, staying numpy-free). Hidden roles are the
+    ``HIDDEN_ROLE_VALUE`` sentinel (255). If ``revealed_roles`` is absent or
+    yields no sheriff, fall back to ``role_visibility`` (a per-seat visibility
+    flag) only when exactly one seat is marked visible, since the sheriff is the
+    only always-public role. Returns ``None`` on any malformed / missing input
+    and never raises.
+    """
+
+    if not isinstance(observation, Mapping):
+        return None
+
+    revealed = observation.get("revealed_roles")
+    if isinstance(revealed, Sequence) and not isinstance(revealed, (str, bytes)):
+        for seat_index, raw_role in enumerate(revealed):
+            role_value = _scalar_int_or_none(raw_role)
+            if role_value is not None and role_value == SHERIFF_ROLE_VALUE:
+                return seat_index
+
+    # Fallback: ``role_visibility`` is a per-seat flag of which roles are public.
+    # The sheriff is the only always-public role, so a single visible seat is
+    # unambiguously the sheriff. If several seats are visible we cannot tell the
+    # sheriff apart here, so decline rather than guess.
+    visibility = observation.get("role_visibility")
+    if isinstance(visibility, Sequence) and not isinstance(visibility, (str, bytes)):
+        visible_seats = [
+            seat_index
+            for seat_index, flag in enumerate(visibility)
+            if _visibility_is_set(flag)
+        ]
+        if len(visible_seats) == 1:
+            return visible_seats[0]
+
+    return None
+
+
 def _iter_seat_descriptors(internals: Any):
     """Yield ``(seat_index, descriptor)`` pairs from an internals mapping.
 
@@ -403,18 +526,30 @@ def aggregate_role_inference_row(
 def inverted_role_inference(
     internals: Any,
     source_seat: Any,
+    *,
+    sheriff_seat: int | None = None,
 ) -> tuple[tuple[int, tuple[tuple[str, float], ...]], ...]:
     """Return SOURCE seat's own role inference about every OTHER non-sheriff seat.
 
     This is the inverted projection used by the hover overlay: hovering seat
     ``source_seat`` (S) shows S's OWN current role inferences drawn over each
     OTHER seat's circle. For every seat ``T`` present in ``internals`` with
-    ``T != source_seat`` AND ``T != 0`` (the sheriff seat is always public and
-    is never a target), read row ``T`` of SOURCE seat's 5x5 beliefs matrix
-    (S's probability distribution over T's role) via
+    ``T != source_seat`` AND ``T != sheriff_seat`` (the seat holding the Sheriff
+    role is always public and is never a useful target), read row ``T`` of SOURCE
+    seat's 5x5 beliefs matrix (S's probability distribution over T's role) via
     ``role_belief_row_for_seat`` and reduce it with ``role_inference_items``
-    (sheriff dropped, the two outlaw slots merged, descending). The reduction /
-    sort logic is NOT duplicated here; it is reused from ``role_inference_items``.
+    (sheriff ROLE column dropped, the two outlaw slots merged, descending). The
+    reduction / sort logic is NOT duplicated here; it is reused from
+    ``role_inference_items``.
+
+    ``sheriff_seat`` is the SEAT index that holds the Sheriff role (derive it
+    from an observation with ``sheriff_seat_from_observation``). It is NOT
+    hardcoded to seat 0: roles are shuffled, so the sheriff can sit at any seat.
+    When ``sheriff_seat`` is ``None`` (unknown) NO seat is excluded for being the
+    sheriff, so a caller that cannot determine the sheriff still gets inference
+    over every non-source seat rather than silently dropping seat 0. Dropping the
+    sheriff ROLE column inside ``role_inference_items`` is a separate concern and
+    is unaffected by this parameter.
 
     Hidden-information rationale: this reads the SOURCE seat's beliefs ABOUT
     OTHERS, never a seat's own self-row, so it cannot surface any seat's true
@@ -443,7 +578,9 @@ def inverted_role_inference(
 
     projection: list[tuple[int, tuple[tuple[str, float], ...]]] = []
     for seat_index, _descriptor in _iter_seat_descriptors(internals):
-        if seat_index == source_seat or seat_index == 0:
+        if seat_index == source_seat or (
+            sheriff_seat is not None and seat_index == sheriff_seat
+        ):
             continue
         row = role_belief_row_for_seat(source_descriptor, seat_index)
         if row is None:
