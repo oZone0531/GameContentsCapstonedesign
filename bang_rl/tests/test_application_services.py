@@ -406,3 +406,36 @@ def test_spectator_session_reveals_all_roles_during_play() -> None:
     assert all(v >= 2 for v in visibility)
     assert all(r != 255 for r in revealed)
     game.close_session(handle)
+
+
+def test_create_session_runs_episode_start_per_seat_with_own_projection() -> None:
+    # Revert-sensitive wiring guard for the FEAT-001 fix: GameService.create_session
+    # must call on_episode_start on EVERY seat with that seat's OWN per-seat public
+    # projection (environment.observe(index)), so each dummy folds its own role and
+    # the public sheriff into its RoleBeliefEstimator from turn 0 instead of sitting
+    # at the uniform 1/5 constructor default.
+    #
+    # This test imports bang_rl.app (numpy / pydantic), so it is CI-only in the
+    # restricted sandbox; that is acceptable for a wiring test. It fails on a revert
+    # of the services.py create_session on_episode_start loop (no PassAgent would
+    # have a .context, so the first assertion raises AttributeError / fails), AND it
+    # fails if observe(index) were changed to observe() (every seat would then share
+    # one observation and self_role would not be five distinct roles).
+    config = SystemConfig(seed=29)
+    game = GameService()
+    agents = _pass_agents()
+    handle = game.create_session(SessionConfig(config=config, agents=agents, seed=29))
+    try:
+        # (a) on_episode_start ran on every seat (unset context -> fix reverted).
+        for agent in agents:
+            assert hasattr(agent, "context"), "on_episode_start was never called on this seat"
+            # (b) the episode-start context carries the per-seat observation.
+            assert "observation" in agent.context
+        # (c) per-SEAT projection: each seat's own public projection sets self_role
+        # to that seat's own role, so the five self_role values must be a permutation
+        # of the five canonical roles 0..4.  A shared observation (observe() with no
+        # index) would make them all identical.
+        self_roles = sorted(int(agent.context["observation"]["self_role"][0]) for agent in agents)
+        assert self_roles == [0, 1, 2, 3, 4]
+    finally:
+        game.close_session(handle)

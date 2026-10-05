@@ -500,6 +500,14 @@ class GameService:
         # per-agent guard mirrors the project's defensive export style: a single
         # agent failing here must never abort session creation.  Do NOT mirror
         # this into restore_session, which re-applies saved per-seat internals.
+        #
+        # Intended, deterministic side effect: running the normal episode-start
+        # lifecycle here also reseeds each stochastic agent's action RNG from the
+        # episode seed.  Interactive game sessions never called on_episode_start
+        # before, so such agents used to run the whole game on their
+        # constructor-time RNG.  The reseeded stream is still fully determined by
+        # the session seed (reproducible), just a different stream than the
+        # pre-fix behavior; this is a conscious decision, not a silent change.
         for index, agent in enumerate(agents):
             on_episode_start = getattr(agent, "on_episode_start", None)
             if on_episode_start is None:
