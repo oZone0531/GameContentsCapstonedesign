@@ -275,12 +275,10 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             if outcome:
                 parts.append(str(outcome))
             # Item 5: surface whether this is a full-state (resumable) or public
-            # (training-only) replay so the user knows before selecting it.
-            fmt = summary.get("replay_format")
-            if fmt == "full":
-                parts.append(tr("replay.format_full"))
-            elif fmt == "public":
-                parts.append(tr("replay.format_public"))
+            # (training-only) replay so the user knows before selecting it. The
+            # format label resolves through the single Qt-free helper so the
+            # browser row and the info panel can never disagree.
+            parts.append(tr(replay_store.replay_format_label_tag(summary)))
             return "  |  ".join(parts)
 
         def _on_replay_selected(self, item: Any) -> None:
@@ -705,6 +703,12 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             mode_label = summary.get("mode_label") or summary.get("mode")
             if mode_label:
                 lines.append(tr("replay.info_mode", mode=str(mode_label)))
+            # FEAT-001: surface the recorded format (full vs public) in the
+            # info panel too, not only in the easy-to-miss browser row. Resolve
+            # the label through the same Qt-free helper the browser row uses so
+            # the two can never disagree.
+            format_name = tr(replay_store.replay_format_label_tag(summary))
+            lines.append(tr("replay.info_format", format=format_name))
             outcome = summary.get("winning_team") or summary.get("outcome")
             if outcome:
                 lines.append(tr("replay.info_outcome", outcome=str(outcome)))

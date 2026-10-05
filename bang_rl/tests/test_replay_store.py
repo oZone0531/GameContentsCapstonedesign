@@ -400,6 +400,19 @@ def test_describe_ai_versions_legacy_and_empty_safe() -> None:
     assert kinds["1"] == "unknown"
 
 
+def test_replay_format_label_tag_full_public_and_legacy() -> None:
+    # FEAT-001: single Qt-free seam both the browser row and the info panel
+    # resolve the format label through.
+    assert replay_store.replay_format_label_tag({"replay_format": "full"}) == "replay.format_full"
+    assert replay_store.replay_format_label_tag({"replay_format": "public"}) == "replay.format_public"
+    # A legacy record with no replay_format defaults to public.
+    assert replay_store.replay_format_label_tag({}) == "replay.format_public"
+    assert replay_store.replay_format_label_tag(None) == "replay.format_public"
+    # Accepts a replay_summary result too.
+    summary = replay_store.replay_summary({"replay_format": "full", "states": [{}]})
+    assert replay_store.replay_format_label_tag(summary) == "replay.format_full"
+
+
 def test_replay_store_i18n_keys_exist_in_both_languages() -> None:
     from bang_rl.gui.i18n import _STRINGS
 
@@ -409,6 +422,7 @@ def test_replay_store_i18n_keys_exist_in_both_languages() -> None:
         "replay.browser",
         "replay.info_title",
         "replay.info_mode",
+        "replay.info_format",
         "replay.info_outcome",
         "replay.info_seed",
         "replay.info_seat",

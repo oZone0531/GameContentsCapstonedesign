@@ -510,6 +510,7 @@ _STRINGS: dict[str, dict[str, str]] = {
     # recorded mode / outcome / seed and the per-seat AI + version breakdown.
     "replay.info_title": {"en": "Replay info", "ko": "리플레이 정보"},
     "replay.info_mode": {"en": "Mode: {mode}", "ko": "모드: {mode}"},
+    "replay.info_format": {"en": "Format: {format}", "ko": "포맷: {format}"},
     "replay.info_outcome": {"en": "Outcome: {outcome}", "ko": "결과: {outcome}"},
     "replay.info_seed": {"en": "Seed: {seed}", "ko": "시드: {seed}"},
     "replay.info_seat": {"en": "Seat {seat}: {ai}", "ko": "좌석 {seat}: {ai}"},

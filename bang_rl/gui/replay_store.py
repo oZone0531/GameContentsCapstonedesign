@@ -507,6 +507,27 @@ def replay_summary(record: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def replay_format_label_tag(record_or_summary: Mapping[str, Any] | None) -> str:
+    """Return the i18n KEY naming the replay format of ``record_or_summary``.
+
+    Accepts either a raw replay record or a :func:`replay_summary` result (both
+    carry a ``replay_format`` key). Returns the i18n key ``'replay.format_full'``
+    when ``replay_format == 'full'`` and ``'replay.format_public'`` otherwise,
+    defaulting a legacy record that lacks the field to public (matching
+    :func:`replay_summary`'s existing default). This is the single Qt-free seam
+    both the browser list row and the read-only info panel resolve through, so
+    they can never disagree about a record's label. Pure, Qt-free and
+    numpy-free so it stays path-loadable in the headless sandbox.
+    """
+
+    fmt = None
+    if isinstance(record_or_summary, Mapping):
+        fmt = record_or_summary.get("replay_format", "public")
+    if fmt == "full":
+        return "replay.format_full"
+    return "replay.format_public"
+
+
 __all__ = [
     "SCHEMA_VERSION",
     "SPECTATOR_MODES",
@@ -519,6 +540,7 @@ __all__ = [
     "list_replays",
     "load_replay",
     "rename_replay",
+    "replay_format_label_tag",
     "replay_summary",
     "save_replay",
     "select_replay_path",
