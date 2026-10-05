@@ -348,6 +348,13 @@ class EmotionDefinition(ConfigModel):
     """One configurable DummyAgent emotion and its public update rules."""
 
     name: str = Field(min_length=1)
+    # Free-form, author-written natural-language description of the emotion.
+    # Optional with a default empty string so every pre-existing config (which
+    # has no ``description``) still validates under ConfigModel's extra="forbid"
+    # (that policy only rejects UNKNOWN keys, not declared fields with defaults).
+    # Shown as a tooltip on the emotion bar in spectator mode and replay. This is
+    # author content stored verbatim, not a localization key.
+    description: str = ""
     initial_value: float | None = None
     change_rate: float = 0.0
     decay_rate: float = 0.0
@@ -374,11 +381,25 @@ class EmotionDefinition(ConfigModel):
             "reward_rules": "reward_updates",
             "terminal_rules": "terminal_updates",
             "action_effects": "effects",
+            "desc": "description",
         }
         for source, target in aliases.items():
             if source in values and target not in values:
                 values[target] = values.pop(source)
         return values
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def coerce_description_to_text(cls, value: object) -> str:
+        # ``description`` is free-form author text, never validated for content.
+        # A null degrades to an empty string so a missing / cleared description
+        # renders as no tooltip, and any non-string is coerced via ``str(...)``
+        # so authors cannot break config loading with an odd value.
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        return str(value)
 
     @field_validator(
         "initial_value", "change_rate", "decay_rate", mode="before"
