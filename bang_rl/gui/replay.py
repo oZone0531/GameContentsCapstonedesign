@@ -78,6 +78,15 @@ class ReplaySnapshot:
     # getattr(state, "final_roles", ()) exactly like the live terminal
     # PublicGameState, so a terminal replay snapshot reveals every seat.
     final_roles: tuple[int, ...] = ()
+    # FEAT-002: the per-turn AI internals captured for this moment, shaped like
+    # GameService.export_agent_internals ({"health": [...], "seats": {seat_str:
+    # descriptor}}). Defaults to None so legacy snapshots, every observation
+    # stream construction, and all existing tests carry NO internals (the board
+    # then renders no emotion bars / "no inference info" on hover). ReplayModel
+    # attaches the record's top-level ``internals`` list index-parallel; the
+    # spectator / replay board reads it to draw emotion bars and the hover
+    # role-inference overlay. Qt-free and numpy-free: it is a plain mapping.
+    internals: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -238,6 +247,11 @@ class ReplayModel:
         # replay reveals all roles at its END without any mid-replay leak. A
         # legacy record without the field yields an empty tuple -> no reveal.
         final_roles = cls._record_final_roles(mapping)
+        # FEAT-002: the record's top-level per-turn internals list, index-
+        # parallel to steps / observations (may contain None placeholders). A
+        # legacy record without the key yields an empty tuple, so every snapshot
+        # keeps internals=None (graceful: no bars / "no inference info").
+        internals = cls._record_internals(mapping)
         steps = mapping.get("steps")
         snapshots: list[ReplaySnapshot] = []
         if steps:
@@ -263,6 +277,7 @@ class ReplayModel:
                 # No appended settled state: the reveal belongs on the last
                 # snapshot only when it is itself terminal (terminated/truncated).
                 cls._apply_terminal_reveal(snapshots, final_roles)
+            cls._attach_internals(snapshots, internals)
             return snapshots
         # No 'steps': treat 'initial_state' + observation list style mappings as
         # a plain observation stream keyed under 'observations'.
@@ -270,13 +285,52 @@ class ReplayModel:
         if isinstance(observations, Sequence):
             snapshots = cls._from_observations(list(observations), events=events)
             cls._apply_terminal_reveal(snapshots, final_roles)
+            cls._attach_internals(snapshots, internals)
             return snapshots
         initial = mapping.get("initial_state")
         if isinstance(initial, Mapping):
             snapshots = cls._from_observations([initial], events=events)
             cls._apply_terminal_reveal(snapshots, final_roles)
+            cls._attach_internals(snapshots, internals)
             return snapshots
         return []
+
+    @staticmethod
+    def _record_internals(mapping: Mapping[str, Any]) -> tuple[Any, ...]:
+        """Return the record's top-level ``internals`` list as a tuple.
+
+        FEAT-002: the full replay record carries an ``internals`` list that is
+        index-parallel to ``steps`` / ``observations`` and may hold ``None``
+        placeholders where a per-turn export was missed. Returns an EMPTY tuple
+        when the field is absent / not a list (a legacy or public record), so
+        every snapshot then keeps ``internals=None``.
+        """
+
+        raw = mapping.get("internals")
+        if not isinstance(raw, (list, tuple)):
+            return ()
+        return tuple(raw)
+
+    @staticmethod
+    def _attach_internals(
+        snapshots: list[ReplaySnapshot], internals: tuple[Any, ...]
+    ) -> None:
+        """Attach each record internals entry to its snapshot by index.
+
+        FEAT-002: snapshot ``i`` receives ``internals[i]`` when it exists and is
+        a mapping; otherwise it keeps ``internals=None``. Length mismatches are
+        guarded (a trailing appended ``final_state`` snapshot, or a shorter
+        internals list, simply leaves the extra snapshots with ``None``), so a
+        legacy record without internals and a record with ``None`` placeholders
+        both degrade gracefully. Replaces the frozen snapshot in place.
+        """
+
+        if not internals:
+            return
+        for index in range(min(len(snapshots), len(internals))):
+            entry = internals[index]
+            if isinstance(entry, Mapping):
+                snapshots[index] = replace(snapshots[index], internals=entry)
 
     @staticmethod
     def _record_final_roles(mapping: Mapping[str, Any]) -> tuple[int, ...]:

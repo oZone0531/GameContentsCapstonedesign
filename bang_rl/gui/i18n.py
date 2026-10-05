@@ -135,6 +135,10 @@ _STRINGS: dict[str, dict[str, str]] = {
     "role.outlaw_b": {"en": "Outlaw B", "ko": "무법자 B"},
     "role.traitor": {"en": "Traitor", "ko": "배신자"},
     "role.hidden": {"en": "Hidden", "ko": "숨김"},
+    # Merged outlaw label for the spectator / replay role-inference list. The
+    # schema splits outlaw_a / outlaw_b, but the inference merges the two slots
+    # into a single bucket, so the hover list shows one "무법자" / "Outlaw" entry.
+    "role.outlaw_merged": {"en": "Outlaw", "ko": "무법자"},
 
     # Event log labels
     "event.bang": {"en": "BANG", "ko": "뱅"},
@@ -158,6 +162,12 @@ _STRINGS: dict[str, dict[str, str]] = {
     "board.eliminated": {
         "en": "Player {player} was eliminated!",
         "ko": "플레이어 {player}가 탈락했습니다!",
+    },
+    # Spectator / replay role-inference hover: fallback shown when a hovered
+    # seat is not a dummy AI or its belief row is unavailable.
+    "board.no_inference": {
+        "en": "No inference info",
+        "ko": "추론 정보 없음",
     },
 
     # Settings screen

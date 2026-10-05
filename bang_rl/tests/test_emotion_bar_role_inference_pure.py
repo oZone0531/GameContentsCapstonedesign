@@ -30,6 +30,11 @@ def _load_module(relative: str, alias: str):
 
 
 overlay = _load_module("widgets/spectator_overlay.py", "_spectator_overlay_isolated")
+# FEAT-002: replay.py path-loads cleanly (stdlib + dataclasses only) so the
+# internals-threading can be asserted headlessly, like test_replay_internals_pure.
+replay = _load_module("replay.py", "_replay_overlay_isolated")
+ReplayModel = replay.ReplayModel
+ReplaySnapshot = replay.ReplaySnapshot
 
 
 def _dummy_descriptor() -> dict:
@@ -201,3 +206,97 @@ def test_format_percent_rounds() -> None:
     assert overlay.format_percent(0.034) == 3
     assert overlay.format_percent(0.125) == 12  # round-half-to-even: 12.5 -> 12
     assert overlay.format_percent("bad") == 0
+
+
+# -- FEAT-002: shared bar-rect geometry (painter + hover hit-test agree) ----
+def test_emotion_bar_rects_stack_vertically() -> None:
+    rects = overlay.emotion_bar_rects(3, left=10.0, top=100.0, width=60.0, line_height=20.0)
+    assert len(rects) == 3
+    assert [r.index for r in rects] == [0, 1, 2]
+    # Rows stack by line_height from the top.
+    assert [r.top for r in rects] == [100.0, 120.0, 140.0]
+    assert all(r.left == 10.0 and r.width == 60.0 and r.height == 20.0 for r in rects)
+    # Degenerate inputs yield no rects (never raise).
+    assert overlay.emotion_bar_rects(0, left=0, top=0, width=10, line_height=10) == ()
+    assert overlay.emotion_bar_rects(2, left=0, top=0, width=10, line_height=0) == ()
+    assert overlay.emotion_bar_rects(True, left=0, top=0, width=10, line_height=10) == ()
+
+
+def test_bar_rect_at_point_hits_the_matching_row() -> None:
+    rects = overlay.emotion_bar_rects(3, left=10.0, top=100.0, width=60.0, line_height=20.0)
+    # A point inside the second row maps to index 1.
+    assert overlay.bar_rect_at_point(rects, 40.0, 125.0) == 1
+    # Inside the first row.
+    assert overlay.bar_rect_at_point(rects, 10.0, 100.0) == 0
+    # Outside every row -> None.
+    assert overlay.bar_rect_at_point(rects, 200.0, 125.0) is None
+    assert overlay.bar_rect_at_point(rects, 40.0, 500.0) is None
+
+
+# -- FEAT-002: ReplaySnapshot carries internals; ReplayModel threads them ----
+def _record_with_internals(internals_key: bool = True) -> dict:
+    events = [
+        {"environment_step": 0, "event_type": "game_started"},
+        {"environment_step": 1, "event_type": "bang", "actor_idx": 0, "target_idx": 1},
+        {"environment_step": 2, "event_type": "bang", "actor_idx": 1, "target_idx": 0},
+    ]
+
+    def obs(step: int) -> dict:
+        return {
+            "healths": [5, 5, 5, 5, 5],
+            "alive": [True] * 5,
+            "current_player_idx": [step % 5],
+            "environment_step": [step],
+            "event_sequence": [dict(e) for e in events if e["environment_step"] <= step],
+        }
+
+    dummy = {"kind": "dummy", "state": {"emotion_module": {"values": [0.1]}}}
+    record: dict = {
+        "replay_format": "full",
+        "observations": [obs(step) for step in range(3)],
+        "events": events,
+    }
+    if internals_key:
+        # Index-parallel to observations, with a None placeholder in the middle.
+        record["internals"] = [
+            {"health": [5, 5, 5, 5, 5], "seats": {"1": dummy}},
+            None,
+            {"health": [5, 4, 5, 5, 5], "seats": {"1": dummy}},
+        ]
+    return record
+
+
+def test_replay_snapshot_defaults_internals_to_none() -> None:
+    # A bare snapshot (and every legacy construction) carries internals=None.
+    snapshot = ReplaySnapshot(
+        observation={}, action_mask=(0,) * 6, environment_step=0, current_player=None
+    )
+    assert snapshot.internals is None
+
+
+def test_replay_model_attaches_internals_index_parallel() -> None:
+    model = ReplayModel(_record_with_internals(internals_key=True))
+    snapshots = model.snapshots
+    assert len(snapshots) == 3
+    # Turn 0 and turn 2 carry their mapping; the None placeholder leaves None.
+    assert snapshots[0].internals is not None
+    assert snapshots[0].internals["seats"]["1"]["kind"] == "dummy"
+    assert snapshots[1].internals is None
+    assert snapshots[2].internals is not None
+    assert snapshots[2].internals["health"] == [5, 4, 5, 5, 5]
+    # The threaded internals feed the pure overlay helpers end to end.
+    bars = overlay.emotion_bars_for_seat(snapshots[0].internals["seats"]["1"])
+    assert len(bars) == 1
+
+
+def test_replay_model_legacy_record_without_internals_is_none() -> None:
+    model = ReplayModel(_record_with_internals(internals_key=False))
+    assert len(model.snapshots) == 3
+    assert all(snapshot.internals is None for snapshot in model.snapshots)
+
+
+def test_replay_model_observation_stream_has_no_internals() -> None:
+    # A plain observation list (no record wrapper) carries no internals.
+    record = _record_with_internals(internals_key=True)
+    model = ReplayModel(record["observations"])
+    assert all(snapshot.internals is None for snapshot in model.snapshots)

@@ -869,6 +869,31 @@ class GameSessionController:
         self._replay_states.append(state_dict)
         self._record_internals_snapshot()
 
+    def live_internals(self) -> Any:
+        """Return the CURRENT live per-seat AI internals, or ``None``.
+
+        FEAT-002: the live spectator GameScreen feeds this to the graphical
+        board so it can draw emotion bars and the role-inference hover overlay
+        while an all-AI game is being watched. Defensive and Qt-free: it reuses
+        the same ``export_agent_internals`` exporter captured per turn by
+        :meth:`_record_internals_snapshot`, and returns ``None`` on any failure
+        or when there is no session handle. Only meaningful in spectator mode;
+        the human live game screen must NOT call this (and the board keeps
+        overlays disabled there regardless), so no opponent emotion / inferred
+        role can leak to a human player.
+        """
+
+        if self.handle is None or self.service is None:
+            return None
+        exporter = getattr(self.service, "export_agent_internals", None)
+        if not callable(exporter):
+            return None
+        try:
+            exported = exporter(self.handle)
+        except Exception:
+            return None
+        return exported if isinstance(exported, Mapping) else None
+
     def _record_internals_snapshot(self) -> None:
         """Capture the per-turn AI-internals snapshot for the current turn.
 

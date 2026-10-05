@@ -323,6 +323,80 @@ def role_belief_row_for_seat(descriptor: Any, seat_index: Any) -> tuple[float, .
     return _coerce_belief_row(beliefs[seat_index])
 
 
+@dataclass(frozen=True)
+class BarRect:
+    """Axis-aligned rectangle of one painted emotion bar row for hit-testing.
+
+    ``index`` is the bar's position (0-based) within the seat's stack so the
+    caller can map a hovered rect back to the matching ``EmotionBar``. The
+    coordinates are plain floats in widget space; this stays Qt-free so both the
+    painter and the pointer hit-test consume the SAME geometry (they can never
+    drift) and the math is unit-testable headlessly.
+    """
+
+    index: int
+    left: float
+    top: float
+    width: float
+    height: float
+
+    def contains(self, x: float, y: float) -> bool:
+        """Return True when ``(x, y)`` falls inside this rect (edges inclusive)."""
+
+        return (
+            self.left <= float(x) <= self.left + self.width
+            and self.top <= float(y) <= self.top + self.height
+        )
+
+
+def emotion_bar_rects(
+    bar_count: Any,
+    *,
+    left: float,
+    top: float,
+    width: float,
+    line_height: float,
+) -> tuple[BarRect, ...]:
+    """Return one :class:`BarRect` per bar, stacked vertically from ``top``.
+
+    ``bar_count`` bars are laid out as rows of height ``line_height`` starting
+    at ``(left, top)``; row ``i`` spans ``[top + i*line_height, +line_height]``.
+    A non-positive / non-integer ``bar_count`` or a non-positive ``line_height``
+    yields an empty tuple. The painter draws each bar's text within row ``i`` and
+    the pointer hit-test uses :meth:`BarRect.contains`, so the two always agree.
+    """
+
+    if isinstance(bar_count, bool) or not isinstance(bar_count, int):
+        return ()
+    if bar_count <= 0 or float(line_height) <= 0.0 or float(width) <= 0.0:
+        return ()
+    rects: list[BarRect] = []
+    for index in range(bar_count):
+        rects.append(
+            BarRect(
+                index=index,
+                left=float(left),
+                top=float(top) + index * float(line_height),
+                width=float(width),
+                height=float(line_height),
+            )
+        )
+    return tuple(rects)
+
+
+def bar_rect_at_point(rects: Sequence[BarRect], x: float, y: float) -> int | None:
+    """Return the ``index`` of the first bar rect containing ``(x, y)`` or None.
+
+    Shared by the hit-test so hovering a painted bar maps back to its
+    ``EmotionBar`` by index. Pure and Qt-free.
+    """
+
+    for rect in rects:
+        if isinstance(rect, BarRect) and rect.contains(x, y):
+            return rect.index
+    return None
+
+
 def format_percent(probability: Any) -> int:
     """Return ``round(probability * 100)`` as an int for display.
 

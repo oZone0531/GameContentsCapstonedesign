@@ -355,6 +355,13 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 return
             if snapshot.state is not None:
                 self.board.update_state(snapshot.state)
+                # FEAT-002: feed live per-seat internals to the board ONLY in
+                # spectator mode (overlays are already enabled there because the
+                # spectator board has human_player=None). In a human live game
+                # this is skipped and the internals stay None, so no opponent
+                # emotion / inferred role is ever shown to the human player.
+                if self._spectator:
+                    self.board.set_seat_internals(self.controller.live_internals())
                 self.log.update_state(snapshot.state)
                 # Item 6: in a spectator game the action buttons stay disabled
                 # (active=False) so the human can never bang/pass.

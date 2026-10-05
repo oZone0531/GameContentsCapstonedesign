@@ -24,6 +24,7 @@ try:  # pragma: no cover - availability depends on the host environment
         QPen,
         QPolygonF,
     )
+    from PyQt6.QtWidgets import QToolTip
     from PyQt6.QtWidgets import (
         QApplication,
         QCheckBox,
@@ -74,6 +75,7 @@ except ImportError as exc:  # pragma: no cover - exercised when Qt is absent
     QProgressBar = QPushButton = QScrollArea = QSlider = QSpinBox = None
     QStackedWidget = QTableWidget = QTableWidgetItem = QTabWidget = None
     QVBoxLayout = QWidget = None
+    QToolTip = None
 
 
 def require_qt() -> None:
@@ -127,6 +129,7 @@ __all__ = [
     "QTableWidgetItem",
     "QTabWidget",
     "QTimer",
+    "QToolTip",
     "QVBoxLayout",
     "QWidget",
     "require_qt",

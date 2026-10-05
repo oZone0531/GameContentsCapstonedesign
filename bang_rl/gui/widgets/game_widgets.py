@@ -24,6 +24,7 @@ from ..qt_compat import (
     QTableWidget,
     QTableWidgetItem,
     QTimer,
+    QToolTip,
     QVBoxLayout,
     QWidget,
     Qt,
@@ -33,6 +34,15 @@ from ..qt_compat import (
 )
 from ..replay import merge_rendered_log
 from ..roles import faction_name, hidden_role_label, role_name
+from .spectator_overlay import (
+    bar_rect_at_point,
+    emotion_bar_rects,
+    emotion_bar_string,
+    emotion_bars_for_seat,
+    format_percent,
+    role_belief_row_for_seat,
+    role_inference_items,
+)
 from .board_layout import (
     HIDDEN_ROLE_SENTINEL,
     action_for_seat,
@@ -73,6 +83,38 @@ OPPONENT_PANEL_MAX_WIDTH = 340
 # is the tightest case for whether the human's caption lines fit below the seat.
 GRAPHICAL_BOARD_MIN_WIDTH = 560
 GRAPHICAL_BOARD_MIN_HEIGHT = 520
+
+# FEAT-002: how many emotion bars at most are stacked under a seat. The three
+# caption lines (name / HP+status / role) already sit below each circle, so the
+# bars are drawn beneath them; capping the count keeps the stack inside the
+# seat's area and avoids one talkative dummy's bars overlapping the seat below.
+# Any extra emotions beyond the cap are simply not drawn (the hover tooltip
+# still describes the drawn ones). Chosen as 6, comfortably above the default
+# emotion set while bounding vertical growth.
+MAX_EMOTION_BARS = 6
+
+# FEAT-002: map the merged inference role_key produced by
+# ``spectator_overlay.role_inference_items`` to a localized label. Sheriff is
+# never produced (always public) and the two outlaw slots are merged into one
+# ``outlaw`` bucket, so there is no single canonical role index for it: deputy
+# and traitor reuse their existing role labels while the merged outlaw uses the
+# new ``role.outlaw_merged`` string.
+_INFERENCE_ROLE_I18N = {
+    "deputy": "role.deputy",
+    "traitor": "role.traitor",
+    "outlaw": "role.outlaw_merged",
+}
+
+
+def inference_role_label(role_key: str) -> str:
+    """Return the localized label for an inference ``role_key``.
+
+    Keeps the role_key -> i18n mapping testable and Qt-light. An unknown key
+    falls back to the hidden-role label rather than raising.
+    """
+
+    key = _INFERENCE_ROLE_I18N.get(str(role_key))
+    return tr(key) if key is not None else hidden_role_label()
 
 
 def opponent_public_rows(state: Any, *, human_player: int = 0) -> tuple[dict[str, Any], ...]:
@@ -355,6 +397,26 @@ if QT_AVAILABLE:
             self._mask: tuple[int, ...] = (0, 0, 0, 0, 0, 0)
             self._active = False
             self._alive = True
+            # FEAT-002: per-turn AI internals ({"health": [...], "seats":
+            # {seat_str: descriptor}}) supplied by the spectator / replay screen
+            # for the current state. None means "no overlay data" (every human
+            # live game, and any snapshot without internals). Reset on each
+            # update_state; the screen re-supplies it right after (documented
+            # ordering below).
+            self._seat_internals: Mapping[str, Any] | None = None
+            # FEAT-002 (hidden-information safety): emotion bars and the role-
+            # inference hover overlay render ONLY when overlays are enabled.
+            # They are enabled when there is no human seat (spectator layout,
+            # human_player is None) OR when a replay screen explicitly turns them
+            # on. In a human-played LIVE game this stays False, so even if
+            # internals were somehow set the overlay paint methods are no-ops and
+            # no opponent emotion / inferred role can leak to the human player.
+            self._overlays_forced = False
+            # Cached bar-rect geometry per seat from the last paint, keyed by
+            # seat index, so mouseMoveEvent can hit-test the painted bars for the
+            # hover tooltip without re-deriving coordinates.
+            self._bar_rects: dict[int, tuple[Any, ...]] = {}
+            self._bars_by_seat: dict[int, tuple[Any, ...]] = {}
             # Track the events already rendered so update_state can detect only
             # the newly-appended bang/elimination events to animate.
             self._seen_events: tuple[Mapping, ...] = ()
@@ -381,8 +443,77 @@ if QT_AVAILABLE:
             self._hover_seat = None
             self.update()
 
+        # -- FEAT-002 overlay seam ---------------------------------------
+        @property
+        def _overlays_enabled(self) -> bool:
+            """True only in spectator layout or when a replay forced overlays.
+
+            Hidden-information rationale: emotion bars and the role-inference
+            hover overlay expose every seat's (otherwise private) emotion state
+            and the dummy AI's inferred role distribution. That is safe to show
+            only when there is no human whose hidden information must be
+            protected (spectator layout, ``human_player is None``) or during a
+            replay of an already-finished game (``_overlays_forced`` set by the
+            replay screen). In a human-played LIVE game this returns False.
+            """
+
+            return self.human_player is None or self._overlays_forced
+
+        def set_overlays_enabled(self, enabled: bool) -> None:
+            """Force the spectator / replay overlays on (replay screen only).
+
+            A spectator board already has ``human_player is None`` so overlays
+            are on without this; the replay screen calls this so a HUMAN-played
+            replay (which keeps a human seat) also shows the overlays, since a
+            replay is a post-hoc review of a finished game, not live hidden-info
+            play. Never call this from a live human game screen.
+            """
+
+            forced = bool(enabled)
+            if forced == self._overlays_forced:
+                return
+            self._overlays_forced = forced
+            self.update()
+
+        def set_seat_internals(self, internals: Mapping[str, Any] | None) -> None:
+            """Supply the current per-turn AI internals for overlay rendering.
+
+            Ordering contract (consistent across both screens): the screen calls
+            ``update_state`` first (which clears any stale internals) and then
+            ``set_seat_internals`` with the internals for THIS state. ``None``
+            clears the overlay data. The internals are only ever consulted by
+            the paint methods when ``_overlays_enabled`` is True, so passing
+            them in a human live game would still render nothing.
+            """
+
+            self._seat_internals = internals if isinstance(internals, Mapping) else None
+            self.update()
+
+        def _descriptor_for_seat(self, player: int) -> Any:
+            """Return seat ``player``'s descriptor from the current internals.
+
+            ``export_agent_internals`` keys seats by STRING index under
+            ``"seats"``; returns ``None`` when overlays are disabled, there are
+            no internals, or the seat is absent. Never raises.
+            """
+
+            if not self._overlays_enabled:
+                return None
+            internals = self._seat_internals
+            if not isinstance(internals, Mapping):
+                return None
+            seats = internals.get("seats")
+            if not isinstance(seats, Mapping):
+                return None
+            return seats.get(str(int(player)))
+
         def update_state(self, state: Any) -> None:
             self._state = state
+            # FEAT-002 ordering: a new state clears the stale internals; the
+            # spectator / replay screen re-supplies them via set_seat_internals
+            # immediately after this call. A human live game never re-supplies
+            # them, so they stay None (and overlays stay disabled regardless).
+            self._seat_internals = None
             mask = getattr(state, "action_mask", None)
             self._mask = tuple(int(value) for value in mask) if mask is not None else (0,) * 6
             terminated = bool(getattr(state, "terminated", False) or getattr(state, "truncated", False))
@@ -507,14 +638,36 @@ if QT_AVAILABLE:
                 self.actionRequested.emit(int(action))
 
         def mouseMoveEvent(self, event: Any) -> None:
-            # Item 5: on the human's turn, hovering a seat highlights it. Track
-            # the hovered seat and repaint only when it changes.
-            if not self._active or self._state is None:
+            # Item 5: on the human's turn, hovering a seat highlights it.
+            # FEAT-002: in spectator / replay (overlays enabled) hovering a seat
+            # also shows that seat's role inference, and hovering a painted
+            # emotion bar shows that emotion's description as a tooltip. The two
+            # behaviours are independent: the overlay hover works even though the
+            # board is not "active" (no human turn) in spectator / replay.
+            position = event.position()
+            if self._state is None:
                 if self._hover_seat is not None:
                     self._hover_seat = None
                     self.update()
                 return
-            position = event.position()
+            if self._overlays_enabled:
+                self._update_bar_tooltip(position, event)
+                seat = seat_at_point(
+                    position.x(),
+                    position.y(),
+                    self.width(),
+                    self.height(),
+                    human_player=self.human_player,
+                )
+                if seat != self._hover_seat:
+                    self._hover_seat = seat
+                    self.update()
+                return
+            if not self._active:
+                if self._hover_seat is not None:
+                    self._hover_seat = None
+                    self.update()
+                return
             seat = seat_at_point(
                 position.x(),
                 position.y(),
@@ -526,7 +679,37 @@ if QT_AVAILABLE:
                 self._hover_seat = seat
                 self.update()
 
+        def _update_bar_tooltip(self, position: Any, event: Any) -> None:
+            """Show an emotion's description when the pointer is over its bar.
+
+            FEAT-002: hit-tests the pointer against the cached bar rects (the
+            same geometry drawn in ``_paint_emotion_bars``) and, when over a bar
+            whose EmotionBar.description is non-empty, shows it via QToolTip. An
+            empty description shows nothing (hide the tip) to avoid noise. Only
+            runs when overlays are enabled.
+            """
+
+            if QToolTip is None:
+                return
+            x, y = position.x(), position.y()
+            for seat, rects in self._bar_rects.items():
+                index = bar_rect_at_point(rects, x, y)
+                if index is None:
+                    continue
+                bars = self._bars_by_seat.get(seat, ())
+                if 0 <= index < len(bars):
+                    description = bars[index].description
+                    if description:
+                        QToolTip.showText(event.globalPosition().toPoint(), description, self)
+                        return
+                # Over a bar with no description: hide any lingering tooltip.
+                QToolTip.hideText()
+                return
+            QToolTip.hideText()
+
         def leaveEvent(self, event: Any) -> None:
+            if QToolTip is not None:
+                QToolTip.hideText()
             if self._hover_seat is not None:
                 self._hover_seat = None
                 self.update()
@@ -584,6 +767,10 @@ if QT_AVAILABLE:
             height = self.height()
             radius = circle_radius(width, height)
             positions = seat_positions(width, height, human_player=self.human_player)
+            # FEAT-002: rebuild the per-seat bar-rect / bar caches each paint so
+            # the hover tooltip hit-test uses the SAME geometry that was drawn.
+            self._bar_rects = {}
+            self._bars_by_seat = {}
             for player in range(5):
                 base_x, base_y = positions[player]
                 dx, dy = self._shake_offset(player)
@@ -593,6 +780,12 @@ if QT_AVAILABLE:
                 self._paint_caption(
                     painter, player, base_x, base_y, radius, observation, healths, alive, visibility, revealed
                 )
+                # FEAT-002: emotion bars render below the caption lines, gated
+                # to spectator / replay via _paint_emotion_bars itself.
+                self._paint_emotion_bars(painter, player, base_x, base_y, radius)
+            # FEAT-002: the role-inference hover overlay is drawn once, on top of
+            # the seats, for the currently-hovered seat.
+            self._paint_role_inference(painter)
 
         def _paint_circle(
             self,
@@ -860,6 +1053,143 @@ if QT_AVAILABLE:
             rect = QRectF(left, top, width, 22)
             painter.drawText(rect, int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop), text)
 
+        # -- FEAT-002 part 2: emotion bars -------------------------------
+        def _emotion_bar_layout(
+            self, player: int, cx: float, cy: float, radius: float
+        ) -> tuple[float, float, float, float]:
+            """Return ``(left, top, width, line_height)`` for the bar stack.
+
+            The bars sit directly below the three caption lines the board draws
+            under each seat (see ``_paint_caption``: top = cy + radius + 6, three
+            lines of ``line_height = radius*0.34 + 6``). Kept as its own helper
+            so the painter and the hover hit-test share one geometry source.
+            """
+
+            line_height = radius * 0.34 + 6
+            caption_top = cy + radius + 6
+            # Three caption lines are drawn; bars start below them.
+            top = caption_top + 3 * line_height
+            width = radius * 3
+            left = cx - width / 2
+            return left, top, width, line_height
+
+        def _paint_emotion_bars(
+            self, painter: QPainter, player: int, cx: float, cy: float, radius: float
+        ) -> None:
+            """Draw proportional emotion bars under a dummy seat (spectator/replay).
+
+            No-op unless overlays are enabled (hidden-information guard) and the
+            seat has a dummy descriptor. Each bar is one row ``name ====----``.
+            The drawn count is capped at ``MAX_EMOTION_BARS`` so a talkative
+            dummy's bars stay within the seat area; the matching bar rects are
+            cached for the hover tooltip hit-test.
+            """
+
+            if not self._overlays_enabled:
+                return
+            descriptor = self._descriptor_for_seat(player)
+            if descriptor is None:
+                return
+            bars = emotion_bars_for_seat(descriptor)
+            if not bars:
+                return
+            # Cap the number of drawn bars to bound vertical growth.
+            bars = bars[:MAX_EMOTION_BARS]
+            left, top, width, line_height = self._emotion_bar_layout(player, cx, cy, radius)
+            rects = emotion_bar_rects(
+                len(bars), left=left, top=top, width=width, line_height=line_height
+            )
+            self._bar_rects[player] = rects
+            self._bars_by_seat[player] = bars
+            painter.save()
+            painter.setPen(QPen(QColor(210, 220, 235)))
+            font = QFont()
+            font.setBold(False)
+            # A touch smaller than the caption text so a full bar fits the width.
+            point = font.pointSize()
+            if point > 0:
+                font.setPointSize(max(7, point - 1))
+            font.setFamily("monospace")
+            painter.setFont(font)
+            for bar in bars:
+                line = f"{bar.name} {emotion_bar_string(bar.value)}"
+                rect = QRectF(left, top, width, line_height)
+                painter.drawText(
+                    rect,
+                    int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter),
+                    line,
+                )
+                top += line_height
+            painter.restore()
+
+        # -- FEAT-002 part 3: role-inference hover overlay ---------------
+        def _paint_role_inference(self, painter: QPainter) -> None:
+            """Draw the hovered seat's dummy AI role inference inside its circle.
+
+            No-op unless overlays are enabled and a seat is hovered. The list is
+            built from the pure helpers (sheriff dropped, outlaws merged, sorted
+            descending) and shown as localized ``role N%`` lines. A non-dummy or
+            unavailable seat shows the localized "no inference info" line. This
+            NEVER shows the seat's true hidden role, only the AI's own inferred
+            distribution.
+            """
+
+            if not self._overlays_enabled:
+                return
+            seat = self._hover_seat
+            if seat is None:
+                return
+            width = self.width()
+            height = self.height()
+            radius = circle_radius(width, height)
+            positions = seat_positions(width, height, human_player=self.human_player)
+            if seat not in positions:
+                return
+            cx, cy = positions[seat]
+            lines = self._role_inference_lines(seat)
+            painter.save()
+            font = QFont()
+            font.setBold(True)
+            point = font.pointSize()
+            if point > 0:
+                font.setPointSize(max(8, point - 1))
+            painter.setFont(font)
+            text = "\n".join(lines)
+            box_width = radius * 1.9
+            box_height = radius * 1.6
+            rect = QRectF(cx - box_width / 2, cy - box_height / 2, box_width, box_height)
+            # Dark translucent plate so the overlay text stays legible over the
+            # seat fill, then the text itself.
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(QColor(10, 12, 18, 205)))
+            painter.drawRoundedRect(rect, 6.0, 6.0)
+            painter.setPen(QPen(QColor(245, 240, 210)))
+            painter.drawText(
+                rect,
+                int(Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap),
+                text,
+            )
+            painter.restore()
+
+        def _role_inference_lines(self, seat: int) -> list[str]:
+            """Return the localized role-inference lines for a hovered seat.
+
+            Uses the FEAT-001 pure helpers to read seat ``seat``'s own belief
+            row and reduce it (sheriff dropped, outlaws merged, descending).
+            Returns the localized "no inference info" fallback for a non-dummy /
+            unavailable seat so the overlay always has something to show.
+            """
+
+            descriptor = self._descriptor_for_seat(seat)
+            row = role_belief_row_for_seat(descriptor, int(seat))
+            items = role_inference_items(row) if row is not None else ()
+            if not items:
+                return [tr("board.no_inference")]
+            return [
+                f"{inference_role_label(key)} {format_percent(prob)}%"
+                for key, prob in items
+            ]
+
 
 else:
 
@@ -957,7 +1287,9 @@ __all__ = [
     "GraphicalBoard",
     "GRAPHICAL_BOARD_MIN_HEIGHT",
     "GRAPHICAL_BOARD_MIN_WIDTH",
+    "MAX_EMOTION_BARS",
     "OPPONENT_PANEL_MAX_WIDTH",
     "format_event",
+    "inference_role_label",
     "opponent_public_rows",
 ]

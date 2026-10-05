@@ -84,6 +84,14 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.setMinimumWidth(1024)
 
             self.board = GraphicalBoard(self, human_player=REPLAY_HUMAN_PLAYER)
+            # FEAT-002: enable the spectator / replay overlays (emotion bars +
+            # role-inference hover) for EVERY replay, including human-played
+            # ones. A replay is a post-hoc review of a finished game, not live
+            # hidden-info play, so revealing the recorded emotions / inferred
+            # roles here leaks nothing. A spectator replay already has
+            # human_player=None (overlays on by layout); this makes the human
+            # replay case consistent.
+            self.board.set_overlays_enabled(True)
             self.log = GameLog(self)
             self.status = QLabel(self)
 
@@ -531,6 +539,10 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 # FULL (non-shrunk) list, so model.index_for_log_row(row)
                 # resolves the same moment regardless of scroll position.
                 self.board.update_state(snapshot)
+                # FEAT-002: the hovered moment's own per-turn internals drive
+                # the board overlays so bars / inference match the previewed
+                # snapshot, not the current playback cursor.
+                self.board.set_seat_internals(getattr(snapshot, "internals", None))
                 self.log.preview_moment(row)
 
         def _end_hover_preview(self) -> None:
@@ -625,6 +637,12 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             # board advances / rewinds. index_for_log_row still resolves hovered
             # rows against full_events, so hover-preview is unaffected.
             self.board.update_state(snapshot)
+            # FEAT-002: feed the current snapshot's recorded per-turn internals
+            # so the board can draw emotion bars and the role-inference hover
+            # overlay. Overlays are enabled for ALL replays (see _render_current
+            # / __init__): a replay is a post-hoc review of a finished game, not
+            # live hidden-info play, so a human-played replay may also show them.
+            self.board.set_seat_internals(getattr(snapshot, "internals", None))
             if self.model is not None:
                 self.log.update_state(self.model.full_log_snapshot())
             else:
