@@ -249,7 +249,6 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 parent=self,
                 on_back=self._show_menu,
                 replay_directory=REPLAYS_DIR,
-                on_continue=self.on_continue,
             )
             self._set_screen(self._replay_screen)
 
@@ -369,58 +368,6 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 self._show_menu()
                 return
             self._start_game(mode, getattr(self, "_last_artifact", None))
-
-        def on_continue(self, state_dict: Any, *, mode: Any, seed: int | None = None, artifact_path: str | None = None) -> None:
-            """Item 5: resume a live game from a full-state replay moment.
-
-            Called by the ReplayScreen when the user picks 'Continue from here'
-            on a full-format replay. Builds a restored session through
-            GameService.restore_session, wraps it in a fresh controller, and
-            opens a GameScreen so the user actually keeps playing from that
-            authoritative moment.
-            """
-
-            service = self.service
-            restore = getattr(service, "restore_session", None) if service is not None else None
-            if restore is None:
-                self.statusBar().showMessage(tr("replay.continue_public_disabled"), 0)
-                return
-            try:
-                selected_mode = mode if isinstance(mode, GameMode) else GameMode(str(mode))
-            except (ValueError, TypeError):
-                selected_mode = GameMode.HUMAN_RANDOM
-            try:
-                handle = restore(
-                    dict(state_dict),
-                    mode=selected_mode.value,
-                    seed=seed,
-                    artifact_path=artifact_path,
-                    config=self.config,
-                )
-            except Exception as exc:  # never let a restore error crash the UI
-                self.statusBar().showMessage(str(exc) or tr("game.error_generic"), 0)
-                return
-            controller = GameSessionController(service, config=self.config, seed=seed)
-            controller.handle = handle
-            controller.mode = selected_mode
-            controller.active = True
-            controller.paused = False
-            controller._closed = False
-            controller._save_full_replay = selected_mode.is_human or selected_mode.is_spectator
-            controller.mode_ai_versions = controller._derive_ai_versions(selected_mode)
-            if artifact_path:
-                controller.set_ai_metadata({"path": artifact_path})
-            try:
-                controller.state = service.get_state(handle)
-            except Exception:
-                controller.state = None
-            self.controller = controller
-            self._last_mode = selected_mode
-            self._last_artifact = artifact_path
-            self._game_screen = GameScreen(
-                controller, self, on_back=self._show_menu, on_restart=self.on_restart
-            )
-            self._set_screen(self._game_screen)
 
         def closeEvent(self, event: Any) -> None:
             self.controller.close()

@@ -493,15 +493,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Could not delete the replay file.",
         "ko": "리플레이 파일을 삭제하지 못했습니다.",
     },
-    # Item 5: continue a live game from the chosen full-state moment.
-    "replay.continue_from_here": {
-        "en": "Continue from here",
-        "ko": "여기서부터 이어하기",
-    },
-    "replay.continue_public_disabled": {
-        "en": "Only full replays can be resumed. Public (training) replays store observations only.",
-        "ko": "전체 상태 리플레이만 이어서 플레이할 수 있습니다. 공개(학습용) 리플레이는 관측 정보만 저장합니다.",
-    },
     # Item 5: browser labels for the two replay formats.
     "replay.format_public": {"en": "Public", "ko": "공개"},
     "replay.format_full": {"en": "Full state", "ko": "전체 상태"},

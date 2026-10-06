@@ -59,19 +59,14 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             *,
             on_back: Callable[[], None] | None = None,
             replay_directory: str | Path | None = None,
-            on_continue: Callable[..., None] | None = None,
         ) -> None:
             require_qt()
             super().__init__(parent)
             self.model = model
             self.on_back = on_back
-            # Item 5: callback into main_window to resume a live game from a
-            # full-state replay moment.
-            self.on_continue = on_continue
             self._alive = True
             # The currently loaded replay record + its on-disk path (when it was
-            # loaded from the browser). Used by rename/delete (item 10) and the
-            # continue-from-here control (item 5).
+            # loaded from the browser). Used by rename/delete (item 10).
             self._loaded_record: Any = None
             self._loaded_path: Path | None = None
             # Current folder the browser lists replays from. When set the left
@@ -153,11 +148,6 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.prev_button.clicked.connect(self._step_prev)
             self.next_button = QPushButton(tr("replay.next"), self)
             self.next_button.clicked.connect(self._step_next)
-            # Item 5: resume a live game from the current moment. Enabled only
-            # for full-format records (see _refresh_continue_state).
-            self.continue_button = QPushButton(tr("replay.continue_from_here"), self)
-            self.continue_button.clicked.connect(self._on_continue_clicked)
-            self.continue_button.setEnabled(False)
 
             self.speed_label = QLabel(self)
             self.speed_slider = QSlider(Qt.Orientation.Horizontal, self)
@@ -205,7 +195,6 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             controls.addWidget(self.prev_button)
             controls.addWidget(self.play_button)
             controls.addWidget(self.next_button)
-            controls.addWidget(self.continue_button)
 
             speed_row = QHBoxLayout()
             speed_row.addWidget(self.speed_label)
@@ -322,26 +311,8 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             else:
                 self.board.set_human_player(REPLAY_HUMAN_PLAYER)
             self._render_current()
-            self._refresh_continue_state()
             self._update_info_panel()
             self._start_autoplay()
-
-        def _refresh_continue_state(self) -> None:
-            """Enable Continue only for full-format records (item 5).
-
-            A public (training) record stores observations only and cannot be
-            resumed, so the button is disabled with a localized tooltip.
-            """
-
-            record = self._loaded_record
-            replay_format = None
-            if isinstance(record, dict):
-                replay_format = replay_store.replay_summary(record).get("replay_format")
-            is_full = replay_format == "full" and self.on_continue is not None
-            self.continue_button.setEnabled(bool(is_full))
-            self.continue_button.setToolTip(
-                "" if is_full else tr("replay.continue_public_disabled")
-            )
 
         def _on_repath_clicked(self) -> None:
             start_dir = str(self._replay_directory) if self._replay_directory else ""
@@ -451,33 +422,8 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 self._loaded_record = None
                 self._loaded_path = None
                 self._render_current()
-                self._refresh_continue_state()
                 self._update_info_panel()
             self._reload_browser()
-
-        # -- continue from here (item 5) ---------------------------------
-        def _on_continue_clicked(self) -> None:
-            record = self._loaded_record
-            if not isinstance(record, dict) or self.on_continue is None or self.model is None:
-                return
-            if replay_store.replay_summary(record).get("replay_format") != "full":
-                self.status.setText(tr("replay.continue_public_disabled"))
-                return
-            states = record.get("states") or []
-            if not states:
-                self.status.setText(tr("replay.continue_public_disabled"))
-                return
-            # Map the current playback cursor to the parallel authoritative
-            # state; clamp into range so the last state is used at the end.
-            index = max(0, min(int(self.model.index), len(states) - 1))
-            state_dict = states[index]
-            self._play_timer.stop()
-            self.on_continue(
-                state_dict,
-                mode=record.get("mode"),
-                seed=record.get("seed"),
-                artifact_path=None,
-            )
 
         # -- navigation --------------------------------------------------
         def _go_back(self) -> None:
