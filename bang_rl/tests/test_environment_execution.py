@@ -281,3 +281,19 @@ def test_sheriff_traitor_duel_continues_without_a_forced_terminal_state() -> Non
     assert environment.state.termination_status is TerminationStatus.RUNNING
     assert environment.state.terminal_result is None
     assert environment.agent_selection == 4
+
+
+def test_repeated_pass_visits_seats_clockwise_from_the_sheriff() -> None:
+    # Item 2: starting from EnvironmentState.initial (Sheriff seat) and passing
+    # every turn must visit seats in ascending (clockwise) order, wrapping back
+    # to the Sheriff after a full lap.
+    state = EnvironmentState.initial("clockwise", 42)
+    sheriff_seat = state.roles.index(Role.SHERIFF)
+    assert state.agent_selection == sheriff_seat
+    environment = BangEnvironment(state=state, max_episode_steps=None)
+    visited = [environment.state.agent_selection]
+    for _ in range(5):
+        environment.step(0)  # PASS
+        visited.append(environment.state.agent_selection)
+    expected = [(sheriff_seat + offset) % 5 for offset in range(6)]
+    assert visited == expected

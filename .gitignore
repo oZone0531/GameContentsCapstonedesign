@@ -30,3 +30,5 @@ bang_rl/datasets/canonical/*
 !bang_rl/datasets/canonical/.gitkeep
 bang_rl/datasets/cache/*
 !bang_rl/datasets/cache/.gitkeep
+bang_rl/replays/*
+!bang_rl/replays/.gitkeep

@@ -34,6 +34,27 @@ _SCHEMA_TO_KEY = {
 }
 
 
+_FACTION_KEYS = {
+    "sheriff_team": "faction.sheriff_team",
+    "outlaw_team": "faction.outlaw_team",
+    "traitor_team": "faction.traitor_team",
+}
+
+
+def faction_name(faction: Any) -> str:
+    """Return a readable, localized label for a winning-faction id string."""
+
+    if faction is None:
+        return hidden_role_label()
+    if hasattr(faction, "name") and not isinstance(faction, (int, str, bytes)):
+        faction = faction.name
+    text = str(faction).strip().lower()
+    key = _FACTION_KEYS.get(text)
+    if key is not None:
+        return tr(key)
+    return str(faction)
+
+
 def hidden_role_label() -> str:
     """Localized label for an unknown/hidden role."""
 
@@ -67,4 +88,4 @@ def role_name(role: Any) -> str:
     return tr(_ROLE_KEYS[index])
 
 
-__all__ = ["HIDDEN_ROLE_SENTINEL", "hidden_role_label", "role_name"]
+__all__ = ["HIDDEN_ROLE_SENTINEL", "faction_name", "hidden_role_label", "role_name"]

@@ -65,6 +65,7 @@ class IntentPolicyConfig:
     sheriff_role_bonus: float = 1.0
     deputy_role_bonus: float = 0.25
     target_health_weight: float = 0.0
+    relation_target_weight: float = 0.0
     role_target_weights: Mapping[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -82,6 +83,7 @@ class IntentPolicyConfig:
             "sheriff_role_bonus",
             "deputy_role_bonus",
             "target_health_weight",
+            "relation_target_weight",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(float(value)):
@@ -128,6 +130,7 @@ class IntentPolicyConfig:
             "sheriff_role_bonus": float(self.sheriff_role_bonus),
             "deputy_role_bonus": float(self.deputy_role_bonus),
             "target_health_weight": float(self.target_health_weight),
+            "relation_target_weight": float(self.relation_target_weight),
             "role_target_weights": dict(sorted(self.role_target_weights.items())),
         }
 

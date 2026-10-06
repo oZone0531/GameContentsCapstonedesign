@@ -330,6 +330,7 @@ class IntentPolicyConfig(ConfigModel):
     sheriff_role_bonus: float = 1.0
     deputy_role_bonus: float = 0.25
     target_health_weight: float = 0.0
+    relation_target_weight: float = 0.0
     role_target_weights: dict[str, float] = Field(default_factory=dict)
     optimizer: FixedOptimizerConfig = Field(
         default_factory=lambda: FixedOptimizerConfig(learning_rate=0.001)
@@ -347,6 +348,13 @@ class EmotionDefinition(ConfigModel):
     """One configurable DummyAgent emotion and its public update rules."""
 
     name: str = Field(min_length=1)
+    # Free-form, author-written natural-language description of the emotion.
+    # Optional with a default empty string so every pre-existing config (which
+    # has no ``description``) still validates under ConfigModel's extra="forbid"
+    # (that policy only rejects UNKNOWN keys, not declared fields with defaults).
+    # Shown as a tooltip on the emotion bar in spectator mode and replay. This is
+    # author content stored verbatim, not a localization key.
+    description: str = ""
     initial_value: float | None = None
     change_rate: float = 0.0
     decay_rate: float = 0.0
@@ -373,11 +381,25 @@ class EmotionDefinition(ConfigModel):
             "reward_rules": "reward_updates",
             "terminal_rules": "terminal_updates",
             "action_effects": "effects",
+            "desc": "description",
         }
         for source, target in aliases.items():
             if source in values and target not in values:
                 values[target] = values.pop(source)
         return values
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def coerce_description_to_text(cls, value: object) -> str:
+        # ``description`` is free-form author text, never validated for content.
+        # A null degrades to an empty string so a missing / cleared description
+        # renders as no tooltip, and any non-string is coerced via ``str(...)``
+        # so authors cannot break config loading with an odd value.
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        return str(value)
 
     @field_validator(
         "initial_value", "change_rate", "decay_rate", mode="before"
@@ -417,6 +439,25 @@ class EmotionConfig(ConfigModel):
     emotion_count: StrictInt = Field(default=1, ge=1)
     initial_baseline: float = Field(default=0.0, ge=0.0, le=1.0)
     emotions: tuple[EmotionDefinition, ...] = Field(default_factory=tuple)
+    # Per-opponent relation vector configuration (EmotionModule schema "1.1").
+    # ``relation_baseline`` is the neutral value every seat starts at; the
+    # relation vector is SIGNED and clamped to [-1, 1] by the module (a grudge is
+    # negative, trust is positive).  ``relation_updates`` maps a relationship
+    # kind (for example ``shot_by``, ``shot_at``, ``eliminated_by``) to a finite
+    # signed delta.  Both DEFAULT so pre-existing configs behave identically:
+    # with an empty ``relation_updates`` the relation vector never moves.
+    relation_baseline: float = Field(default=0.0, ge=-1.0, le=1.0)
+    relation_updates: dict[str, float] = Field(default_factory=dict)
+    # Public-HP control thresholds (EmotionModule schema "1.1").  The emotion
+    # module derives HP-context bucket keys (``target_low_hp`` / ``target_lethal``
+    # / ``self_low_hp`` / ``self_lethal``) from the PUBLIC per-event ``hp_after``.
+    # Both thresholds DEFAULT to ``None`` so no HP bucket key ever fires and
+    # behaviour is byte-for-byte identical to before this feature.  ``hp_after``
+    # at or below ``hp_lethal_threshold`` yields the ``*_lethal`` bucket; at or
+    # below ``hp_low_threshold`` yields the ``*_low_hp`` bucket.  Configure the
+    # matching keys in an emotion definition's ``event_updates`` to react.
+    hp_low_threshold: int | None = Field(default=None, ge=0)
+    hp_lethal_threshold: int | None = Field(default=None, ge=0)
     encoder: Literal["GRU"] = "GRU"
     hidden_size: Literal[128] = 128
     num_layers: Literal[1] = 1
@@ -461,6 +502,39 @@ class EmotionConfig(ConfigModel):
         if not isfinite(float(value)):
             raise ValueError("initial_baseline must be a finite number in [0, 1]")
         return value
+
+    @field_validator("relation_baseline", mode="before")
+    @classmethod
+    def relation_baseline_must_be_finite_number(cls, value: object) -> object:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("relation_baseline must be a finite number in [-1, 1]")
+        if not isfinite(float(value)):
+            raise ValueError("relation_baseline must be a finite number in [-1, 1]")
+        return value
+
+    @field_validator("hp_low_threshold", "hp_lethal_threshold", mode="before")
+    @classmethod
+    def hp_threshold_must_be_non_negative_int_or_none(cls, value: object) -> object:
+        # ``None`` keeps the HP buckets a strict no-op (the shipped default).  When
+        # a threshold is provided it must be a genuine non-negative integer HP
+        # value; booleans are rejected so ``True``/``False`` never masquerade as 1/0.
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("HP thresholds must be a non-negative integer or None")
+        return value
+
+    @field_validator("relation_updates")
+    @classmethod
+    def relation_updates_must_be_finite(cls, value: dict[str, float]) -> dict[str, float]:
+        normalized: dict[str, float] = {}
+        for key, item in value.items():
+            if not isinstance(key, str) or not key.strip():
+                raise ValueError("relation update keys must be non-empty strings")
+            if isinstance(item, bool) or not isinstance(item, (int, float)) or not isfinite(float(item)):
+                raise ValueError("relation update values must be finite numbers")
+            normalized[key] = float(item)
+        return normalized
 
     @field_validator("schema_version")
     @classmethod

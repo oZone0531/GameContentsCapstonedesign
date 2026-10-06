@@ -5,12 +5,16 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from ..dialogs import DummyAISettingsDialog
 from ..i18n import LANGUAGE_LABELS, LANGUAGES, current_language, set_language, tr
 from ..qt_compat import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
     QLabel,
     QPlainTextEdit,
     QPushButton,
@@ -55,10 +59,23 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             self.clip.setRange(0.000001, 0.999999)
             self.clip.setDecimals(6)
             self.clip.setValue(self.editor.snapshot.ppo_clip_epsilon)
-            self.baseline = QDoubleSpinBox(self)
-            self.baseline.setRange(0.0, 1.0)
-            self.baseline.setDecimals(4)
-            self.baseline.setValue(self.editor.snapshot.emotion_initial_baseline)
+            # Per-emotion initial-value editor for the dummy AI. One spinbox is
+            # built per emotion currently in ``config.preset.emotion`` (works
+            # for any emotion_count, not a hard-coded 6).
+            self.emotion_group = QGroupBox(tr("settings.emotion_initial_values"), self)
+            self.emotion_form = QFormLayout(self.emotion_group)
+            self.emotion_initial_help = QLabel(tr("settings.emotion_initial_help"), self.emotion_group)
+            self.emotion_initial_help.setWordWrap(True)
+            self.emotion_form.addRow(self.emotion_initial_help)
+            self.emotion_spins: list[QDoubleSpinBox] = []
+            self.emotion_names: list[str] = []
+            self._build_emotion_spins()
+            self.dummy_ai_button = QPushButton(tr("settings.dummy_ai"), self)
+            self.dummy_ai_button.clicked.connect(self._open_dummy_ai)
+            self.emotion_save_button = QPushButton(tr("settings.emotion_save_file"), self)
+            self.emotion_save_button.clicked.connect(self._save_emotion_file)
+            self.emotion_load_button = QPushButton(tr("settings.emotion_load_file"), self)
+            self.emotion_load_button.clicked.connect(self._load_emotion_file)
             self.cpu = QSpinBox(self)
             self.cpu.setRange(1, 4096)
             self.cpu.setValue(hardware["cpu_cores"])
@@ -87,24 +104,155 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             self.back_button.clicked.connect(self._go_back)
             self.reward_label = QLabel(tr("settings.reward_json"), self)
 
+            self._apply_tooltips()
+
             form = QFormLayout()
             form.addRow(tr("settings.language"), self.language)
             form.addRow(tr("settings.ppo_clip"), self.clip)
-            form.addRow(tr("settings.emotion_baseline"), self.baseline)
             form.addRow(tr("settings.cpu"), self.cpu)
             form.addRow(tr("settings.ram"), self.ram)
             form.addRow(tr("settings.workers"), self.workers)
             form.addRow(tr("settings.batch"), self.batch)
             form.addRow(tr("settings.buffer"), self.buffer)
             form.addRow(tr("settings.gpu"), self.gpu)
+            # Keep the form so _apply_tooltips() (also called on language change)
+            # can attach tooltips to the menu LABELS, not just the fields.
+            self.form = form
+            self._apply_label_tooltips()
             layout = QVBoxLayout(self)
             layout.addWidget(self.back_button)
             layout.addLayout(form)
+            layout.addWidget(self.emotion_group)
+            layout.addWidget(self.dummy_ai_button)
+            emotion_file_row = QHBoxLayout()
+            emotion_file_row.addWidget(self.emotion_save_button)
+            emotion_file_row.addWidget(self.emotion_load_button)
+            layout.addLayout(emotion_file_row)
             layout.addWidget(self.reward_label)
             layout.addWidget(self.reward)
             layout.addWidget(self.help)
             layout.addWidget(self.save_button)
             layout.addWidget(self.error)
+
+        def _build_emotion_spins(self) -> None:
+            """(Re)create one initial-value spinbox per configured emotion."""
+
+            for spin in self.emotion_spins:
+                label = self.emotion_form.labelForField(spin)
+                if label is not None:
+                    label.setParent(None)
+                    label.deleteLater()
+                spin.setParent(None)
+                spin.deleteLater()
+            self.emotion_spins = []
+            self.emotion_names = []
+            baseline = self.editor.snapshot.emotion_initial_baseline
+            for definition in self.editor.snapshot.dummy_emotions:
+                name = str(definition.get("name", ""))
+                spin = QDoubleSpinBox(self.emotion_group)
+                spin.setRange(0.0, 1.0)
+                spin.setDecimals(4)
+                initial = definition.get("initial_value")
+                spin.setValue(float(initial) if initial is not None else float(baseline))
+                spin.setToolTip(tr("tooltip.emotion_initial_values"))
+                self.emotion_form.addRow(name, spin)
+                self.emotion_spins.append(spin)
+                self.emotion_names.append(name)
+
+        def _apply_tooltips(self) -> None:
+            """Set localized mouse-over help on every settings field.
+
+            Called once on build and again from _retranslate() so a language
+            switch updates the help text. Each per-emotion initial-value spin
+            also gets the shared emotion tooltip.
+            """
+
+            self.language.setToolTip(tr("tooltip.language"))
+            self.clip.setToolTip(tr("tooltip.ppo_clip"))
+            self.cpu.setToolTip(tr("tooltip.cpu"))
+            self.ram.setToolTip(tr("tooltip.ram"))
+            self.workers.setToolTip(tr("tooltip.workers"))
+            self.batch.setToolTip(tr("tooltip.batch"))
+            self.buffer.setToolTip(tr("tooltip.buffer"))
+            self.gpu.setToolTip(tr("tooltip.gpu"))
+            self.reward.setToolTip(tr("tooltip.reward_json"))
+            self.reward_label.setToolTip(tr("tooltip.reward_json"))
+            self.emotion_group.setToolTip(tr("tooltip.emotion_initial_values"))
+            self.dummy_ai_button.setToolTip(tr("tooltip.dummy_ai"))
+            self.emotion_save_button.setToolTip(tr("tooltip.emotion_save_file"))
+            self.emotion_load_button.setToolTip(tr("tooltip.emotion_load_file"))
+            for spin in self.emotion_spins:
+                spin.setToolTip(tr("tooltip.emotion_initial_values"))
+
+        def _apply_label_tooltips(self) -> None:
+            """Attach mouse-over help to each QFormLayout menu LABEL.
+
+            Item 3: hover help must cover the setting menu labels (Language,
+            PPO clip, CPU cores, RAM, Workers, Batch, Buffer, GPU) themselves,
+            not only the input fields. Called after the form is built and again
+            from _retranslate() so a language switch updates the label tooltips.
+            The form may not exist yet on the first _apply_tooltips() call, so
+            this is a separate method guarded by a getattr check.
+            """
+
+            form = getattr(self, "form", None)
+            if form is None:
+                return
+            label_tooltips = (
+                (self.language, "tooltip.language"),
+                (self.clip, "tooltip.ppo_clip"),
+                (self.cpu, "tooltip.cpu"),
+                (self.ram, "tooltip.ram"),
+                (self.workers, "tooltip.workers"),
+                (self.batch, "tooltip.batch"),
+                (self.buffer, "tooltip.buffer"),
+                (self.gpu, "tooltip.gpu"),
+            )
+            for field, key in label_tooltips:
+                label = form.labelForField(field)
+                if label is not None:
+                    label.setToolTip(tr(key))
+
+        def _open_dummy_ai(self) -> None:
+            dialog = DummyAISettingsDialog(self.editor, parent=self, on_applied=self._on_dummy_applied)
+            dialog.exec()
+
+        def _on_dummy_applied(self) -> None:
+            # The dummy-AI dialog may have changed emotion names/count; rebuild
+            # the per-emotion initial-value rows to match the staged config.
+            self._build_emotion_spins()
+            self.error.setText(tr("settings.dummy_ai_applied"))
+
+        def _save_emotion_file(self) -> None:
+            path, _ = QFileDialog.getSaveFileName(
+                self, tr("settings.emotion_save_file"), "", tr("settings.emotion_file_filter")
+            )
+            if not path:
+                return
+            try:
+                # Stage the per-emotion initial values shown on this screen so
+                # the saved file matches what the user sees.
+                if self.emotion_spins:
+                    self.editor.apply_dummy_emotion(self._emotion_initial_payload())
+                self.editor.export_dummy_emotion(path)
+            except SettingsValidationError as exc:
+                self.error.setText(str(exc))
+                return
+            self.error.setText(tr("settings.emotion_file_saved", path=path))
+
+        def _load_emotion_file(self) -> None:
+            path, _ = QFileDialog.getOpenFileName(
+                self, tr("settings.emotion_load_file"), "", tr("settings.emotion_file_filter")
+            )
+            if not path:
+                return
+            try:
+                self.editor.import_dummy_emotion(path)
+            except SettingsValidationError as exc:
+                self.error.setText(str(exc))
+                return
+            self._build_emotion_spins()
+            self.error.setText(tr("settings.emotion_file_loaded", path=path))
 
         def _change_language(self, _index: int) -> None:
             code = self.language.currentData()
@@ -121,6 +269,13 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             self.save_button.setText(tr("settings.save"))
             self.back_button.setText(tr("common.back"))
             self.reward_label.setText(tr("settings.reward_json"))
+            self.emotion_group.setTitle(tr("settings.emotion_initial_values"))
+            self.emotion_initial_help.setText(tr("settings.emotion_initial_help"))
+            self.dummy_ai_button.setText(tr("settings.dummy_ai"))
+            self.emotion_save_button.setText(tr("settings.emotion_save_file"))
+            self.emotion_load_button.setText(tr("settings.emotion_load_file"))
+            self._apply_tooltips()
+            self._apply_label_tooltips()
 
         def _go_back(self) -> None:
             if self.on_back is not None:
@@ -133,7 +288,6 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
                 raise SettingsValidationError(({"loc": ("reward_config",), "msg": str(exc)},)) from exc
             return {
                 "ppo_clip_epsilon": self.clip.value(),
-                "emotion_initial_baseline": self.baseline.value(),
                 "hardware": {
                     "cpu_cores": self.cpu.value(),
                     "ram_gb": self.ram.value(),
@@ -145,8 +299,23 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
                 "reward_config": reward,
             }
 
+        def _emotion_initial_payload(self) -> dict[str, Any]:
+            """Build a preset-emotion mapping with the edited per-emotion values."""
+
+            emotion = dict(self.editor.snapshot.dummy_emotion)
+            definitions = [dict(item) for item in (emotion.get("emotions") or [])]
+            for index, spin in enumerate(self.emotion_spins):
+                if index < len(definitions):
+                    definitions[index]["initial_value"] = spin.value()
+            emotion["emotions"] = definitions
+            return emotion
+
         def _save(self) -> None:
             try:
+                # Stage the per-emotion initial values into config.preset.emotion
+                # first, then the flat training/hardware/reward values.
+                if self.emotion_spins:
+                    self.editor.apply_dummy_emotion(self._emotion_initial_payload())
                 self.editor.apply(self._values())
                 self.editor.save()
                 self.error.setText(tr("settings.saved"))

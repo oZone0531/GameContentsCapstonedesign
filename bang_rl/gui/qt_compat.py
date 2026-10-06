@@ -14,7 +14,17 @@ class GuiDependencyError(RuntimeError):
 
 
 try:  # pragma: no cover - availability depends on the host environment
-    from PyQt6.QtCore import QObject, QTimer, Qt, pyqtSignal
+    from PyQt6.QtCore import QObject, QPointF, QRectF, QTimer, Qt, pyqtSignal
+    from PyQt6.QtGui import (
+        QBrush,
+        QColor,
+        QFont,
+        QFontMetrics,
+        QPainter,
+        QPen,
+        QPolygonF,
+    )
+    from PyQt6.QtWidgets import QToolTip
     from PyQt6.QtWidgets import (
         QApplication,
         QCheckBox,
@@ -22,17 +32,23 @@ try:  # pragma: no cover - availability depends on the host environment
         QDialog,
         QDialogButtonBox,
         QDoubleSpinBox,
+        QFileDialog,
         QFormLayout,
         QGroupBox,
         QHBoxLayout,
+        QHeaderView,
+        QInputDialog,
         QLabel,
         QLineEdit,
         QListWidget,
         QListWidgetItem,
         QMainWindow,
+        QMessageBox,
         QPlainTextEdit,
         QProgressBar,
         QPushButton,
+        QScrollArea,
+        QSlider,
         QSpinBox,
         QStackedWidget,
         QTableWidget,
@@ -48,12 +64,18 @@ except ImportError as exc:  # pragma: no cover - exercised when Qt is absent
     QT_AVAILABLE = False
     QT_IMPORT_ERROR = exc
     QObject = QTimer = Qt = pyqtSignal = QApplication = None
+    QPointF = QRectF = None
+    QFont = None
+    QBrush = QColor = QFontMetrics = QPainter = QPen = QPolygonF = None
     QComboBox = None
-    QCheckBox = QDialog = QDialogButtonBox = QDoubleSpinBox = None
-    QFormLayout = QGroupBox = QHBoxLayout = QLabel = QLineEdit = None
-    QListWidget = QListWidgetItem = QMainWindow = QPlainTextEdit = None
-    QProgressBar = QPushButton = QSpinBox = QStackedWidget = None
-    QTableWidget = QTableWidgetItem = QTabWidget = QVBoxLayout = QWidget = None
+    QCheckBox = QDialog = QDialogButtonBox = QDoubleSpinBox = QFileDialog = None
+    QFormLayout = QGroupBox = QHBoxLayout = QHeaderView = QInputDialog = None
+    QLabel = QLineEdit = None
+    QListWidget = QListWidgetItem = QMainWindow = QMessageBox = QPlainTextEdit = None
+    QProgressBar = QPushButton = QScrollArea = QSlider = QSpinBox = None
+    QStackedWidget = QTableWidget = QTableWidgetItem = QTabWidget = None
+    QVBoxLayout = QWidget = None
+    QToolTip = None
 
 
 def require_qt() -> None:
@@ -70,28 +92,44 @@ __all__ = [
     "GuiDependencyError",
     "QT_AVAILABLE",
     "QApplication",
+    "QBrush",
     "QCheckBox",
+    "QColor",
     "QComboBox",
     "QDialog",
     "QDialogButtonBox",
     "QDoubleSpinBox",
+    "QFileDialog",
+    "QFont",
+    "QFontMetrics",
     "QFormLayout",
     "QGroupBox",
     "QHBoxLayout",
+    "QHeaderView",
+    "QInputDialog",
     "QLabel",
     "QLineEdit",
     "QListWidget",
     "QListWidgetItem",
     "QMainWindow",
+    "QMessageBox",
+    "QPainter",
+    "QPen",
     "QPlainTextEdit",
+    "QPointF",
+    "QPolygonF",
     "QProgressBar",
     "QPushButton",
+    "QRectF",
+    "QScrollArea",
+    "QSlider",
     "QSpinBox",
     "QStackedWidget",
     "QTableWidget",
     "QTableWidgetItem",
     "QTabWidget",
     "QTimer",
+    "QToolTip",
     "QVBoxLayout",
     "QWidget",
     "require_qt",

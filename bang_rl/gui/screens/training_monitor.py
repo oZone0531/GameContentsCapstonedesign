@@ -6,6 +6,8 @@ from typing import Any
 
 from collections.abc import Callable
 
+from bang_rl.paths import ARTIFACTS_DIR, OUTPUTS_DIR, REPORTS_DIR
+
 from ..qt_compat import (
     QDoubleSpinBox,
     QFormLayout,
@@ -69,6 +71,23 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             form.addRow(tr("training.output_path"), self.output)
             form.addRow(tr("training.artifact_path"), self.artifact)
             form.addRow(tr("training.resume_artifact_path"), self.resume_artifact)
+            # Item 3: hover help on every field AND its QFormLayout label so the
+            # AI-training settings menu gets mouse-over tooltips too.
+            field_tooltips = (
+                (self.mode, "tooltip.training_mode"),
+                (self.episodes, "tooltip.training_episodes"),
+                (self.target, "tooltip.training_target"),
+                (self.seed, "tooltip.training_seed"),
+                (self.report, "tooltip.training_report_path"),
+                (self.output, "tooltip.training_output_path"),
+                (self.artifact, "tooltip.training_artifact_path"),
+                (self.resume_artifact, "tooltip.training_resume_artifact_path"),
+            )
+            for field, key in field_tooltips:
+                field.setToolTip(tr(key))
+                label = form.labelForField(field)
+                if label is not None:
+                    label.setToolTip(tr(key))
 
         def setup(self) -> TrainingSetup:
             target = self.target.value() or None

@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from pydantic import ValidationError
 
-from bang_rl.config import ConfigService, SystemConfig
+from bang_rl.config import ConfigFileError, ConfigService, EmotionConfig, SystemConfig
 
 
 RESOURCE_HELP = (
@@ -59,6 +59,25 @@ class SettingsSnapshot:
     @property
     def reward_config(self) -> Mapping[str, Any]:
         return self.config.reward_config.model_dump(mode="json")
+
+    @property
+    def dummy_emotion(self) -> Mapping[str, Any]:
+        """The dummy AI's full emotion config as a JSON-safe mapping."""
+
+        return self.config.preset.emotion.model_dump(mode="json")
+
+    @property
+    def dummy_emotions(self) -> tuple[Mapping[str, Any], ...]:
+        """One JSON-safe mapping per configured dummy-AI emotion."""
+
+        return tuple(
+            definition.model_dump(mode="json")
+            for definition in self.config.preset.emotion.emotions
+        )
+
+    @property
+    def dummy_emotion_count(self) -> int:
+        return int(self.config.preset.emotion.emotion_count)
 
 
 class SettingsEditor:
@@ -118,6 +137,57 @@ class SettingsEditor:
 
     def update(self, **values: Any) -> SettingsSnapshot:
         return self.apply(values)
+
+    def apply_dummy_emotion(self, emotion: Mapping[str, Any]) -> SettingsSnapshot:
+        """Stage an edited dummy-AI emotion config into ``config.preset.emotion``.
+
+        The full preset dict is rebuilt from the current draft and only its
+        ``emotion`` entry is replaced, so the edit flows through the existing
+        ``preset`` key in :meth:`_payload` and is validated by Pydantic exactly
+        like every other staged change (unique names, ``initial_value`` in
+        ``[0, 1]``, finite rules, ``emotion_count >= 1``).
+        """
+
+        preset = self._config.preset.model_dump(mode="python")
+        preset["emotion"] = dict(emotion)
+        return self.apply({"preset": preset})
+
+    def export_dummy_emotion(self, path: str | Path) -> Path:
+        """Write the staged ``config.preset.emotion`` to a standalone file.
+
+        The file contains ONLY the emotion config (``schema_version``,
+        ``emotion_count``, ``initial_baseline``, ``emotions[...]``) as YAML or
+        JSON (dispatched on the path suffix by :class:`ConfigService`), so it
+        can be edited by hand outside the GUI and re-loaded with
+        :meth:`import_dummy_emotion`.
+        """
+
+        destination = Path(path)
+        try:
+            self.config_service.save(destination, self._config.preset.emotion, EmotionConfig)
+        except ValidationError as exc:
+            raise SettingsValidationError(self._error_list(exc)) from exc
+        except ConfigFileError as exc:
+            raise SettingsValidationError(({"loc": ("emotion",), "msg": str(exc)},)) from exc
+        return destination
+
+    def import_dummy_emotion(self, path: str | Path) -> SettingsSnapshot:
+        """Load a standalone emotion file and stage it as the dummy AI emotion.
+
+        The document is validated into an :class:`EmotionConfig` and staged
+        through :meth:`apply_dummy_emotion`, so Pydantic rules (unique names,
+        ``initial_value`` in ``[0, 1]``, finite rules, ``emotion_count >= 1``)
+        surface as a readable :class:`SettingsValidationError` rather than a raw
+        traceback.
+        """
+
+        try:
+            loaded = self.config_service.load(path, EmotionConfig)
+        except ValidationError as exc:
+            raise SettingsValidationError(self._error_list(exc)) from exc
+        except ConfigFileError as exc:
+            raise SettingsValidationError(({"loc": ("emotion",), "msg": str(exc)},)) from exc
+        return self.apply_dummy_emotion(loaded.model_dump(mode="json"))
 
     def save(self, path: str | Path | None = None) -> SettingsSnapshot:
         destination = Path(path or self._source_path or "config.json")

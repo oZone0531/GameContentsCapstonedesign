@@ -124,13 +124,17 @@ class EnvironmentState:
     @classmethod
     def initial(cls, episode_id: str, seed: int) -> "EnvironmentState":
         roles = assign_roles(seed)
+        # ITEM 2: the game must always start on the Sheriff's seat and then
+        # proceed clockwise. _next_alive() in environment.py advances by
+        # (start + offset) % PLAYER_COUNT over ascending seats (== clockwise),
+        # so starting on the Sheriff yields Sheriff-first, clockwise play.
         return cls(
             episode_id=str(episode_id),
             seed=int(seed),
             roles=roles,
             health=initial_health(roles),
             alive=tuple(True for _ in range(PLAYER_COUNT)),
-            agent_selection=0,
+            agent_selection=roles.index(Role.SHERIFF),
         )
 
     # -- privileged serialization -----------------------------------------
@@ -196,15 +200,11 @@ class EnvironmentState:
         known = self._known_roles()
         known[viewer_idx] = self.roles[viewer_idx]
 
-        # Logical deduction: if only one role remains unknown, it is confirmed.
-        deduced: set[int] = set()
-        unknown = [i for i in range(PLAYER_COUNT) if i not in known]
-        if len(unknown) == 1:
-            remaining = set(Role) - set(known.values())
-            if len(remaining) == 1:
-                slot = unknown[0]
-                known[slot] = next(iter(remaining))
-                deduced.add(slot)
+        # By game rule only the Sheriff (and eliminated players) are ever
+        # public: a living non-sheriff, non-self role must never be inferred
+        # for the viewer. The former "logical deduction" step could reveal a
+        # living teammate (e.g. a deputy's teammate) by elimination of
+        # alternatives, so it is intentionally not performed here.
 
         revealed_roles: list[int] = []
         visibility: list[RoleVisibility] = []
@@ -219,8 +219,6 @@ class EnvironmentState:
             revealed_roles.append(int(role))
             if index == viewer_idx:
                 visibility.append(RoleVisibility.SELF)
-            elif index in deduced:
-                visibility.append(RoleVisibility.CONFIRMED)
             else:
                 visibility.append(RoleVisibility.REVEALED)
             row = [0.0] * ROLE_COUNT

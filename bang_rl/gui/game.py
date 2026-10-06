@@ -19,6 +19,46 @@ else:
     SessionHandle = Any
 
 
+def _plain_copy(value: Any) -> Any:
+    """Return a detached, JSON-safe deep copy with every mapping thawed.
+
+    The GUI's replay buffer stores the public ``observation`` which the app
+    service freezes via ``_freeze`` into a tree of ``types.MappingProxyType``
+    (nested dicts) and tuples. ``copy.deepcopy`` cannot pickle a
+    ``mappingproxy`` and raises ``TypeError('cannot pickle mappingproxy
+    object')``; relying on it silently dropped every event-carrying turn. This
+    helper instead recursively rebuilds the structure using plain ``dict`` /
+    ``list`` containers, producing a mutation-safe, JSON-safe deep copy that
+    preserves the cumulative ``event_sequence``.
+
+    Qt-free and numpy-free: numpy scalars/arrays (should they ever reach here)
+    are defensively unwrapped via their ``.tolist()`` / ``.item()`` protocol
+    WITHOUT importing numpy.
+    """
+
+    if isinstance(value, Mapping):
+        return {str(key): _plain_copy(sub) for key, sub in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_copy(item) for item in value]
+    if isinstance(value, (str, bytes, bool, int, float)) or value is None:
+        return value
+    # Defensive numpy-free unwrap: a numpy array exposes .tolist(); a numpy
+    # scalar exposes .item(). Convert then recurse so the result stays plain.
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        try:
+            return _plain_copy(tolist())
+        except Exception:
+            pass
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return _plain_copy(item())
+        except Exception:
+            pass
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class _GuiSessionConfig:
     """Fallback request shape used by headless/mock service seams."""
@@ -37,6 +77,11 @@ class GameMode(str, Enum):
     HUMAN_RANDOM = "human_random"
     HUMAN_DUMMY = "human_dummy"
     HUMAN_MAIN_DUMMY = "human_main_dummy"
+    # Item 6: all-AI spectator modes. The human cannot influence these games;
+    # every seat is AI-driven and the human only watches (speed slider + log).
+    RANDOM_FIVE = "random_five"
+    DUMMY_FIVE = "dummy_five"
+    MAIN_ONE_DUMMY_FOUR = "main_one_dummy_four"
 
     @property
     def label(self) -> str:
@@ -44,7 +89,30 @@ class GameMode(str, Enum):
             self.HUMAN_RANDOM: "Human 1 vs Random AI 4",
             self.HUMAN_DUMMY: "Human 1 vs Dummy AI 4",
             self.HUMAN_MAIN_DUMMY: "Human 1 vs Main AI 1 + Dummy AI 3",
+            self.RANDOM_FIVE: "Random AI x5",
+            self.DUMMY_FIVE: "Dummy AI x5",
+            self.MAIN_ONE_DUMMY_FOUR: "Main AI 1 vs Dummy AI 4",
         }[self]
+
+    @property
+    def is_spectator(self) -> bool:
+        """``True`` for the all-AI modes the human only watches (item 6)."""
+
+        return self in (
+            GameMode.RANDOM_FIVE,
+            GameMode.DUMMY_FIVE,
+            GameMode.MAIN_ONE_DUMMY_FOUR,
+        )
+
+    @property
+    def is_human(self) -> bool:
+        """``True`` for the modes a human actually plays a seat in."""
+
+        return self in (
+            GameMode.HUMAN_RANDOM,
+            GameMode.HUMAN_DUMMY,
+            GameMode.HUMAN_MAIN_DUMMY,
+        )
 
 
 class GameServicePort(Protocol):
@@ -100,6 +168,49 @@ class GameSessionController:
         self.active = False
         self._closed = False
         self.message: str | None = None
+        # Replay capture (FEAT-003). Every human game is auto-saved on terminal.
+        # ai_metadata is optional artifact metadata (incl. version) supplied by
+        # main_window when a Main-AI model is chosen; mode_ai_versions maps each
+        # non-human seat to its AI descriptor. _replay_observations accumulates a
+        # deep-copyable public observation per turn and _replay_saved guards the
+        # one-save-per-episode rule.
+        self.ai_metadata: Mapping[str, Any] | None = None
+        self.mode_ai_versions: dict[str, Any] = {}
+        self._replay_observations: list[dict[str, Any]] = []
+        # Item 5: authoritative per-turn EnvironmentState dicts captured from the
+        # service (when it exposes them) so a moment can be restored to a live,
+        # continuable session. Parallel to _replay_observations (one per turn).
+        self._replay_states: list[dict[str, Any]] = []
+        # Item 4: authoritative per-turn AI-internals snapshots (every player's
+        # HP plus each dummy / main AI's emotion state and current role belief /
+        # guess), captured from the service (when it exposes them) so a moment
+        # can be restored with AI internals. Dummy internals round-trip fully;
+        # the main AI is best-effort (only an active inference stream buffer is
+        # captured, when present). Index-parallel to _replay_observations and
+        # _replay_states (one per turn; a None placeholder on export miss keeps
+        # the three buffers aligned).
+        self._replay_internals: list[dict[str, Any] | None] = []
+        self._replay_saved = False
+        # Item 5/6: human-played and AI-spectator games persist the FULL
+        # reproduction-state replay format; AI-training lines stay public-only.
+        self._save_full_replay = False
+        # Time-travel (FEAT-004 item 8). While previewing a past moment the
+        # live session state is stashed here so resume_live() can restore it.
+        # ``previewing`` marks that self.state currently holds a historic,
+        # read-only snapshot rather than the live session state.
+        self.previewing = False
+        self._live_state: PublicGameState | None = None
+        self._live_active = False
+        self._live_paused = False
+
+    def set_ai_metadata(self, metadata: Mapping[str, Any] | None) -> None:
+        """Record artifact metadata (incl. version) for the Main-AI seat.
+
+        Called by main_window when a Main-AI model is selected so the saved
+        replay can record which AI version was used. Kept Qt-free.
+        """
+
+        self.ai_metadata = dict(metadata) if metadata else None
 
     @property
     def snapshot(self) -> GameControllerSnapshot:
@@ -111,9 +222,18 @@ class GameSessionController:
             self.on_update(snapshot)
         return snapshot
 
-    def start(self, mode: GameMode | str, *, artifact_path: str | None = None) -> GameControllerSnapshot:
+    def start(
+        self,
+        mode: GameMode | str,
+        *,
+        artifact_path: str | None = None,
+        advance_ai: bool = True,
+    ) -> GameControllerSnapshot:
         selected = mode if isinstance(mode, GameMode) else GameMode(str(mode))
-        if selected is GameMode.HUMAN_MAIN_DUMMY and not artifact_path:
+        if (
+            selected in (GameMode.HUMAN_MAIN_DUMMY, GameMode.MAIN_ONE_DUMMY_FOUR)
+            and not artifact_path
+        ):
             raise GameGuiError("Select a compatible .bangmodel before starting Main AI mode.")
         if self.active:
             self.close()
@@ -142,7 +262,26 @@ class GameSessionController:
             self.active = True
             self._closed = False
             self.message = None
-            self._advance_to_human_turn()
+            # Reset replay capture for the new episode and derive the AI
+            # descriptor for each non-human seat from the mode (+ optional
+            # artifact metadata for the Main-AI seat).
+            self._replay_observations = []
+            self._replay_states = []
+            self._replay_internals = []
+            self._replay_saved = False
+            # Human-played and AI-spectator games both save the FULL replay
+            # format (item 5/6); a public-only save is used elsewhere.
+            self._save_full_replay = selected.is_human or selected.is_spectator
+            self.mode_ai_versions = self._derive_ai_versions(selected)
+            self._record_replay_snapshot()
+            # Item 1 (FEAT-003): when ``advance_ai`` is False the graphical
+            # screen drives the AI cadence itself (via step_single_ai_turn on a
+            # QTimer) so the initial Sheriff-first run-up is ANIMATED one turn at
+            # a time instead of silently fast-forwarded. The default (True)
+            # preserves the synchronous fast-forward for headless/default
+            # callers so existing tests and the FakeService flow are unchanged.
+            if advance_ai:
+                self._advance_to_human_turn()
             return self._publish()
         except Exception as exc:
             if self.handle is not None and not self._closed:
@@ -158,9 +297,17 @@ class GameSessionController:
             self._publish()
             raise GameGuiError(self.message) from exc
 
-    def submit_human_action(self, action: int) -> GameControllerSnapshot:
+    def submit_human_action(self, action: int, *, advance_ai: bool = True) -> GameControllerSnapshot:
         if not self.active or self.handle is None or self.state is None:
             raise GameGuiError("No active game session.")
+        if self.mode is not None and self.mode.is_spectator:
+            # Item 6: in a spectator (all-AI) game the human can never influence
+            # play. A submitted action is a no-op that only surfaces a localized
+            # notice; the game is NEVER stepped from a human action here.
+            from bang_rl.gui.i18n import tr
+
+            self.message = tr("game.spectator_no_actions")
+            return self._publish()
         if self.paused:
             self.message = "Game is paused. Resume before choosing an action."
             return self._publish()
@@ -178,14 +325,367 @@ class GameSessionController:
             result = self.service.step(self.handle, normalized)
             self.state = result.state
             self.message = None
+            self._record_replay_snapshot()
             self._finish_if_terminal()
-            if self.active:
+            # When ``advance_ai`` is False the caller (the graphical screen)
+            # drives the AI cadence one turn at a time via step_single_ai_turn
+            # on a QTimer, so the controller must not fast-forward here.
+            if self.active and advance_ai:
                 self._advance_to_human_turn()
             return self._publish()
         except Exception as exc:
             self.message = self._error_message(exc)
             self._publish()
             raise GameGuiError(self.message) from exc
+
+    def is_ai_turn(self) -> bool:
+        """Return ``True`` when it is an AI seat's turn on an active session."""
+
+        if not (
+            self.active
+            and not self.paused
+            and self.state is not None
+            and not (self.state.terminated or self.state.truncated)
+        ):
+            return False
+        # Item 6: in a spectator (all-AI) game EVERY seat -- including seat 0 --
+        # is AI-driven, so the single-step AI cadence drives all five seats.
+        if self.mode is not None and self.mode.is_spectator:
+            return True
+        return self.state.current_player != self.HUMAN_PLAYER
+
+    def step_single_ai_turn(self) -> GameControllerSnapshot:
+        """Advance exactly ONE AI turn, then publish the new snapshot.
+
+        Unlike :meth:`_advance_to_human_turn`, which loops until the human seat
+        is reached, this performs at most a single ``service.step`` so the GUI
+        can animate AI turns one at a time on a QTimer.  It is a no-op when it
+        is not an AI seat's turn (human active, paused, terminal, or inactive),
+        which lets the caller poll it safely.  Kept Qt-free and covered by the
+        FakeService tests.
+        """
+
+        if not self.is_ai_turn() or self.handle is None:
+            return self._publish()
+        try:
+            result = self.service.step(self.handle)
+            self.state = result.state
+            self.message = None
+            self._record_replay_snapshot()
+            self._finish_if_terminal()
+            return self._publish()
+        except Exception as exc:
+            self.message = self._error_message(exc)
+            self._publish()
+            raise GameGuiError(self.message) from exc
+
+    def time_travel_to(self, moment: Any) -> GameControllerSnapshot:
+        """Rewind the board to a recorded ``moment`` (item 8).
+
+        ``moment`` may be a log-row index, an ``environment_step`` int, or an
+        event mapping. The recorded per-turn public observations
+        (``self._replay_observations``, populated by :meth:`_record_replay_snapshot`)
+        are wrapped in a Qt-free :class:`~bang_rl.gui.replay.ReplayModel`, which
+        maps the moment to the snapshot representing the game *as of* that
+        moment; that historic snapshot is published so the board and log show
+        exactly that point in time.
+
+        Behaviour chosen (documented in FEAT-004 findings): a REVIEW-then-continue
+        rewind. ``GameService`` sessions are seeded and deterministic, but the
+        public observations recorded here do NOT capture the human's individual
+        chosen actions unambiguously (a PASS produces no public event, and the
+        BANG action index cannot always be recovered from the public event
+        projection alone), so a faithful deterministic re-seek is not achievable
+        through the current service API. Instead the controller seeks the board
+        to the chosen moment as a clearly-labelled read-only preview
+        (``previewing`` True, ``active`` False) while stashing the live session
+        state; :meth:`resume_live` restores the live session so the human can
+        continue playing the LIVE game (not a new line forked from the past
+        moment). This keeps all branching logic Qt-free and never reads private
+        role state.
+
+        When the live game is already over (terminal, so ``self.active`` is
+        False), there is no live turn to resume, so the rewind is a pure
+        read-only review: the message uses ``game.time_travel_hint_terminal``
+        and leaving the log simply clears the preview.
+
+        Returns the current snapshot; a no-op (unchanged snapshot) when there is
+        nothing recorded to rewind to.
+        """
+
+        if not self._replay_observations:
+            return self._publish()
+        try:
+            from bang_rl.gui.replay import ReplayModel
+        except (ImportError, SyntaxError):
+            return self._publish()
+        try:
+            model = ReplayModel(list(self._replay_observations))
+        except (TypeError, ValueError):
+            return self._publish()
+        if model.is_empty():
+            return self._publish()
+        snapshot = self._resolve_moment(model, moment)
+        if snapshot is None:
+            return self._publish()
+        # Stash the live session state exactly once (the first rewind) so a
+        # later resume restores it even after several previews. Remember whether
+        # that stashed state is actually a resumable LIVE turn (active) so the
+        # hint does not over-promise "continue" on an already-finished game.
+        if not self.previewing:
+            self._live_state = self.state
+            self._live_active = self.active
+            self._live_paused = self.paused
+        self.previewing = True
+        self.state = snapshot
+        # A previewed historic moment is read-only: it is not the live turn.
+        self.active = False
+        self.paused = False
+        step = getattr(snapshot, "environment_step", None)
+        self.message = self._time_travel_message(step, resumable=self._live_active)
+        return self._publish()
+
+    @staticmethod
+    def _resolve_moment(model: Any, moment: Any) -> Any:
+        """Map a log-row / step / event ``moment`` to a replay snapshot."""
+
+        if isinstance(moment, Mapping):
+            index = model.index_for_event(moment)
+            return None if index is None else model.snapshot_at(index)
+        # Prefer a log-row interpretation (the GUI passes the clicked row), and
+        # fall back to treating the value as an environment_step.
+        try:
+            row = int(moment)
+        except (TypeError, ValueError):
+            return model.snapshot_for_moment(moment)
+        index = model.index_for_log_row(row)
+        if index is not None:
+            return model.snapshot_at(index)
+        return model.snapshot_for_moment(row)
+
+    @staticmethod
+    def _time_travel_message(step: Any, *, resumable: bool = True) -> str:
+        from bang_rl.gui.i18n import tr
+
+        try:
+            step_int = int(step)
+        except (TypeError, ValueError):
+            step_int = 0
+        # When the live game is still in progress the preview is followed by a
+        # return to the LIVE game; when it is already over there is nothing to
+        # resume, so use the review-only wording.
+        key = "game.time_travel_hint" if resumable else "game.time_travel_hint_terminal"
+        return tr(key, step=step_int)
+
+    def resume_live(self) -> GameControllerSnapshot:
+        """Leave a time-travel preview and restore the live session (item 8).
+
+        Restores the stashed live state/active/paused flags so the human can
+        continue playing from where the game actually is. A no-op when the
+        controller is not currently previewing.
+        """
+
+        if not self.previewing:
+            return self._publish()
+        self.previewing = False
+        self.state = self._live_state
+        self.active = self._live_active
+        self.paused = self._live_paused
+        self._live_state = None
+        self.message = None
+        return self._publish()
+
+    def restore_to_moment(
+        self, moment: Any, *, advance_ai: bool = True
+    ) -> GameControllerSnapshot:
+        """Fork a live, continuable session from a recorded ``moment`` (item 5).
+
+        Maps ``moment`` (a log-row index, an ``environment_step`` int, or an
+        event mapping) to the recorded authoritative :class:`EnvironmentState`
+        dict captured in :attr:`_replay_states`, then asks the service to rebuild
+        a live session from that state (``restore_session`` /
+        ``create_session_from_state`` -- added in FEAT-003). On success the human
+        can CONTINUE playing from that point: ``active`` becomes True,
+        ``previewing`` False, and the replay buffers are reset to the restored
+        prefix so the continued line can be saved as a fresh replay.
+
+        When ``advance_ai`` is False (item 2) the caller (the graphical screen)
+        drives the AI cadence one turn at a time on a QTimer, so this method
+        does NOT fast-forward past the restored AI turns; the run-up from the
+        clicked moment then animates one turn at a time into the human's turn.
+        The default (True) preserves the synchronous fast-forward for
+        headless/default callers.
+
+        Falls back to the read-only :meth:`time_travel_to` review path when the
+        service lacks restore support or no full state was captured, and NEVER
+        raises so a hovered/clicked log row is always safe.
+        """
+
+        if not self._replay_states or self.service is None:
+            return self.time_travel_to(moment)
+        restorer = None
+        for name in ("restore_session", "create_session_from_state"):
+            candidate = getattr(self.service, name, None)
+            if callable(candidate):
+                restorer = candidate
+                break
+        if restorer is None:
+            return self.time_travel_to(moment)
+        index = self._moment_state_index(moment)
+        if index is None:
+            return self.time_travel_to(moment)
+        state_dict = self._replay_states[index]
+        if not isinstance(state_dict, Mapping):
+            # Defensive: a None/placeholder entry means no authoritative state
+            # was captured for that turn, so we must not fork from a wrong or
+            # absent state. Fall back to the read-only review.
+            return self.time_travel_to(moment)
+        # Item 4: pass the matching per-turn AI internals (HP + emotion / belief)
+        # so the forked session continues with recorded AI internals (dummy
+        # seats in full; the main AI best-effort). Guard for a None placeholder /
+        # length mismatch exactly like the state buffer, and
+        # only pass ``internals`` when the restorer accepts it (older restorers
+        # take only the state dict), so a resume never fails on an extra kwarg.
+        internals = self._moment_internals(index)
+        try:
+            if internals is not None and self._restorer_accepts_internals(restorer):
+                handle = restorer(state_dict, internals=internals)
+            else:
+                handle = restorer(state_dict)
+            new_state = self.service.get_state(handle)
+        except TypeError:
+            # A restorer that rejected the internals kwarg: retry state-only so
+            # the fork still succeeds (just with fresh AI internals).
+            try:
+                handle = restorer(state_dict)
+                new_state = self.service.get_state(handle)
+            except Exception:
+                return self.time_travel_to(moment)
+        except Exception:
+            return self.time_travel_to(moment)
+        # Close the previous live session (best effort) before adopting the fork.
+        if self.handle is not None and not self._closed:
+            try:
+                self.service.close_session(self.handle)
+            except Exception:
+                pass
+        self.handle = handle
+        self.state = new_state
+        self.active = True
+        self.paused = False
+        self.previewing = False
+        self._closed = False
+        self._live_state = None
+        # Item 3 (log-preservation): the continued line is a new episode, but
+        # the PRIOR log history up to and including the clicked moment MUST be
+        # preserved (the earlier log entries are NOT deleted). Keeping the
+        # prefix ``0 .. index`` of every index-parallel buffer retains exactly
+        # that history: because each recorded observation carries the CUMULATIVE
+        # ``event_sequence`` up to its own turn, the prefix's last (longest)
+        # observation still holds every event from the game start through the
+        # clicked moment, which is what ReplayModel renders as the log. The
+        # follow-on _record_replay_snapshot / _advance_to_human_turn then APPEND
+        # the continued turns after this prefix, so the log grows forward from
+        # the clicked point instead of wiping earlier entries. Re-arm the save
+        # so the continued line is persisted afresh.
+        self._replay_observations = self._replay_observations[: index + 1]
+        self._replay_states = self._replay_states[: index + 1]
+        self._replay_internals = self._replay_internals[: index + 1]
+        self._replay_saved = False
+        self.message = None
+        self._record_replay_snapshot()
+        # Item 2 (FEAT-003): when ``advance_ai`` is False the graphical screen
+        # drives the AI cadence itself so, if the restored moment lands on an AI
+        # seat, the AI turns ANIMATE one at a time from that turn into the
+        # human's turn (matching the item-1 run-up). The default (True) keeps the
+        # synchronous fast-forward for headless/default callers unchanged.
+        if self.active and advance_ai:
+            self._advance_to_human_turn()
+        return self._publish()
+
+    def _moment_state_index(self, moment: Any) -> int | None:
+        """Map a moment to an index into :attr:`_replay_states` (or ``None``)."""
+
+        if not self._replay_states:
+            return None
+        try:
+            from bang_rl.gui.replay import ReplayModel
+        except (ImportError, SyntaxError):
+            return None
+        try:
+            model = ReplayModel(list(self._replay_observations))
+        except (TypeError, ValueError):
+            return None
+        if model.is_empty():
+            return None
+        if isinstance(moment, Mapping):
+            index = model.index_for_event(moment)
+        else:
+            try:
+                row = int(moment)
+            except (TypeError, ValueError):
+                index = None
+            else:
+                index = model.index_for_log_row(row)
+                if index is None:
+                    index = model.index_for_step(row)
+        if index is None:
+            return None
+        # Review fix: only trust an index into _replay_states when the two
+        # buffers are still perfectly index-parallel. A single export miss now
+        # appends a None placeholder (see _record_full_state), so the lengths
+        # stay equal; if they ever diverge, or the selected entry is a None
+        # placeholder (no authoritative state for that turn), refuse to fork so
+        # restore_to_moment falls back to the read-only review path instead of
+        # rewinding from a misaligned/absent state.
+        if len(self._replay_states) != len(self._replay_observations):
+            return None
+        clamped = max(0, min(int(index), len(self._replay_states) - 1))
+        if self._replay_states[clamped] is None:
+            return None
+        return clamped
+
+    def _moment_internals(self, index: int) -> Mapping[str, Any] | None:
+        """Return the recorded AI internals for ``index`` (or ``None``).
+
+        Item 4: guards for a ``None`` placeholder (an export miss for that turn)
+        and a length mismatch with :attr:`_replay_observations`, exactly like
+        :meth:`_moment_state_index` does for the state buffer, so a resume only
+        ever passes internals that are truly index-aligned with the chosen turn.
+        """
+
+        internals = getattr(self, "_replay_internals", None)
+        if not internals:
+            return None
+        if len(internals) != len(self._replay_observations):
+            return None
+        if not (0 <= index < len(internals)):
+            return None
+        entry = internals[index]
+        return entry if isinstance(entry, Mapping) else None
+
+    @staticmethod
+    def _restorer_accepts_internals(restorer: Any) -> bool:
+        """Return ``True`` when ``restorer`` accepts an ``internals`` keyword.
+
+        The controller only passes ``internals`` to a restorer whose signature
+        accepts it, so an older service that takes only the state dict is never
+        called with an unexpected keyword. Defensive: any introspection failure
+        returns ``False`` (state-only restore) so a resume never raises.
+        """
+
+        try:
+            import inspect
+
+            signature = inspect.signature(restorer)
+        except (TypeError, ValueError):
+            return False
+        parameters = signature.parameters
+        if "internals" in parameters:
+            return True
+        return any(
+            param.kind is param.VAR_KEYWORD for param in parameters.values()
+        )
 
     def refresh(self) -> GameControllerSnapshot:
         if self.handle is not None and self.active:
@@ -219,6 +719,11 @@ class GameSessionController:
     def _advance_to_human_turn(self) -> None:
         if self.paused or self.handle is None or self.state is None:
             return
+        # Item 6: a spectator game has no human seat to advance to; the screen
+        # drives every AI turn one at a time via step_single_ai_turn, so this
+        # fast-forward loop must not run (it would never terminate).
+        if self.mode is not None and self.mode.is_spectator:
+            return
         # An application service owns agent turns. The bound prevents a broken
         # mock service from hanging a headless test or the UI thread forever.
         for _ in range(10000):
@@ -229,20 +734,305 @@ class GameSessionController:
                 return
             result = self.service.step(self.handle)
             self.state = result.state
+            self._record_replay_snapshot()
             self._finish_if_terminal()
         raise GameGuiError("AI turn did not reach the human seat.")
+
+    def _derive_ai_versions(self, mode: GameMode) -> dict[str, Any]:
+        """Map each non-human seat to its AI descriptor for the replay record.
+
+        Random/dummy seats are described by the mode; the Main-AI seat (seat 1
+        in HUMAN_MAIN_DUMMY) uses the artifact metadata version when available.
+        Seat keys are strings so the record round-trips through JSON unchanged.
+        Qt-free and defensive.
+        """
+
+        seats = range(1, 5)
+        if mode is GameMode.HUMAN_RANDOM:
+            return {str(seat): "random" for seat in seats}
+        if mode is GameMode.HUMAN_DUMMY:
+            return {str(seat): "dummy" for seat in seats}
+        # Item 6 spectator modes: map ALL FIVE seats (seat 0 is AI too).
+        if mode is GameMode.RANDOM_FIVE:
+            return {str(seat): "random" for seat in range(0, 5)}
+        if mode is GameMode.DUMMY_FIVE:
+            return {str(seat): "dummy" for seat in range(0, 5)}
+        if mode in (GameMode.HUMAN_MAIN_DUMMY, GameMode.MAIN_ONE_DUMMY_FOUR):
+            version = None
+            if self.ai_metadata:
+                version = (
+                    self.ai_metadata.get("version")
+                    or self.ai_metadata.get("model_version")
+                    or self.ai_metadata.get("schema_version")
+                )
+            main_descriptor: Any = {"kind": "main", "version": version}
+            if self.ai_metadata:
+                main_descriptor["metadata"] = dict(self.ai_metadata)
+            # HUMAN_MAIN_DUMMY: human seat 0, Main AI seat 1, dummies 2..4.
+            # MAIN_ONE_DUMMY_FOUR (spectator): Main AI seat 0, dummies 1..4.
+            main_seat = 0 if mode is GameMode.MAIN_ONE_DUMMY_FOUR else 1
+            versions: dict[str, Any] = {str(main_seat): main_descriptor}
+            for seat in range(0, 5):
+                if seat == main_seat:
+                    continue
+                if mode is GameMode.HUMAN_MAIN_DUMMY and seat == self.HUMAN_PLAYER:
+                    # Seat 0 is the human in HUMAN_MAIN_DUMMY -> not an AI seat.
+                    continue
+                versions[str(seat)] = "dummy"
+            return versions
+        return {str(seat): mode.value for seat in seats}
+
+    def _record_replay_snapshot(self) -> None:
+        """Append the current public observation to the replay buffer.
+
+        Stores a *thawed plain deep copy* of ``self.state.observation`` (the
+        public projection, already carrying the cumulative ``event_sequence``).
+        We deliberately do NOT use ``copy.deepcopy`` here: the app service
+        freezes the observation via ``_freeze`` into a tree of
+        ``types.MappingProxyType`` + tuples, and ``copy.deepcopy`` cannot pickle
+        a ``mappingproxy`` (raising ``TypeError``). The old broad
+        ``except Exception: return`` therefore swallowed that failure and
+        silently dropped every event-carrying turn, leaving saved replays with
+        no game progress. :func:`_plain_copy` thaws the mapping tree to plain
+        dicts/lists so the snapshot always survives and stays JSON-safe for
+        ``build_replay_record``.
+
+        Defensive: a missing state or observation is skipped, and consecutive
+        identical observations are de-duplicated. Never raises. Qt-free.
+        """
+
+        state = self.state
+        if state is None:
+            return
+        observation = getattr(state, "observation", None)
+        if not isinstance(observation, Mapping):
+            return
+        snapshot = _plain_copy(observation)
+        # Dedup guard: this now compares plain dicts, so it only collapses a
+        # TRULY identical consecutive publish (same cumulative event_sequence
+        # AND same scalars). Genuinely distinct turns always differ because the
+        # cumulative event_sequence grows (and environment_step advances), so
+        # real progressing turns are retained -- the guard never merges them.
+        if self._replay_observations and self._replay_observations[-1] == snapshot:
+            return
+        self._replay_observations.append(snapshot)
+        self._record_full_state()
+
+    def _record_full_state(self) -> None:
+        """Capture the authoritative EnvironmentState dict for the current turn.
+
+        Item 5: for human / spectator games we persist a FULL reproduction-state
+        replay so a moment can later be restored to a live, continuable session.
+        The service exposes the current authoritative state via one of a few
+        method names (``full_state`` / ``authoritative_state`` / ``export_state``)
+        added in FEAT-003.
+
+        INDEX-PARALLEL INVARIANT (review fix): this is called exactly once per
+        appended observation in :meth:`_record_replay_snapshot`, so for a
+        full-replay game ``_replay_states`` MUST stay one-to-one with
+        ``_replay_observations``. If the exporter is missing, raises, or returns
+        a non-mapping, we append a ``None`` placeholder rather than nothing, so a
+        single transient export miss can never permanently offset every later
+        index (which would fork a rewind from the WRONG turn). ``restore_to_moment``
+        / :meth:`_moment_state_index` then refuse to fork on a ``None`` entry (or a
+        length mismatch) and safely fall back to the read-only review path.
+
+        For a public-only line (``_save_full_replay`` False) this is a no-op and
+        ``_replay_states`` stays empty, so restore falls back to review as before.
+        Never raises. Qt-free.
+        """
+
+        if not self._save_full_replay:
+            return
+        state_dict: Any = None
+        if self.handle is not None and self.service is not None:
+            exporter = None
+            for name in ("full_state", "authoritative_state", "export_state"):
+                candidate = getattr(self.service, name, None)
+                if callable(candidate):
+                    exporter = candidate
+                    break
+            if exporter is not None:
+                try:
+                    exported = exporter(self.handle)
+                except Exception:
+                    exported = None
+                if isinstance(exported, Mapping):
+                    try:
+                        import copy
+
+                        state_dict = copy.deepcopy(dict(exported))
+                    except Exception:
+                        state_dict = None
+        # Always append (possibly ``None``) to preserve the index-parallel
+        # invariant with ``_replay_observations``.
+        self._replay_states.append(state_dict)
+        self._record_internals_snapshot()
+
+    def live_internals(self) -> Any:
+        """Return the CURRENT live per-seat AI internals, or ``None``.
+
+        FEAT-002: the live spectator GameScreen feeds this to the graphical
+        board so it can draw emotion bars and the role-inference hover overlay
+        while an all-AI game is being watched. Defensive and Qt-free: it reuses
+        the same ``export_agent_internals`` exporter captured per turn by
+        :meth:`_record_internals_snapshot`, and returns ``None`` on any failure
+        or when there is no session handle. Only meaningful in spectator mode;
+        the human live game screen must NOT call this (and the board keeps
+        overlays disabled there regardless), so no opponent emotion / inferred
+        role can leak to a human player.
+        """
+
+        if self.handle is None or self.service is None:
+            return None
+        exporter = getattr(self.service, "export_agent_internals", None)
+        if not callable(exporter):
+            return None
+        try:
+            exported = exporter(self.handle)
+        except Exception:
+            return None
+        return exported if isinstance(exported, Mapping) else None
+
+    def _record_internals_snapshot(self) -> None:
+        """Capture the per-turn AI-internals snapshot for the current turn.
+
+        Item 4: for human / spectator games we persist every player's HP plus
+        each dummy / main AI's internal emotion state and current role belief /
+        guess so a moment can later be restored with AI internals (dummy seats
+        round-trip in full; the main AI is best-effort, capturing only an active
+        inference stream buffer when present), and so every player's HP is always
+        present in the per-step record even when a seat has no AI internals. The
+        service exposes this via
+        ``export_agent_internals`` (added in this feature).
+
+        INDEX-PARALLEL INVARIANT: this runs exactly once per appended
+        observation (from :meth:`_record_full_state`), so ``_replay_internals``
+        stays one-to-one with ``_replay_observations`` and ``_replay_states``. A
+        missing exporter, a raise, or a non-mapping result appends a ``None``
+        placeholder rather than nothing, so a single transient miss can never
+        permanently offset every later index. Never raises. Qt-free.
+
+        PRIVACY (self-enforcing): AI internals are FULL-replay-only data (they
+        carry hidden emotion / belief state), so this bails out entirely for a
+        public-only line rather than relying on its sole caller
+        (:meth:`_record_full_state`) having already returned. Because the buffer
+        is only ever consulted for full-replay saves / restores, doing nothing
+        for a public line is correct and keeps the privacy invariant local to
+        this method instead of caller-dependent. The index-parallel invariant is
+        preserved: for a full-replay line every miss still appends a ``None``
+        placeholder; for a public line the buffer stays empty in lock-step with
+        ``_replay_states`` (which is also a no-op there), so the three buffers
+        remain one-to-one on the only path (full-replay) that consults them.
+        """
+
+        if not self._save_full_replay:
+            return
+        internals: Any = None
+        if self.handle is not None and self.service is not None:
+            exporter = getattr(self.service, "export_agent_internals", None)
+            if callable(exporter):
+                try:
+                    exported = exporter(self.handle)
+                except Exception:
+                    exported = None
+                if isinstance(exported, Mapping):
+                    try:
+                        import copy
+
+                        internals = copy.deepcopy(dict(exported))
+                    except Exception:
+                        internals = None
+        self._replay_internals.append(internals)
+
+    def _save_replay_if_needed(self) -> None:
+        """Best-effort save of the finished human game as a replay JSON.
+
+        Runs exactly once per episode (``_replay_saved`` guard), only when a
+        mode is set and at least one observation was recorded. Imports the store
+        and paths lazily to keep import-time coupling minimal, and swallows any
+        failure so a save error never crashes the game.
+        """
+
+        if self._replay_saved or self.mode is None or not self._replay_observations:
+            return
+        self._replay_saved = True
+        state = self.state
+        if state is None:
+            return
+        try:
+            from bang_rl.gui import replay_store
+
+            common = dict(
+                mode=self.mode.value,
+                mode_label=self.mode.label,
+                ai_versions=self.mode_ai_versions,
+                winning_team=getattr(state, "winning_team", None),
+                winners=getattr(state, "winners", ()) or (),
+                human_player=self.HUMAN_PLAYER,
+                seed=self.seed,
+                observations=self._replay_observations,
+                terminated=bool(getattr(state, "terminated", False)),
+                truncated=bool(getattr(state, "truncated", False)),
+                # Item 1: persist the finished game's terminal roles so a replay
+                # can reveal every seat at its END. Only the terminal
+                # PublicGameState carries final_roles (empty during play), so
+                # this captures the authoritative reveal once per finished
+                # episode. Empty/absent for an unfinished or mock state.
+                final_roles=tuple(getattr(state, "final_roles", ()) or ()),
+            )
+            # Item 5/6: human and spectator games persist the FULL format when
+            # authoritative per-turn state was captured; otherwise fall back to
+            # the training-safe public format.
+            if self._save_full_replay and self._replay_states:
+                # Item 4/6: pass the per-step AI internals (HP + emotion /
+                # belief) alongside the authoritative states when they were
+                # captured, so a loaded full replay carries per-step HP + AI
+                # internals for re-watch and resume. Omit when empty so a legacy
+                # save path is unchanged.
+                internals = self._replay_internals if self._replay_internals else None
+                record = replay_store.build_full_replay_record(
+                    states=self._replay_states, internals=internals, **common
+                )
+            else:
+                record = replay_store.build_replay_record(**common)
+            # Item 5: encode the game mode in the auto-generated filename via
+            # the Qt-free helper. Best-effort/defensive: build_replay_filename
+            # sanitizes the mode so a bad value never crashes the save (and
+            # falls back to the mode-less name).
+            replay_store.save_replay(
+                record, filename=replay_store.build_replay_filename(self.mode.value)
+            )
+        except Exception:
+            # Never let a replay-save failure crash or interrupt the game.
+            return
 
     def _finish_if_terminal(self) -> None:
         if self.state is None or not (self.state.terminated or self.state.truncated):
             return
         self.active = False
         self.paused = False
-        self.message = "Game finished normally." if self.state.terminated else "Game stopped at the episode limit."
+        self.message = self._terminal_message()
+        self._save_replay_if_needed()
         if self.handle is not None and not self._closed:
             try:
                 self.service.close_session(self.handle)
             finally:
                 self._closed = True
+
+    def _terminal_message(self) -> str:
+        # i18n.tr and roles.faction_name are Qt-free, so importing them in this
+        # headless controller keeps game-over text localized without pulling in
+        # PyQt. Imported lazily to avoid any import-time coupling.
+        from bang_rl.gui.i18n import tr
+        from bang_rl.gui.roles import faction_name
+
+        if self.state is not None and self.state.truncated:
+            return tr("game.finished_truncated")
+        faction = getattr(self.state, "winning_team", None) if self.state is not None else None
+        if faction:
+            return tr("game.finished_normally_faction", faction=faction_name(faction))
+        return tr("game.finished_normally")
 
     @staticmethod
     def _error_message(exc: Exception) -> str:
@@ -251,7 +1041,15 @@ class GameSessionController:
             reason = details.get("message") or details.get("code")
             if reason:
                 return str(reason)
-        return str(exc) or type(exc).__name__
+        text = str(exc)
+        if text:
+            return text
+        # tr is Qt-free, so this keeps the fallback localized without pulling
+        # in PyQt from this headless controller. Imported lazily to avoid any
+        # import-time coupling.
+        from bang_rl.gui.i18n import tr
+
+        return tr("game.error_generic")
 
 
 __all__ = [

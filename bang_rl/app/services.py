@@ -154,6 +154,19 @@ class PublicGameState:
     terminated: bool
     truncated: bool
     termination_status: str
+    winning_team: str | None = None
+    winners: tuple[int, ...] = ()
+    # Every seat's true role index, populated ONLY once the episode is over
+    # (terminated or truncated) so the GUI can reveal all players at game end.
+    # Empty during play so no living role ever leaks. Never persisted to a
+    # recorded observation or replay record (replays stay public-projection).
+    final_roles: tuple[int, ...] = ()
+    # Item 1: True only for spectator (all-AI) sessions, where there is no human
+    # whose hidden info must be protected, so every seat's true role is revealed
+    # DURING play. Defaults False so a human session keeps the sheriff-only-
+    # until-terminal privacy rule unchanged. The GUI reads this to pass
+    # reveal_all into board_layout.role_for_display.
+    reveal_all_roles: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -166,6 +179,10 @@ class PublicGameState:
             "terminated": self.terminated,
             "truncated": self.truncated,
             "termination_status": self.termination_status,
+            "winning_team": self.winning_team,
+            "winners": list(self.winners),
+            "final_roles": list(self.final_roles),
+            "reveal_all_roles": self.reveal_all_roles,
         }
 
 
@@ -472,6 +489,39 @@ class GameService:
             diagnostics_logger=diagnostics_logger,
             diagnostics_metadata={"run_id": session_id, "job_id": snapshot.job_id, "config_version": config.config_version},
         )
+        # Initialize every seat's episode so each agent folds its OWN role and
+        # the public sheriff into its internal state from the very first turn.
+        # Without this, a dummy that has not yet taken a turn still holds its
+        # RoleBeliefEstimator constructor default (a uniform 1/5 matrix), which
+        # reads as the naive 40/20/20 outlaw/traitor/deputy prior in the GUI and
+        # replay.  environment.observe(index) hands each seat its OWN per-seat
+        # public projection (self_role is that seat's role, sheriff is public),
+        # so the eliminated prior falls out of the existing belief math.  The
+        # per-agent guard mirrors the project's defensive export style: a single
+        # agent failing here must never abort session creation.  Do NOT mirror
+        # this into restore_session, which re-applies saved per-seat internals.
+        #
+        # Intended, deterministic side effect: running the normal episode-start
+        # lifecycle here also reseeds each stochastic agent's action RNG from the
+        # episode seed.  Interactive game sessions never called on_episode_start
+        # before, so such agents used to run the whole game on their
+        # constructor-time RNG.  The reseeded stream is still fully determined by
+        # the session seed (reproducible), just a different stream than the
+        # pre-fix behavior; this is a conscious decision, not a silent change.
+        for index, agent in enumerate(agents):
+            on_episode_start = getattr(agent, "on_episode_start", None)
+            if on_episode_start is None:
+                continue
+            try:
+                on_episode_start(
+                    {
+                        "episode_id": episode_id,
+                        "seed": seed_manager.environment_seed(episode_id),
+                        "observation": environment.observe(index),
+                    }
+                )
+            except Exception:  # noqa: BLE001 - defensive: never abort session setup
+                self._log("agent_episode_start_failed", session_id=session_id, seat=index)
         handle = SessionHandle(session_id, self._normalize_mode(options.mode), seed, snapshot)
         with self._lock:
             self._sessions[session_id] = _Session(handle, config, environment, agents, artifact, owned_loggers)
@@ -487,8 +537,19 @@ class GameService:
             "human_vs_dummy": "human_dummy",
             "human_vs_main": "human_main_dummy",
             "human_main": "human_main_dummy",
+            # Item 6: all-AI spectator modes and their GUI-string variants.
+            "random_ai_5": "random_five",
+            "random5": "random_five",
+            "dummy_ai_5": "dummy_five",
+            "dummy5": "dummy_five",
+            "main_1_dummy_4": "main_one_dummy_four",
         }
         return aliases.get(normalized, normalized)
+
+    # Modes the human plays a seat in (seat 0 is a HumanAgent).
+    _HUMAN_MODES = frozenset({"human_random", "human_dummy", "human_main_dummy"})
+    # Item 6: all-AI spectator modes; every seat is AI-driven.
+    _SPECTATOR_MODES = frozenset({"random_five", "dummy_five", "main_one_dummy_four"})
 
     def _build_agents(self, options: SessionConfig, config: SystemConfig, seeds: SeedManager, artifact: Any) -> tuple[Any, ...]:
         if options.agents is not None:
@@ -500,22 +561,43 @@ class GameService:
                 raise ValueError("agents must provide exactly five non-null player agents")
             return values
         mode = self._normalize_mode(options.mode)
-        if mode not in {"human_random", "human_dummy", "human_main_dummy"}:
-            raise ValueError("unsupported game mode; use human_random, human_dummy, or human_main_dummy")
-        values: list[Any] = [HumanAgent("player_0", seed=seeds.agent_seed("player_0"))]
+        if mode not in (self._HUMAN_MODES | self._SPECTATOR_MODES):
+            raise ValueError(
+                "unsupported game mode; use human_random, human_dummy, human_main_dummy, "
+                "random_five, dummy_five, or main_one_dummy_four"
+            )
+
+        def _dummy(index: int) -> Any:
+            return DummyAgent(
+                f"player_{index}", seed=seeds.agent_seed(f"player_{index}"), player_idx=index,
+                policy_config=config.preset.intent_policy,
+                emotion_config=config.preset.emotion,
+                action_mode=options.action_mode,
+            )
+
+        # Item 6: all-AI spectator compositions -- every one of the five seats
+        # is AI-driven so the human only watches.
+        if mode == "random_five":
+            return tuple(
+                RandomAgent(f"player_{index}", seed=seeds.agent_seed(f"player_{index}")) for index in range(5)
+            )
+        if mode == "dummy_five":
+            return tuple(_dummy(index) for index in range(5))
+        if mode == "main_one_dummy_four":
+            if artifact is None:
+                raise ValueError("main_one_dummy_four mode requires an inference artifact")
+            values: list[Any] = [_ArtifactAgent(artifact, "player_0", seeds.agent_seed("player_0"))]
+            values.extend(_dummy(index) for index in range(1, 5))
+            return tuple(values)
+
+        # Human-played compositions: seat 0 is the human, seats 1..4 are AI.
+        values = [HumanAgent("player_0", seed=seeds.agent_seed("player_0"))]
         for index in range(1, 5):
             agent_seed = seeds.agent_seed(f"player_{index}")
             if mode == "human_random":
                 values.append(RandomAgent(f"player_{index}", seed=agent_seed))
             elif mode == "human_dummy" or (mode == "human_main_dummy" and index != 1):
-                values.append(
-                    DummyAgent(
-                        f"player_{index}", seed=agent_seed, player_idx=index,
-                        policy_config=config.preset.intent_policy,
-                        emotion_config=config.preset.emotion,
-                        action_mode=options.action_mode,
-                    )
-                )
+                values.append(_dummy(index))
             else:
                 if artifact is None:
                     raise ValueError("human_main_dummy mode requires an inference artifact")
@@ -533,9 +615,57 @@ class GameService:
     @staticmethod
     def _state(session: _Session) -> PublicGameState:
         env = session.environment
-        observation = _json_value(env.observe())
+        # Item 7 (flicker fix) + item 1 (spectator reveal): project the public
+        # observation from a STABLE viewer, not from state.agent_selection (the
+        # current player). env.observe() with no argument defaults the viewer to
+        # whoever's turn it is, so self_role and the SELF/REVEALED visibility
+        # bits (which the GUI reads for seat 0) rotated with the current player
+        # and made the human seat's role text flicker frame-to-frame. Always
+        # project from the fixed human seat (index 0) so self_role/visibility are
+        # seat-0-relative every turn. For a spectator session index 0 is also a
+        # stable, arbitrary geometry viewer and all roles are revealed below.
+        mode = getattr(session.handle, "mode", None)
+        is_spectator = mode in GameService._SPECTATOR_MODES
+        observation = _json_value(env.observe("player_0"))
         selected = getattr(env.agent_selection, "index", None)
         status = "normal" if bool(env.state.terminated) else "truncated" if bool(env.state.truncated) else "running"
+        # Surface the winning faction as a stable string id (e.g. "sheriff_team")
+        # only when the episode terminated normally. Never expose living roles.
+        winning_team: str | None = None
+        winners: tuple[int, ...] = ()
+        terminal = env.state.terminal_result if bool(env.state.terminated) else None
+        if terminal is not None:
+            team = getattr(terminal, "winning_team", None)
+            if team is not None:
+                winning_team = str(getattr(team, "name", team)).lower()
+            winners = tuple(int(index) for index in getattr(terminal, "winners", ()))
+        # Reveal every seat's true role ONLY once the episode is over so the
+        # GUI can show all players at game end. During play this stays empty so
+        # no living role leaks. This is the only GUI-facing read of the private
+        # env.state.roles, guarded so a fake/mock session that lacks it never
+        # raises.
+        final_roles: tuple[int, ...] = ()
+        if bool(env.state.terminated) or bool(env.state.truncated):
+            true_roles = getattr(getattr(env, "state", None), "roles", None)
+            if true_roles is not None:
+                final_roles = tuple(int(getattr(role, "value", role)) for role in true_roles)
+        # Item 1: for a SPECTATOR (all-AI) session there is no human whose
+        # hidden role must be protected, so reveal every living seat's true role
+        # DURING play. Rewrite the public observation's revealed_roles from the
+        # authoritative env.state.roles (the same guarded private read used for
+        # final_roles) and mark every seat REVEALED (visibility >= 2). This is a
+        # strict superset of the sheriff/eliminated reveal, so it never hides
+        # anything the public projection already showed. Human sessions never
+        # take this path, so their sheriff-only-until-terminal privacy is
+        # unchanged.
+        reveal_all_roles = bool(is_spectator)
+        if reveal_all_roles:
+            true_roles = getattr(getattr(env, "state", None), "roles", None)
+            if true_roles is not None and isinstance(observation, dict):
+                roles = [int(getattr(role, "value", role)) for role in true_roles]
+                observation["revealed_roles"] = list(roles)
+                # RoleVisibility.REVEALED == 2; keep every seat visible.
+                observation["role_visibility"] = [2 for _ in roles]
         return PublicGameState(
             session.handle.session_id,
             env.state.episode_id,
@@ -546,10 +676,292 @@ class GameService:
             bool(env.state.terminated),
             bool(env.state.truncated),
             status,
+            winning_team,
+            winners,
+            final_roles,
+            reveal_all_roles,
         )
 
     def get_state(self, handle: SessionHandle | str) -> PublicGameState:
         return self._state(self._session(handle))
+
+    def get_full_state(self, handle: SessionHandle | str) -> dict[str, Any]:
+        """Return the authoritative :class:`EnvironmentState` as a JSON-safe dict.
+
+        Item 5/6: the GUI controller records this per turn for human and
+        AI-spectator games so a moment can later be restored to a live,
+        continuable session (rewind-and-continue). Unlike :meth:`get_state`
+        this intentionally exposes the full reproduction state (hidden roles,
+        deck, seat order); it is therefore ONLY persisted into the ``full``
+        replay format for human-played and spectator games, never into the
+        public training-safe format.
+        """
+
+        session = self._session(handle)
+        return _json_value(session.environment.state.to_dict())
+
+    # The controller probes these method names for the authoritative state
+    # export; expose the same behaviour under each so either name works.
+    full_state = get_full_state
+    authoritative_state = get_full_state
+    export_state = get_full_state
+
+    def export_agent_internals(self, handle: SessionHandle | str) -> dict[str, Any]:
+        """Return a JSON-safe per-seat snapshot of each AI seat's internal state.
+
+        Item 4: for human-played and AI-spectator games the GUI controller
+        records this per turn so a moment can later be resumed with AI internal
+        state, and so every player's HP is always present in the per-step record
+        even when a seat has no AI internals. The fidelity of that resume
+        differs by seat type: a DummyAgent seat round-trips its FULL internal
+        state (emotion module + role beliefs / guess via ``state_dict`` /
+        ``load_state_dict``), while the Main-AI seat is BEST-EFFORT only. The
+        Main-AI inference modules expose ``get_state`` / ``set_state`` for their
+        stream buffers, but ``get_state`` returns ``None`` when no active stream
+        buffer is held, so the main-AI descriptor records an active inference
+        stream buffer only when one is present (see the ``captured`` flag on the
+        main descriptor); it does NOT reconstruct the main AI's full inference
+        state. Do not read the "resume with AI internals" wording as a promise
+        that the main AI resumes byte-for-byte.
+
+        The returned mapping has two top-level keys:
+
+        * ``health``: a list of every player's current HP (from
+          ``env.state.health``), so HP is always carried per step.
+        * ``seats``: a seat -> descriptor mapping. A DummyAgent seat reuses
+          ``agent.state_dict()`` (which already serializes its emotion module
+          via ``EmotionModule.state_dict`` and its role beliefs / guess via
+          ``RoleBeliefEstimator.state_dict``). A RandomAgent seat records a
+          minimal ``{"kind": "random"}`` descriptor (it has no belief / emotion
+          state). The Main-AI seat (``_ArtifactAgent``) has no single
+          ``state_dict``, so this captures a best-effort descriptor: the
+          inference modules' ``get_state()`` stream buffers where present, all
+          converted JSON-safe.
+
+        This method is DEFENSIVE and never raises: a seat whose serialization
+        fails is recorded as ``{"kind": "unknown"}`` rather than aborting the
+        whole export. It is intentionally kept out of :meth:`get_state`,
+        ``PublicGameState`` and every observation so AI internals never leak
+        into public / training data.
+        """
+
+        session = self._session(handle)
+        env = session.environment
+        health: list[int] = []
+        try:
+            health = [int(value) for value in getattr(env.state, "health", ()) or ()]
+        except Exception:
+            health = []
+        seats: dict[str, Any] = {}
+        agents = getattr(session, "agents", ()) or ()
+        for index, agent in enumerate(agents):
+            seats[str(index)] = self._agent_internal_descriptor(agent)
+        return {"health": _json_value(health), "seats": seats}
+
+    @staticmethod
+    def _agent_internal_descriptor(agent: Any) -> dict[str, Any]:
+        """Return a JSON-safe internal-state descriptor for one AI seat.
+
+        Never raises: any serialization failure degrades to a minimal
+        ``{"kind": "unknown"}`` descriptor. Kept Qt-free.
+        """
+
+        # A DummyAgent carries the emotion module + role belief / guess we want.
+        state_dict = getattr(agent, "state_dict", None)
+        if isinstance(agent, DummyAgent) and callable(state_dict):
+            try:
+                return {"kind": "dummy", "state": _json_value(state_dict())}
+            except Exception:
+                return {"kind": "dummy"}
+        if isinstance(agent, RandomAgent):
+            return {"kind": "random"}
+        if isinstance(agent, HumanAgent):
+            return {"kind": "human"}
+        # Main-AI (_ArtifactAgent): no single state_dict. Capture the inference
+        # modules' stateful stream buffers where available, best effort. This is
+        # genuinely opportunistic: an inference module's ``get_state()`` returns
+        # ``None`` when it holds no active stream buffer, so ``module_states``
+        # can legitimately be empty and a later restore is then a no-op for that
+        # seat. Record a ``captured`` boolean so a caller (and a resume) can tell
+        # whether any non-empty main-AI internal state was actually recorded,
+        # rather than silently assuming it was.
+        artifact = getattr(agent, "artifact", None)
+        if artifact is not None:
+            descriptor: dict[str, Any] = {"kind": "main"}
+            module_states: dict[str, Any] = {}
+            for module_name in ("intent", "emotion"):
+                module = getattr(artifact, module_name, None)
+                get_state = getattr(module, "get_state", None)
+                if callable(get_state):
+                    try:
+                        value = get_state()
+                    except Exception:
+                        value = None
+                    if value is not None:
+                        module_states[module_name] = GameService._json_safe_state(value)
+            descriptor["captured"] = bool(module_states)
+            if module_states:
+                descriptor["module_states"] = module_states
+            return descriptor
+        # Fall back to a generic state_dict probe for any other agent type.
+        if callable(state_dict):
+            try:
+                return {"kind": "unknown", "state": _json_value(state_dict())}
+            except Exception:
+                return {"kind": "unknown"}
+        return {"kind": "unknown"}
+
+    @staticmethod
+    def _json_safe_state(value: Any) -> Any:
+        """Recursively convert a value (incl. torch / numpy tensors) JSON-safe.
+
+        The main-AI inference modules' ``get_state()`` returns tensors, which
+        ``_json_value`` alone leaves as raw objects. Any object exposing
+        ``tolist`` (torch Tensor / numpy array) is converted to nested lists;
+        everything else defers to :func:`_json_value`. Never raises: an
+        un-convertible value degrades to its ``str`` form. Kept Qt-free.
+        """
+
+        if isinstance(value, Mapping):
+            return {str(key): GameService._json_safe_state(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [GameService._json_safe_state(item) for item in value]
+        tolist = getattr(value, "tolist", None)
+        if callable(tolist) and not isinstance(value, (str, bytes)):
+            try:
+                return tolist()
+            except Exception:
+                return str(value)
+        return _json_value(value)
+
+    def restore_session(
+        self,
+        state_dict: Mapping[str, Any],
+        *,
+        mode: str | None = None,
+        seed: int | None = None,
+        artifact_path: str | Path | None = None,
+        config: SystemConfig | Mapping[str, Any] | None = None,
+        internals: Mapping[str, Any] | None = None,
+    ) -> SessionHandle:
+        """Rebuild a live, continuable session from an authoritative state dict.
+
+        Item 5: constructs a fresh :class:`BangEnvironment`, applies
+        ``load_state(EnvironmentState.from_dict(state_dict))`` so the game
+        resumes from exactly the recorded moment, rebuilds the agents for the
+        (optional) mode, registers the session, and returns a
+        :class:`SessionHandle`. When ``mode`` is omitted it defaults to the
+        human-vs-random composition so the human can continue playing seat 0.
+        The GUI controller calls this with only the state dict, so every keyword
+        is optional. Privacy is unchanged: the returned handle still projects
+        public state via :meth:`get_state` (``final_roles`` only at terminal).
+        """
+
+        from bang_rl.env import EnvironmentState
+
+        restored_state = EnvironmentState.from_dict(dict(state_dict))
+        system_config = _mapping_config(config)
+        resolved_seed = restored_state.seed if seed is None else int(seed)
+        resolved_mode = self._normalize_mode(mode) if mode is not None else "human_random"
+        snapshot = TrainingJob.start(system_config, mode="game", seed=resolved_seed).snapshot
+        seed_manager = SeedManager(resolved_seed, snapshot=snapshot)
+        seed_manager.seed_all()
+        session_id = _id("session")
+        episode_id = restored_state.episode_id or f"{session_id}-episode-0"
+        artifact = None
+        if artifact_path is not None:
+            artifact = self.compatibility_service.load(artifact_path, config=system_config)
+        options = SessionConfig(
+            mode=resolved_mode, config=system_config, seed=resolved_seed, artifact_path=artifact_path
+        )
+        agents = self._build_agents(options, system_config, seed_manager, artifact)
+        # Item 4: optionally restore each AI seat's internal state so a resumed
+        # session continues with recorded AI internals rather than fresh agents.
+        # A DummyAgent seat is restored in full (emotion / role belief); the
+        # Main-AI seat is best-effort (only an active inference stream buffer is
+        # reapplied, when one was captured). Every step here is defensive: a
+        # missing / malformed entry leaves that seat's freshly built agent
+        # untouched.
+        if internals is not None:
+            agents = self._restore_agent_internals(agents, internals)
+        owned_loggers: tuple[StructuredLogger, ...] = ()
+        if self.logger is None:
+            streams = [io.StringIO() for _ in range(4)]
+            env_logger = StructuredLogger(LogChannel.INVALID_ACTION, stream=streams[0], component="app-environment")
+            event_logger = StructuredLogger(LogChannel.EPISODE_EVENTS, stream=streams[1], component="app-episode-events")
+            termination_logger = StructuredLogger(LogChannel.TERMINATION, stream=streams[2], component="app-termination")
+            diagnostics_logger = StructuredLogger(LogChannel.PRIVILEGED_DIAGNOSTICS, stream=streams[3], component="app-diagnostics")
+            owned_loggers = (env_logger, event_logger, termination_logger, diagnostics_logger)
+        else:
+            env_logger = event_logger = termination_logger = diagnostics_logger = self.logger
+        environment = BangEnvironment(
+            episode_id=episode_id,
+            seed=seed_manager.environment_seed(episode_id),
+            config=system_config.env,
+            logger=env_logger,
+            event_logger=event_logger,
+            termination_logger=termination_logger,
+            diagnostics_logger=diagnostics_logger,
+            diagnostics_metadata={"run_id": session_id, "job_id": snapshot.job_id, "config_version": system_config.config_version},
+        )
+        # Apply the authoritative recorded state so play resumes from the moment.
+        environment.load_state(restored_state)
+        handle = SessionHandle(session_id, resolved_mode, resolved_seed, snapshot)
+        with self._lock:
+            self._sessions[session_id] = _Session(handle, system_config, environment, agents, artifact, owned_loggers)
+        self._log("game_session_restored", session_id=session_id, mode=handle.mode, seed=resolved_seed, job_id=snapshot.job_id)
+        return handle
+
+    # The controller also probes ``create_session_from_state``; expose the same.
+    create_session_from_state = restore_session
+
+    @staticmethod
+    def _restore_agent_internals(
+        agents: tuple[Any, ...], internals: Mapping[str, Any]
+    ) -> tuple[Any, ...]:
+        """Apply a recorded per-seat internals mapping onto freshly built agents.
+
+        Item 4: ``internals`` is the mapping produced by
+        :meth:`export_agent_internals` (``{"health": [...], "seats": {seat: descriptor}}``).
+        A DummyAgent seat is restored in FULL via ``load_state_dict`` (emotion +
+        role belief / guess), so a resumed dummy keeps its internal state. A
+        main-AI seat is BEST-EFFORT: its inference modules' ``set_state`` is only
+        called for a captured active stream buffer, so when no buffer was
+        recorded (``get_state`` returned ``None`` at capture, i.e. ``captured``
+        is False / ``module_states`` absent) the main seat simply keeps its
+        freshly built agent. Defensive: any per-seat failure is swallowed so a
+        resume never raises and simply keeps that seat's fresh agent.
+        """
+
+        if not isinstance(internals, Mapping):
+            return agents
+        seats = internals.get("seats")
+        if not isinstance(seats, Mapping):
+            return agents
+        for index, agent in enumerate(agents):
+            descriptor = seats.get(str(index))
+            if not isinstance(descriptor, Mapping):
+                continue
+            kind = str(descriptor.get("kind", "")).strip().lower()
+            try:
+                if kind == "dummy" and isinstance(agent, DummyAgent):
+                    state = descriptor.get("state")
+                    if isinstance(state, Mapping):
+                        agent.load_state_dict(dict(state))
+                elif kind == "main":
+                    module_states = descriptor.get("module_states")
+                    artifact = getattr(agent, "artifact", None)
+                    if isinstance(module_states, Mapping) and artifact is not None:
+                        for module_name in ("intent", "emotion"):
+                            value = module_states.get(module_name)
+                            module = getattr(artifact, module_name, None)
+                            set_state = getattr(module, "set_state", None)
+                            if value is not None and callable(set_state):
+                                set_state(value)
+            except Exception:
+                # Keep the freshly built agent for this seat on any failure.
+                continue
+        return agents
 
     def step(self, handle: SessionHandle | str, action: Any | None = None) -> StepResult:
         session = self._session(handle)

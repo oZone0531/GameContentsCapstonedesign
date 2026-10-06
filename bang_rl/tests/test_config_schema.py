@@ -7,6 +7,7 @@ from bang_rl.config import (
     ArtifactConfig,
     DatasetConfig,
     EmotionConfig,
+    EmotionDefinition,
     EnvConfig,
     EvaluationConfig,
     HardwareConfig,
@@ -316,3 +317,38 @@ def test_custom_and_stochastic_evaluation_settings_validate_and_record_seeds() -
 
     with pytest.raises(ValidationError):
         EvaluationConfig(protocol_id="stochastic_v1", action_mode="stochastic", games=2, seeds=[7])
+
+
+def test_emotion_description_defaults_to_empty_and_is_backward_compatible() -> None:
+    # An emotion with no description still validates (optional, default ""), so
+    # every pre-existing config keeps loading under extra="forbid".
+    emotion = EmotionDefinition(name="분노")
+    assert emotion.description == ""
+    # A full config built without any description also loads unchanged.
+    config = EmotionConfig(emotions=[{"name": "분노"}, {"name": "공포"}])
+    assert all(item.description == "" for item in config.emotions)
+
+
+def test_emotion_description_round_trips_through_model_dump() -> None:
+    emotion = EmotionDefinition(name="분노", description="상대의 공격에 대한 분노")
+    assert emotion.description == "상대의 공격에 대한 분노"
+    dumped = emotion.model_dump(mode="json")
+    assert dumped["description"] == "상대의 공격에 대한 분노"
+    # It survives a full round-trip through EmotionConfig.model_dump too.
+    config = EmotionConfig(emotions=[{"name": "분노", "description": "분노 설명"}])
+    reloaded = EmotionConfig(**config.model_dump(mode="json"))
+    assert reloaded.emotions[0].description == "분노 설명"
+
+
+def test_emotion_desc_alias_maps_to_description() -> None:
+    emotion = EmotionDefinition(name="공포", desc="위협을 느낄 때의 공포")
+    assert emotion.description == "위협을 느낄 때의 공포"
+    # The alias also works through the emotions list normalization.
+    config = EmotionConfig(emotions=[{"name": "공포", "desc": "공포 설명"}])
+    assert config.emotions[0].description == "공포 설명"
+
+
+def test_emotion_description_coerces_none_and_non_string() -> None:
+    # A null description degrades to empty; a non-string is coerced via str().
+    assert EmotionDefinition(name="x", description=None).description == ""
+    assert EmotionDefinition(name="y", description=123).description == "123"
