@@ -1,27 +1,23 @@
-"""Fixture-driven pure test for always-on inference with a real-shaped replay.
+"""Fixture-driven pure test for the hover role-inference overlay with a real-shaped replay.
 
 This file loads a full-format dummy_five replay fixture from disk
 (bang_rl/tests/data/replay_dummy_five_3turns.json) and verifies that the
-always-on inference pipeline works end-to-end:
+HOVER role-inference pipeline works end-to-end:
 
   fixture loads -> ReplayModel -> _attach_internals -> snapshot.internals ->
-  always_on_all_seats / always_on_inference_items -> non-empty items per
-  non-sheriff dummy seat per turn.
+  inverted_role_inference(source_seat, sheriff_seat) -> non-empty projection
+  over the OTHER non-sheriff seats (source seat and sheriff seat excluded).
 
 The fixture mirrors the confirmed real file shape: 5 dummies (no human), string
 seat keys, 5x5 beliefs whose rows sum to 1.0, sheriff at seat 4
 (revealed_roles[4]==0). This locks down the chain so a regression that broke
-any step -- record shape, internals attachment, aggregation math, or role
-reduction -- is caught headlessly.
+any step -- record shape, internals attachment, or role inference math -- is
+caught headlessly.
 
 Uses the importlib path-loading pattern (see
 test_replay_overlay_hover_render_pure.py) to bypass bang_rl/gui/__init__ which
 would pull in PyQt6/pydantic. Stays Qt-free and numpy-free so it runs in the
 restricted sandbox.
-
-NOTE: test_replay_always_on_inference_pure.py (FEAT-003) tests the same helpers
-with INLINE synthetic data and is NOT modified here. This file is a SEPARATE
-fixture-driven complement.
 """
 from __future__ import annotations
 
@@ -98,11 +94,12 @@ def test_fixture_internals_attached_per_turn() -> None:
         )
 
 
-def test_fixture_always_on_produces_items_per_dummy_seat_per_turn() -> None:
-    """For each turn, always_on_all_seats returns 4 entries (5 - 1 sheriff).
+def test_fixture_hover_produces_projection_per_dummy_seat_per_turn() -> None:
+    """For each turn, hovering each non-sheriff dummy seat yields a non-empty
+    projection over the OTHER non-sheriff seats (source and sheriff excluded).
 
-    Every non-sheriff dummy seat has non-empty items. The sheriff seat (4) is
-    never in the result.
+    The fixture has 5 dummies with sheriff at seat 4. Hovering any of seats
+    0..3 should produce targets that exclude the source seat and the sheriff.
     """
     record = _load_fixture()
     model = ReplayModel(record)
@@ -112,30 +109,38 @@ def test_fixture_always_on_produces_items_per_dummy_seat_per_turn() -> None:
         sheriff = _sheriff_seat_for(snapshot.observation)
         assert sheriff == 4, f"turn {index}: expected sheriff at seat 4, got {sheriff}"
 
-        seat_items = spectator_overlay.always_on_all_seats(
-            snapshot.internals, sheriff_seat=sheriff
-        )
-        assert isinstance(seat_items, dict), f"turn {index}: result is not a dict"
-        # 5 dummies minus 1 sheriff = 4 non-sheriff seats expected.
-        assert len(seat_items) == 4, (
-            f"turn {index}: expected 4 entries, got {len(seat_items)} "
-            f"(keys={set(seat_items)})"
-        )
-        # Sheriff seat must be excluded.
-        assert sheriff not in seat_items, (
-            f"turn {index}: sheriff seat {sheriff} should not be in result"
-        )
-        # Every non-sheriff seat has non-empty items.
-        for seat, items in seat_items.items():
-            assert items, (
-                f"turn {index}, seat {seat}: always-on items are empty"
+        # Hover each non-sheriff dummy seat and check projection.
+        for source_seat in range(5):
+            if source_seat == sheriff:
+                continue
+            projection = spectator_overlay.inverted_role_inference(
+                snapshot.internals, source_seat, sheriff_seat=sheriff
+            )
+            assert projection, (
+                f"turn {index}, source seat {source_seat}: "
+                f"hover overlay produced no inference (invisible overlay)"
+            )
+            targets = sorted(t for t, _ in projection)
+            # Source seat and sheriff are excluded from targets.
+            assert source_seat not in targets, (
+                f"turn {index}: source seat {source_seat} found in its own targets"
+            )
+            assert sheriff not in targets, (
+                f"turn {index}: sheriff seat {sheriff} found in targets"
+            )
+            # Every other non-sheriff seat should be a target.
+            expected_targets = sorted(
+                s for s in range(5) if s != source_seat and s != sheriff
+            )
+            assert targets == expected_targets, (
+                f"turn {index}, source {source_seat}: "
+                f"targets {targets} != expected {expected_targets}"
             )
 
 
-def test_fixture_always_on_single_seat_detail() -> None:
-    """For seat 0, turn 0, always_on_inference_items returns valid items.
-
-    Asserts 1-3 items. Role keys are a subset of {deputy, outlaw, traitor}.
+def test_fixture_hover_single_seat_detail() -> None:
+    """For source seat 0, turn 0, inverted_role_inference returns valid items
+    for each target. Role keys are a subset of {deputy, outlaw, traitor}.
     Each probability is strictly between 0 and 1.
     """
     record = _load_fixture()
@@ -144,24 +149,33 @@ def test_fixture_always_on_single_seat_detail() -> None:
     assert snapshot is not None and snapshot.internals is not None
     sheriff = _sheriff_seat_for(snapshot.observation)
 
-    items = spectator_overlay.always_on_inference_items(
+    projection = spectator_overlay.inverted_role_inference(
         snapshot.internals, 0, sheriff_seat=sheriff
     )
-    assert isinstance(items, tuple)
-    assert 1 <= len(items) <= 3, f"expected 1-3 items, got {len(items)}"
+    assert projection, "hover projection for seat 0 is empty"
 
     valid_role_keys = {"deputy", "outlaw", "traitor"}
-    for role_key, prob in items:
-        assert role_key in valid_role_keys, (
-            f"unexpected role key {role_key!r}, expected one of {valid_role_keys}"
+    for target_seat, items in projection:
+        assert items, f"target seat {target_seat}: items are empty"
+        assert 1 <= len(items) <= 3, (
+            f"target seat {target_seat}: expected 1-3 items, got {len(items)}"
         )
-        assert 0 < prob < 1, (
-            f"probability {prob} for {role_key!r} is not in (0, 1)"
-        )
+        for role_key, prob in items:
+            assert role_key in valid_role_keys, (
+                f"target {target_seat}: unexpected role key {role_key!r}"
+            )
+            assert 0 < prob < 1, (
+                f"target {target_seat}: probability {prob} for {role_key!r} "
+                f"is not in (0, 1)"
+            )
 
 
-def test_fixture_removing_internals_produces_empty() -> None:
-    """A ReplayModel built without internals yields empty always-on results."""
+def test_fixture_removing_internals_produces_empty_projection() -> None:
+    """A ReplayModel built without internals yields empty hover projection.
+
+    This is the revert guard: if internals stop being attached, the hover
+    overlay has nothing to draw. Pins down the "no overlay" case.
+    """
     record = _load_fixture()
     # Remove internals from the record before constructing the model.
     record.pop("internals", None)
@@ -171,5 +185,7 @@ def test_fixture_removing_internals_produces_empty() -> None:
     assert snapshot.internals is None, (
         "snapshot.internals should be None when record has no internals"
     )
-    result = spectator_overlay.always_on_all_seats(snapshot.internals)
-    assert result == {}, f"expected empty dict, got {result}"
+    projection = spectator_overlay.inverted_role_inference(
+        snapshot.internals, 0, sheriff_seat=4
+    )
+    assert projection == (), f"expected empty projection, got {projection}"

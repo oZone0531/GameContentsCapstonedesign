@@ -35,7 +35,6 @@ from ..qt_compat import (
 from ..replay import merge_rendered_log
 from ..roles import faction_name, hidden_role_label, role_name
 from .spectator_overlay import (
-    always_on_all_seats,
     bar_rect_at_point,
     emotion_bar_rects,
     emotion_bar_string,
@@ -852,10 +851,6 @@ if QT_AVAILABLE:
                 if self._state is None:
                     return
                 self._paint_seats(painter)
-                # FEAT-003: always-on per-seat inference plates render under the
-                # shot animation, game-over banner, and the hover overlay. They
-                # are a no-op in human live play (gated by _overlays_enabled).
-                self._paint_always_on_inference(painter)
                 self._paint_shot(painter)
                 self._paint_game_over_banner(painter)
                 # FEAT-001: the role-inference hover overlay must paint LAST, so
@@ -1265,106 +1260,6 @@ if QT_AVAILABLE:
                     line,
                 )
                 top += line_height
-            painter.restore()
-
-        # -- FEAT-003: always-on per-seat inference plates ----------------
-        def _always_on_plate_layout(
-            self, player: int, cx: float, cy: float, radius: float
-        ) -> tuple[float, float, float, float]:
-            """Return ``(left, top, width, line_height)`` for the always-on plate.
-
-            Positioned directly below the emotion bar stack for the seat. If
-            the seat has no drawn emotion bars, the plate starts just below the
-            three caption lines (same starting point the bar stack would use).
-            Width is 65 % of the full caption width (``radius * 3``) so the
-            compact plate is visually distinct from the wider hover plate.
-            """
-
-            caption_line_height = radius * 0.34 + 6
-            caption_top = cy + radius + 6
-            # Emotion bars start below the 3 caption lines.
-            bar_stack_top = caption_top + 3 * caption_line_height
-            # Count actually-drawn emotion bars for this seat.
-            bars = self._bars_by_seat.get(player, ())
-            drawn = min(len(bars), MAX_EMOTION_BARS) if bars else 0
-            top = bar_stack_top + drawn * caption_line_height
-            width = radius * 3 * 0.65
-            left = cx - width / 2
-            # Slightly smaller line height for the compact plate.
-            line_height = caption_line_height * 0.85
-            return left, top, width, line_height
-
-        def _paint_always_on_inference(self, painter: QPainter) -> None:
-            """Draw a small always-on inference plate under each non-sheriff seat.
-
-            No-op unless ``_overlays_enabled`` is True and ``_seat_internals``
-            is not None. Uses the aggregated (averaged across all OTHER dummy
-            AIs) consensus about each seat, capped at 3 items per seat. The
-            plate is narrower, uses a smaller font, and has a distinct
-            background color compared to the full hover plate, so both can
-            coexist without confusion.
-            """
-
-            if not self._overlays_enabled:
-                return
-            internals = self._seat_internals
-            if internals is None:
-                return
-            sheriff = sheriff_seat_from_observation(
-                getattr(self._state, "observation", None)
-            )
-            seat_items = always_on_all_seats(
-                internals, sheriff_seat=sheriff, max_items=3
-            )
-            if not seat_items:
-                return
-            width = self.width()
-            height = self.height()
-            radius = circle_radius(width, height)
-            positions = seat_positions(
-                width, height, human_player=self.human_player
-            )
-            painter.save()
-            font = QFont()
-            font.setBold(False)
-            point = font.pointSize()
-            if point > 0:
-                font.setPointSize(max(7, point - 2))
-            painter.setFont(font)
-            for seat, items in seat_items.items():
-                if seat not in positions:
-                    continue
-                cx, cy = positions[seat]
-                plate_left, plate_top, plate_width, line_ht = (
-                    self._always_on_plate_layout(seat, cx, cy, radius)
-                )
-                lines = [
-                    f"{inference_role_label(key)} {format_percent(prob)}%"
-                    for key, prob in items
-                ]
-                if not lines:
-                    continue
-                plate_height = line_ht * len(lines) + 4
-                rect = QRectF(
-                    plate_left, plate_top, plate_width, plate_height
-                )
-                # Distinct dark-blue translucent background.
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QBrush(QColor(20, 24, 40, 180)))
-                painter.drawRoundedRect(rect, 4.0, 4.0)
-                painter.setPen(QPen(QColor(210, 215, 235)))
-                y = plate_top + 2
-                for line in lines:
-                    line_rect = QRectF(plate_left, y, plate_width, line_ht)
-                    painter.drawText(
-                        line_rect,
-                        int(
-                            Qt.AlignmentFlag.AlignHCenter
-                            | Qt.AlignmentFlag.AlignVCenter
-                        ),
-                        line,
-                    )
-                    y += line_ht
             painter.restore()
 
         # -- FEAT-001: inverted role-inference hover overlay -------------
