@@ -29,6 +29,7 @@ straight from their paths.
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import sys
@@ -223,6 +224,47 @@ def test_hovering_the_human_seat_yields_empty_projection() -> None:
         snapshot.internals, _HUMAN_SEAT, sheriff_seat=sheriff
     )
     assert projection == ()
+
+
+def _render_current_source() -> str:
+    """Return the source of ReplayScreen._render_current without importing Qt.
+
+    ``replay_screen`` imports PyQt6 at module load (via ``..qt_compat``), which
+    is not installable in the restricted sandbox, so parse the file as text and
+    extract the method body with ast. This lets a pure test lock in the Qt
+    enabled-state wiring that the real bug lived in.
+    """
+
+    source = (
+        Path(__file__).resolve().parents[1] / "gui" / "screens" / "replay_screen.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_render_current":
+            return ast.get_source_segment(source, node) or ""
+    raise AssertionError("_render_current not found in replay_screen.py")
+
+
+def test_render_current_reenables_board_on_model_present_path() -> None:
+    # REGRESSION GUARD for the real (Qt-interaction) bug: a DISABLED Qt widget
+    # never receives mouseMoveEvent, so GraphicalBoard._hover_seat stays None and
+    # the role-inference overlay never paints. _render_current disables the board
+    # on the empty-model branch (setEnabled(False)); the model-present branch
+    # MUST re-enable it (setEnabled(True)) so hover works once a replay loads.
+    # Qt itself cannot run in-sandbox, so assert the wiring at the source level.
+    body = _render_current_source()
+    assert "self.board.setEnabled(False)" in body, (
+        "expected the empty-model branch to disable the board"
+    )
+    assert "self.board.setEnabled(True)" in body, (
+        "model-present path must re-enable the board so it receives "
+        "mouseMoveEvent and the hover overlay can paint"
+    )
+    # The re-enable must come BEFORE the snapshot render so the board is live for
+    # the first frame's hover, mirroring the always-enabled spectator board.
+    assert body.index("self.board.setEnabled(True)") < body.index(
+        "self._render_snapshot(snapshot)"
+    )
 
 
 def test_public_record_has_no_internals_and_empty_projection() -> None:

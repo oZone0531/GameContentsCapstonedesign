@@ -675,6 +675,17 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 self.status.setText(tr("replay.no_episode"))
                 self._set_controls_enabled(False)
                 return
+            # A model is loaded: re-enable the board so it receives mouse
+            # events again. The empty-model branch above disables the board
+            # (setEnabled(False)); a DISABLED Qt widget does NOT receive
+            # mouseMoveEvent, so GraphicalBoard._hover_seat would never be set
+            # and the role-inference hover overlay (_paint_role_inference, which
+            # returns early when _hover_seat is None) would never draw. The
+            # playback controls re-enable via _set_controls_enabled below, but
+            # that only touches the buttons / slider and never the board. Mirror
+            # the spectator board (game_screen.py), which is constructed enabled
+            # and is never disabled, so replay hover behaves identically.
+            self.board.setEnabled(True)
             snapshot = self.model.current()
             if snapshot is not None:
                 self._render_snapshot(snapshot)
