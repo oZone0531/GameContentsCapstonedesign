@@ -34,6 +34,7 @@ GUI의 "더미 AI 설정" 창에서 감정별로 보이는 행(row)과 그 안�
 | `relation_updates` | `{문자열: 유한숫자}` | 키는 비어 있지 않은 문자열, 값은 유한 숫자 | 기본 `{}`. 상대별 관계 벡터를 움직이는 규칙(3.4 절). **비워 두면 관계 벡터는 전혀 움직이지 않으므로 기존 설정과 완전히 동일하게 동작합니다.** |
 | `hp_low_threshold` | 정수 또는 `null` | `>= 0` | 기본 `null`. 공개 `hp_after`가 이 값 이하이면 `target_low_hp` / `self_low_hp` HP 버킷 키가 발동합니다(3.6 절). **`null`이면 해당 키는 전혀 발동하지 않아 기존 동작과 동일합니다.** |
 | `hp_lethal_threshold` | 정수 또는 `null` | `>= 0` | 기본 `null`. 공개 `hp_after`가 이 값 이하이면 `target_lethal` / `self_lethal` HP 버킷 키가 발동합니다(3.6 절). **`null`이면 해당 키는 전혀 발동하지 않아 기존 동작과 동일합니다.** |
+| `formula` | 객체 또는 `null` | `params`·`personality_by_role`의 이름은 `EmotionParams` 필드만 허용(오타는 오류) | 기본 `null`. **값이 있으면 이 표의 규칙 표 방식 대신 감정 계산식 모듈(`emotion_formula.py`)을 사용**함. 예시 파일: 저장소 맨 위 `emotion_formula.example.json`. `null`이면 기존 동작과 완전히 동일. |
 
 그 밖의 필드(`encoder`, `hidden_size=128`, `num_layers`, `batch_first`, `dropout`, `emotion_head_hidden_size`, `output_activation`, `loss`, `optimizer` 등)는 모두 고정 리터럴입니다. **생략하면 기본값이 그대로 쓰이므로 손으로 적을 필요가 없습니다.** 감정 설계에는 위 표의 4개 필드만 신경 쓰면 됩니다.
 

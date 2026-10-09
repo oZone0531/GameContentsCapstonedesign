@@ -1,0 +1,67 @@
+{
+  "schema_version": "1.0",
+  "emotions": [
+    {
+      "name": "calm",
+      "description": "Derived: 1 - max(confidence, aggression, anxiety)."
+    },
+    {
+      "name": "confidence",
+      "description": "Rises when good things happen to my side (an enemy is hit or eliminated)."
+    },
+    {
+      "name": "aggression",
+      "description": "Share of bad events while I still feel in control (HP-based control appraisal)."
+    },
+    {
+      "name": "anxiety",
+      "description": "Share of bad events while I feel out of control (HP-based control appraisal)."
+    }
+  ],
+  "formula": {
+    "schema_version": "formula-1.0",
+    "params": {
+      "beta_bang": 0.15,
+      "beta_elim": 0.25,
+      "nu_hp": 0.0,
+      "omega_self": 1.0,
+      "omega_ally": 0.6,
+      "omega_enemy": 0.5,
+      "lambda_S": 0.3,
+      "lambda_A": 0.0,
+      "lambda_F": 0.3,
+      "w_hp": 0.5,
+      "theta": 0.5,
+      "k": 8.0,
+      "eta_hurt": 1.0,
+      "eta_ally": 0.5,
+      "eta_avenge": 0.6,
+      "eta_enemy": 0.0,
+      "traitor_sheriff_ally": 1.0,
+      "p_S": 1.0,
+      "p_A": 1.0,
+      "p_F": 1.0,
+      "p_R": 1.0,
+      "b_S": 0.1,
+      "b_A": 0.1,
+      "b_F": 0.1,
+      "d_S": 0.01,
+      "d_A": 0.01,
+      "d_F": 0.01,
+      "d_R": 0.005,
+      "sigma": 0.01,
+      "sigma_R": 0.005,
+      "kappa_S": 1.0,
+      "kappa_A": 1.0,
+      "kappa_F": 1.0,
+      "kappa_R": 1.0,
+      "lambda_E": 1.0
+    },
+    "personality_by_role": {
+      "sheriff": {},
+      "deputy": {},
+      "outlaw": {},
+      "traitor": {}
+    }
+  }
+}

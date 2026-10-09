@@ -432,6 +432,33 @@ class EmotionDefinition(ConfigModel):
         return normalized
 
 
+class EmotionFormulaConfig(ConfigModel):
+    """Optional emotion-formula block (``bang_rl.agents.dummy_agent.emotion_formula``).
+
+    When ``EmotionConfig.formula`` is set, DummyAgents use ``FormulaEmotionModule``
+    instead of ``EmotionModule``. ``params`` overrides ``EmotionParams`` defaults and
+    ``personality_by_role`` (keys: sheriff / deputy / outlaw / traitor) overrides
+    them per role. Unknown names are rejected.
+    """
+
+    schema_version: str = Field(default="formula-1.0", min_length=1)
+    params: dict[str, float] = Field(default_factory=dict)
+    personality_by_role: dict[str, dict[str, float]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def known_names_only(self) -> "EmotionFormulaConfig":
+        for values in (self.params, *self.personality_by_role.values()):
+            for key, item in values.items():
+                if isinstance(item, bool) or not isfinite(float(item)):
+                    raise ValueError(f"formula param {key!r} must be a finite number")
+        # Imported lazily: the agents package must not be imported while the
+        # config schema module itself is being imported.
+        from bang_rl.agents.dummy_agent.emotion_formula import validate_formula_block
+
+        validate_formula_block(self.params, self.personality_by_role)
+        return self
+
+
 class EmotionConfig(ConfigModel):
     """Emotion schema, baseline, and configurable DummyAgent behavior rules."""
 
@@ -458,6 +485,9 @@ class EmotionConfig(ConfigModel):
     # matching keys in an emotion definition's ``event_updates`` to react.
     hp_low_threshold: int | None = Field(default=None, ge=0)
     hp_lethal_threshold: int | None = Field(default=None, ge=0)
+    # Optional emotion-formula block. DEFAULT ``None`` keeps the rule-table
+    # EmotionModule, so every existing config behaves exactly as before.
+    formula: EmotionFormulaConfig | None = None
     encoder: Literal["GRU"] = "GRU"
     hidden_size: Literal[128] = 128
     num_layers: Literal[1] = 1
@@ -858,6 +888,7 @@ __all__ = [
     "ArtifactConfig",
     "EmotionConfig",
     "EmotionDefinition",
+    "EmotionFormulaConfig",
     "EnvConfig",
     "EvaluationConfig",
     "EventCondition",
