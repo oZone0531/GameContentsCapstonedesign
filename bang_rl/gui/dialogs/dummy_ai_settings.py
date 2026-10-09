@@ -257,15 +257,22 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             """Build the emotion mapping from the current rows (may raise)."""
 
             emotions = [row.to_definition(index) for index, row in enumerate(self._rows)]
-            return {
-                "schema_version": self.schema_version.text().strip() or "1.0",
-                "emotion_count": self.count.value(),
-                # Carry the editable baseline so a non-zero initial_baseline is
-                # never silently reset to EmotionConfig's 0.0 default on Apply
-                # or Save. The dialog exposes it as its own spin field.
-                "initial_baseline": self.initial_baseline.value(),
-                "emotions": emotions,
-            }
+            # Start from the staged emotion config so keys this dialog has no
+            # field for (formula, relation_updates, hp thresholds, ...) are kept
+            # instead of being silently dropped on Apply or Save.
+            emotion = dict(self.editor.snapshot.dummy_emotion)
+            emotion.update(
+                {
+                    "schema_version": self.schema_version.text().strip() or "1.0",
+                    "emotion_count": self.count.value(),
+                    # Carry the editable baseline so a non-zero initial_baseline is
+                    # never silently reset to EmotionConfig's 0.0 default on Apply
+                    # or Save. The dialog exposes it as its own spin field.
+                    "initial_baseline": self.initial_baseline.value(),
+                    "emotions": emotions,
+                }
+            )
+            return emotion
 
         def _reload_rows_from_editor(self) -> None:
             """Repopulate the header and rows from the staged emotion config."""
