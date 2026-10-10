@@ -251,10 +251,10 @@ def test_intent_categories_are_role_and_faction_aware() -> None:
     module = IntentModule(player_idx=4, config={"tie_policy": "outlaw"})
     decision = module.decision(observation, beliefs)
 
-    assert decision.category is IntentCategory.ATTACK_STRONG_FACTION
-    assert decision.strong_faction == "outlaw"
-    # The public tie policy selects the outlaw faction, not a hidden role.
-    assert decision.target_scores[2] > decision.target_scores[0]
+    assert decision.category is IntentCategory.ATTACK_DEPUTY_SUSPECT
+    # Sheriff HP (5) is greater than estimated living Outlaws (2) * 2, so the
+    # Traitor follows the new role-intent rule and targets the Deputy suspect.
+    assert decision.target_scores[1] > decision.target_scores[0]
 
     duel = complete_observation(
         player_idx=4,
