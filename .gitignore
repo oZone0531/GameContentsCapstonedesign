@@ -32,3 +32,4 @@ bang_rl/datasets/cache/*
 !bang_rl/datasets/cache/.gitkeep
 bang_rl/replays/*
 !bang_rl/replays/.gitkeep
+config.json
