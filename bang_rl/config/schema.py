@@ -332,6 +332,40 @@ class IntentPolicyConfig(ConfigModel):
     target_health_weight: float = 0.0
     relation_target_weight: float = 0.0
     role_target_weights: dict[str, float] = Field(default_factory=dict)
+    pass_confidence_score: float = Field(default=0.45, ge=0.0, le=1.0)
+    outlaw_target_threshold: float = Field(default=0.60, ge=0.0, le=1.0)
+    deputy_target_threshold: float = Field(default=0.40, ge=0.0, le=1.0)
+    secondary_traitor_weight: float = Field(default=0.35, ge=0.0)
+    finish_bonus: float = Field(default=0.10, ge=0.0)
+    main_target_score: float = Field(default=1.0, ge=0.0)
+    outlaw_pressure_per_survivor: float = Field(default=2.0, ge=0.0)
+    role_mass_epsilon: float = Field(default=0.05, ge=0.0, le=1.0)
+    deputy_sheriff_intent_score: float = -5.0
+    sheriff_known_deputy_intent_score: float = -5.0
+    one_on_one_pass_score: float = -5.0
+
+    # Goal-aware Intent weights.
+    sheriff_outlaw_weight: float = 4.0
+    sheriff_traitor_weight: float = 2.0
+    sheriff_deputy_penalty: float = 4.0
+    sheriff_pass_score: float = 1.5
+    deputy_outlaw_weight: float = 4.0
+    deputy_traitor_weight: float = 2.0
+    deputy_pass_score: float = -1.0
+    outlaw_sheriff_finish_score: float = 5.0
+    outlaw_sheriff_setup_score: float = 1.0
+    outlaw_identity_reveal_cost_opening: float = Field(default=1.0, ge=0.0)
+    outlaw_identity_reveal_cost_after_sheriff_attacked: float = Field(default=0.3, ge=0.0)
+    outlaw_deputy_weight: float = 4.0
+    outlaw_ally_penalty: float = 3.0
+    outlaw_pass_score: float = 0.0
+    traitor_outlaw_weight: float = 5.0
+    traitor_secondary_target_weight: float = 1.0
+    traitor_deputy_weight: float = 5.0
+    traitor_sheriff_avoid_score: float = -5.0
+    traitor_duel_sheriff_score: float = 5.0
+    traitor_pass_score: float = 0.0
+    goal_finish_bonus: float = Field(default=1.0, ge=0.0)
     optimizer: FixedOptimizerConfig = Field(
         default_factory=lambda: FixedOptimizerConfig(learning_rate=0.001)
     )

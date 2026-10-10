@@ -8,11 +8,12 @@ from typing import Any
 
 import numpy as np
 
-from ..base import BaseAgent
+from ..base import BaseAgent, validate_action_mask
 from .emotion_formula import FormulaEmotionModule, formula_block
+
 from .emotion_module import EmotionModule
 from .intent_policy import ActionSelection, ActionSelector, IntentModule, IntentPolicyConfig
-from .role_belief import RoleBeliefEstimator
+from .role_belief import DEPUTY_ROLE, SHERIFF_ROLE, RoleBeliefEstimator
 
 
 _PRIVATE_FIELDS = {
@@ -331,6 +332,18 @@ class DummyAgent(BaseAgent):
             return None, None
         return healths, alive
 
+    def _policy_action_mask(self, observation: Any, action_mask: Any) -> np.ndarray:
+        """Return the environment legality mask without role-level hard bans.
+
+        Role preferences such as ``Deputy -> Sheriff`` avoidance and
+        one-on-one PASS avoidance are intentionally represented by finite
+        Intent scores rather than impossible actions.  This preserves a tiny
+        possibility for unusual play (or strong Emotion effects) while the
+        environment mask remains the only source of absolute legality.
+        """
+
+        return validate_action_mask(action_mask)
+
     def _prepare_emotion(self, observation: Any) -> None:
         healths, alive = self._board_state(observation)
         self._prepare_emotion_values(
@@ -411,10 +424,12 @@ class DummyAgent(BaseAgent):
             )
             contribution = self._emotion_contribution()
         intent = self.intent_module.decision(observation, self.role_beliefs)
+        policy_mask = self._policy_action_mask(observation, mask)
         selection = ActionSelector.select_with_info(
             intent.scores,
-            mask,
+            policy_mask,
             emotion_contribution=contribution,
+
             mode=effective_mode,
             rng=self._rng,
         )

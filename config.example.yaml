@@ -68,6 +68,58 @@ reward_config:
           type: pass
         value: 0.0
 
+intent_policy:
+  # PASS와 역할 추정 기반 공격의 최소 신뢰도 기준이다.
+  pass_confidence_score: 0.45
+  outlaw_target_threshold: 0.60
+  deputy_target_threshold: 0.40
+  # 보안관/부관이 무법자를 우선하되 배신자 가능성도 일부 반영한다.
+  secondary_traitor_weight: 0.35
+  # HP 1인 대상을 마무리할 때 주는 의도 보너스다.
+  finish_bonus: 0.10
+  # 보안관 직접 공격 등 확정 목표 행동의 점수다.
+  main_target_score: 1.0
+  # 무법자는 공개된 사망 역할로 계산한 AliveOutlawCount(초기 2)를 사용한다.
+  # Sheriff HP <= AliveOutlawCount * 이 값이면 보안관 마무리 단계로 본다.
+  outlaw_pressure_per_survivor: 2.0
+  role_mass_epsilon: 0.05
+  # 아래 행동은 금지하지 않고 매우 낮은 유한 점수를 준다.
+  # deterministic에서는 강한 감정 보정이 있을 때 뒤집힐 수 있고,
+  # stochastic에서는 극히 낮은 확률로도 선택될 수 있다.
+  deputy_sheriff_intent_score: -5.0
+  sheriff_known_deputy_intent_score: -5.0
+  one_on_one_pass_score: -5.0
+
+  # v5: 역할의 궁극 목표를 먼저 두고 그 목표에 따라 Intent 점수를 계산한다.
+  sheriff_outlaw_weight: 4.0
+  sheriff_traitor_weight: 2.0
+  sheriff_deputy_penalty: 4.0
+  sheriff_pass_score: 1.5
+
+  deputy_outlaw_weight: 4.0
+  deputy_traitor_weight: 2.0
+  deputy_pass_score: -1.0
+
+  outlaw_sheriff_finish_score: 5.0
+  outlaw_sheriff_setup_score: 1.0
+  # 무법자가 보안관을 쏘면 자신의 적대 의도가 드러나는 전략적 노출 비용이다.
+  # 아무도 아직 총을 쏘지 않은 오프닝에서는 1.0, 공개 전투가 시작된 뒤에는 0.3이다.
+  # 본인이 이미 보안관을 쐈거나 Sheriff +5 마무리 단계라면 노출 비용은 0이다.
+  outlaw_identity_reveal_cost_opening: 1.0
+  outlaw_identity_reveal_cost_after_sheriff_attacked: 0.3
+  outlaw_deputy_weight: 4.0
+  outlaw_ally_penalty: 3.0
+  outlaw_pass_score: 0.0
+
+  traitor_outlaw_weight: 5.0
+  traitor_secondary_target_weight: 1.0
+  traitor_deputy_weight: 5.0
+  traitor_sheriff_avoid_score: -5.0
+  traitor_duel_sheriff_score: 5.0
+  traitor_pass_score: 0.0
+
+  goal_finish_bonus: 1.0
+
 emotion:
   schema_version: "1.0"
   emotion_count: 1
