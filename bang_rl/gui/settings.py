@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from pydantic import ValidationError
 
-from bang_rl.config import ConfigFileError, ConfigService, EmotionConfig, SystemConfig
+from bang_rl.config import ConfigFileError, ConfigService, ConfigValidationError, EmotionConfig, SystemConfig
 
 
 RESOURCE_HELP = (
@@ -185,7 +185,7 @@ class SettingsEditor:
             loaded = self.config_service.load(path, EmotionConfig)
         except ValidationError as exc:
             raise SettingsValidationError(self._error_list(exc)) from exc
-        except ConfigFileError as exc:
+        except (ConfigFileError, ConfigValidationError) as exc:
             raise SettingsValidationError(({"loc": ("emotion",), "msg": str(exc)},)) from exc
         return self.apply_dummy_emotion(loaded.model_dump(mode="json"))
 

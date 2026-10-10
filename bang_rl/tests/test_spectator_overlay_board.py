@@ -87,10 +87,17 @@ def _dummy_internals() -> dict:
     }
 
 
+_APP = None
+
+
 def _app():
+    # Keep a module-level reference: a QApplication that is only returned and
+    # discarded is garbage-collected at once, and the next QWidget aborts Python.
+    global _APP
     from bang_rl.gui.qt_compat import QApplication
 
-    return QApplication.instance() or QApplication([])
+    _APP = QApplication.instance() or QApplication([])
+    return _APP
 
 
 def test_overlays_disabled_in_human_live_game() -> None:

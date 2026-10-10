@@ -697,14 +697,14 @@ class BangEnvironment(_AECEnv):
         agent_name = f"player_{actor}"
         if agent_name in self._agents:
             self._agents.remove(agent_name)
-        if self._pettingzoo_mode:
-            if terminal:
-                # Terminal cleanup: hand the selection to the next remaining
-                # agent so the AEC loop visits and cleans up every seat.
-                if self._agents:
-                    next_index = int(self._agents[0].split("_")[-1])
-                    self._state = replace(self._state, agent_selection=next_index)
-            elif not self._state.alive[actor]:
+        if terminal:
+            # Terminal cleanup: hand the selection to the next remaining agent
+            # so a cleanup loop visits every seat (direct mode included).
+            if self._agents:
+                next_index = int(self._agents[0].split("_")[-1])
+                self._state = replace(self._state, agent_selection=next_index)
+        elif self._pettingzoo_mode:
+            if not self._state.alive[actor]:
                 next_selection = _next_alive(self._state.alive, actor)
                 self._state = replace(self._state, agent_selection=next_selection)
         return None
