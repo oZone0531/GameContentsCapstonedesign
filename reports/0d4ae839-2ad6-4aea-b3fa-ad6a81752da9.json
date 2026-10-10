@@ -1,0 +1,854 @@
+{
+  "job_id": "0d4ae839-2ad6-4aea-b3fa-ad6a81752da9",
+  "metadata": {
+    "active_training_seconds": 0.0,
+    "agent_id": null,
+    "artifact_id": null,
+    "component": "training-service",
+    "config_version": "1.0",
+    "counters": {
+      "environment_steps": 0,
+      "episodes_completed": 0,
+      "main_agent_transitions": 0,
+      "ppo_updates": 0
+    },
+    "environment_step": null,
+    "episode_id": null,
+    "hardware": {
+      "batch_size": 64,
+      "buffer_size": 256,
+      "cpu_cores": 1,
+      "ram_gb": 1.0,
+      "use_gpu": false,
+      "workers": 1
+    },
+    "hashes": {
+      "config_snapshot_sha256": "098ae3e0ff9b6632b79f664aca990d9657cdc8a2c6b46aa268d04b7d5fa5c2f1",
+      "job_snapshot_sha256": "5056f059a98a3947700668811818b495df84b2d587584796edbded81f98c89c0"
+    },
+    "job_id": "0d4ae839-2ad6-4aea-b3fa-ad6a81752da9",
+    "main_agent_transition": null,
+    "paused_seconds": 0.0,
+    "paused_time_excluded": true,
+    "ppo_update": null,
+    "run_id": "0d4ae839-2ad6-4aea-b3fa-ad6a81752da9",
+    "snapshot_id": "0d4ae839-2ad6-4aea-b3fa-ad6a81752da9",
+    "source_hashes": {},
+    "versions": {
+      "action_space_version": "1.0",
+      "config_version": "1.0",
+      "dataset_split_seed": 0,
+      "dummy_preset_version": "1.0",
+      "emotion_schema_version": "1.0",
+      "environment_version": "1.0",
+      "inference_model_artifact_format_version": "1.0",
+      "observation_schema_version": "1.0",
+      "preprocessing_version": "1.0",
+      "reward_config_version": "1.0"
+    },
+    "worker_id": null
+  },
+  "output_path": "C:\\Users\\banan\\GameContentsCapstonedesign\\outputs",
+  "progress": {
+    "active_training_seconds": 0.0,
+    "artifact_path": "C:\\Users\\banan\\GameContentsCapstonedesign\\artifacts\\0d4ae839-2ad6-4aea-b3fa-ad6a81752da9.bangmodel",
+    "environment_steps": 0,
+    "episodes_completed": 0,
+    "error": {
+      "code": "runtime_error",
+      "error_type": "RuntimeError",
+      "message": "worker exploded"
+    },
+    "job_id": "0d4ae839-2ad6-4aea-b3fa-ad6a81752da9",
+    "logs": [],
+    "main_agent_transitions": 0,
+    "metrics": {
+      "episodes_completed": 0
+    },
+    "normal_episodes": 0,
+    "output_path": "C:\\Users\\banan\\GameContentsCapstonedesign\\outputs",
+    "ppo_updates": 0,
+    "report_path": "C:\\Users\\banan\\GameContentsCapstonedesign\\reports\\0d4ae839-2ad6-4aea-b3fa-ad6a81752da9.json",
+    "status": "faulted",
+    "truncated_rate": null,
+    "win_rate": null,
+    "worker_count": 1
+  },
+  "records": [],
+  "report_path": "C:\\Users\\banan\\GameContentsCapstonedesign\\reports\\0d4ae839-2ad6-4aea-b3fa-ad6a81752da9.json",
+  "service_version": "1.0",
+  "snapshot": {
+    "artifact_compatibility": {
+      "action_space_version": "1.0",
+      "emotion_schema_version": "1.0",
+      "environment_version": "1.0",
+      "inference_model_artifact_format_version": "1.0",
+      "model_architecture": {
+        "emotion_batch_first": true,
+        "emotion_dropout": 0.0,
+        "emotion_encoder": "GRU",
+        "emotion_head": "Linear(128,64)->ReLU->Linear(64,E)->Sigmoid",
+        "emotion_hidden_size": 128,
+        "emotion_num_layers": 1,
+        "intent_batch_first": true,
+        "intent_dropout": 0.0,
+        "intent_encoder": "GRU",
+        "intent_hidden_size": 128,
+        "intent_num_layers": 1,
+        "intent_role_head": "Linear(128,64)->ReLU->Linear(64,5)",
+        "ppo_policy_head": "Linear(256,6)",
+        "ppo_shared_trunk": "Linear(input_dim,256)->ReLU->Linear(256,256)->ReLU",
+        "ppo_value_head": "Linear(256,1)"
+      },
+      "observation_schema_version": "1.0",
+      "reward_config_version": "1.0"
+    },
+    "config_snapshot": {
+      "artifact": {
+        "artifact_format_version": "1.0",
+        "artifact_type": "inference",
+        "extension": ".bangmodel",
+        "inference_model_artifact_format_version": "1.0",
+        "manifest_file": "manifest.json",
+        "metadata_file": "metadata.json",
+        "output_directory": "models",
+        "weights_file": "model.safetensors"
+      },
+      "config_version": "1.0",
+      "dataset": {
+        "cache_path": "datasets/cache",
+        "canonical_path": "datasets/canonical",
+        "canonical_shard_max_bytes": 256000000,
+        "canonical_shard_max_episodes": 10000
+      },
+      "emotion": {
+        "batch_first": true,
+        "dropout": 0.0,
+        "emotion_count": 1,
+        "emotion_head_hidden_size": 64,
+        "emotions": [
+          {
+            "action_updates": {},
+            "change_rate": 0.0,
+            "decay_rate": 0.0,
+            "description": "",
+            "effects": {},
+            "event_updates": {},
+            "initial_value": null,
+            "name": "emotion_0",
+            "reward_updates": {},
+            "terminal_updates": {}
+          }
+        ],
+        "encoder": "GRU",
+        "formula": null,
+        "hidden_size": 128,
+        "hp_lethal_threshold": null,
+        "hp_low_threshold": null,
+        "initial_baseline": 0.0,
+        "loss": "MSE",
+        "num_layers": 1,
+        "optimizer": {
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "learning_rate": 0.001,
+          "name": "Adam",
+          "weight_decay": 0.0
+        },
+        "output_activation": "Sigmoid",
+        "relation_baseline": 0.0,
+        "relation_updates": {},
+        "schema_version": "1.0"
+      },
+      "env": {
+        "action_space_size": 6,
+        "critical_turn_threshold": 500,
+        "event_history": {
+          "max_events": null
+        },
+        "max_episode_steps": 2000,
+        "warn_turn_threshold": 200
+      },
+      "evaluation": {
+        "action_mode": "deterministic",
+        "base_seed": 0,
+        "deterministic": true,
+        "games": 500,
+        "games_per_seat": 100,
+        "opponent": "default",
+        "opponent_preset": "default",
+        "opponent_presets": {},
+        "protocol_id": "deterministic_v1",
+        "seat_policy": "balanced",
+        "seats": [],
+        "seed_formula": "base_seed_plus_evaluation_index",
+        "seeds": []
+      },
+      "hardware": {
+        "batch_size": 64,
+        "buffer_size": 256,
+        "cpu_cores": 1,
+        "ram_gb": 1.0,
+        "use_gpu": false,
+        "workers": 1
+      },
+      "intent_policy": {
+        "batch_first": true,
+        "deputy_outlaw_weight": 4.0,
+        "deputy_pass_score": -1.0,
+        "deputy_role_bonus": 0.25,
+        "deputy_sheriff_intent_score": -5.0,
+        "deputy_target_threshold": 0.4,
+        "deputy_traitor_weight": 2.0,
+        "dropout": 0.0,
+        "encoder": "GRU",
+        "finish_bonus": 0.1,
+        "goal_finish_bonus": 1.0,
+        "hidden_size": 128,
+        "main_target_score": 1.0,
+        "num_layers": 1,
+        "one_on_one_pass_score": -5.0,
+        "optimizer": {
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "learning_rate": 0.001,
+          "name": "Adam",
+          "weight_decay": 0.0
+        },
+        "outlaw_ally_penalty": 3.0,
+        "outlaw_deputy_weight": 4.0,
+        "outlaw_identity_reveal_cost_after_sheriff_attacked": 0.3,
+        "outlaw_identity_reveal_cost_opening": 1.0,
+        "outlaw_pass_score": 0.0,
+        "outlaw_pressure_per_survivor": 2.0,
+        "outlaw_sheriff_finish_score": 5.0,
+        "outlaw_sheriff_setup_score": 1.0,
+        "outlaw_target_threshold": 0.6,
+        "outlaw_team_attack_weight": 1.0,
+        "pass_confidence_score": 0.45,
+        "pass_score": 0.0,
+        "relation_target_weight": 0.0,
+        "role_head_hidden_size": 64,
+        "role_mass_epsilon": 0.05,
+        "role_output_size": 5,
+        "role_target_weights": {},
+        "secondary_traitor_weight": 0.35,
+        "sheriff_deputy_penalty": 4.0,
+        "sheriff_direct_duel_weight": 2.0,
+        "sheriff_direct_non_duel_weight": 0.25,
+        "sheriff_known_deputy_intent_score": -5.0,
+        "sheriff_outlaw_weight": 4.0,
+        "sheriff_pass_score": 1.5,
+        "sheriff_role_bonus": 1.0,
+        "sheriff_team_attack_weight": 1.0,
+        "sheriff_traitor_weight": 2.0,
+        "target_health_weight": 0.0,
+        "tie_policy": "sheriff",
+        "traitor_attack_weight": 1.0,
+        "traitor_deputy_weight": 5.0,
+        "traitor_duel_sheriff_score": 5.0,
+        "traitor_outlaw_weight": 5.0,
+        "traitor_pass_score": 0.0,
+        "traitor_secondary_target_weight": 1.0,
+        "traitor_sheriff_avoid_score": -5.0
+      },
+      "model_architecture": {
+        "emotion_batch_first": true,
+        "emotion_dropout": 0.0,
+        "emotion_encoder": "GRU",
+        "emotion_head": "Linear(128,64)->ReLU->Linear(64,E)->Sigmoid",
+        "emotion_hidden_size": 128,
+        "emotion_num_layers": 1,
+        "intent_batch_first": true,
+        "intent_dropout": 0.0,
+        "intent_encoder": "GRU",
+        "intent_hidden_size": 128,
+        "intent_num_layers": 1,
+        "intent_role_head": "Linear(128,64)->ReLU->Linear(64,5)",
+        "ppo_policy_head": "Linear(256,6)",
+        "ppo_shared_trunk": "Linear(input_dim,256)->ReLU->Linear(256,256)->ReLU",
+        "ppo_value_head": "Linear(256,1)"
+      },
+      "optimizer_snapshot": {
+        "emotion": {
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "learning_rate": 0.001,
+          "name": "Adam",
+          "weight_decay": 0.0
+        },
+        "intent": {
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "learning_rate": 0.001,
+          "name": "Adam",
+          "weight_decay": 0.0
+        },
+        "ppo": {
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "learning_rate": 0.0003,
+          "name": "Adam",
+          "weight_decay": 0.0
+        }
+      },
+      "pause": {
+        "ack_timeout_seconds": 30.0
+      },
+      "preset": {
+        "emotion": {
+          "batch_first": true,
+          "dropout": 0.0,
+          "emotion_count": 1,
+          "emotion_head_hidden_size": 64,
+          "emotions": [
+            {
+              "action_updates": {},
+              "change_rate": 0.0,
+              "decay_rate": 0.0,
+              "description": "",
+              "effects": {},
+              "event_updates": {},
+              "initial_value": null,
+              "name": "emotion_0",
+              "reward_updates": {},
+              "terminal_updates": {}
+            }
+          ],
+          "encoder": "GRU",
+          "formula": null,
+          "hidden_size": 128,
+          "hp_lethal_threshold": null,
+          "hp_low_threshold": null,
+          "initial_baseline": 0.0,
+          "loss": "MSE",
+          "num_layers": 1,
+          "optimizer": {
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "eps": 1e-08,
+            "learning_rate": 0.001,
+            "name": "Adam",
+            "weight_decay": 0.0
+          },
+          "output_activation": "Sigmoid",
+          "relation_baseline": 0.0,
+          "relation_updates": {},
+          "schema_version": "1.0"
+        },
+        "intent_policy": {
+          "batch_first": true,
+          "deputy_outlaw_weight": 4.0,
+          "deputy_pass_score": -1.0,
+          "deputy_role_bonus": 0.25,
+          "deputy_sheriff_intent_score": -5.0,
+          "deputy_target_threshold": 0.4,
+          "deputy_traitor_weight": 2.0,
+          "dropout": 0.0,
+          "encoder": "GRU",
+          "finish_bonus": 0.1,
+          "goal_finish_bonus": 1.0,
+          "hidden_size": 128,
+          "main_target_score": 1.0,
+          "num_layers": 1,
+          "one_on_one_pass_score": -5.0,
+          "optimizer": {
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "eps": 1e-08,
+            "learning_rate": 0.001,
+            "name": "Adam",
+            "weight_decay": 0.0
+          },
+          "outlaw_ally_penalty": 3.0,
+          "outlaw_deputy_weight": 4.0,
+          "outlaw_identity_reveal_cost_after_sheriff_attacked": 0.3,
+          "outlaw_identity_reveal_cost_opening": 1.0,
+          "outlaw_pass_score": 0.0,
+          "outlaw_pressure_per_survivor": 2.0,
+          "outlaw_sheriff_finish_score": 5.0,
+          "outlaw_sheriff_setup_score": 1.0,
+          "outlaw_target_threshold": 0.6,
+          "outlaw_team_attack_weight": 1.0,
+          "pass_confidence_score": 0.45,
+          "pass_score": 0.0,
+          "relation_target_weight": 0.0,
+          "role_head_hidden_size": 64,
+          "role_mass_epsilon": 0.05,
+          "role_output_size": 5,
+          "role_target_weights": {},
+          "secondary_traitor_weight": 0.35,
+          "sheriff_deputy_penalty": 4.0,
+          "sheriff_direct_duel_weight": 2.0,
+          "sheriff_direct_non_duel_weight": 0.25,
+          "sheriff_known_deputy_intent_score": -5.0,
+          "sheriff_outlaw_weight": 4.0,
+          "sheriff_pass_score": 1.5,
+          "sheriff_role_bonus": 1.0,
+          "sheriff_team_attack_weight": 1.0,
+          "sheriff_traitor_weight": 2.0,
+          "target_health_weight": 0.0,
+          "tie_policy": "sheriff",
+          "traitor_attack_weight": 1.0,
+          "traitor_deputy_weight": 5.0,
+          "traitor_duel_sheriff_score": 5.0,
+          "traitor_outlaw_weight": 5.0,
+          "traitor_pass_score": 0.0,
+          "traitor_secondary_target_weight": 1.0,
+          "traitor_sheriff_avoid_score": -5.0
+        },
+        "preset_id": "default",
+        "version": "1.0"
+      },
+      "reward_config": {
+        "clipping": {
+          "enabled": false,
+          "max_value": null,
+          "min_value": null
+        },
+        "shaping": {
+          "components": []
+        },
+        "terminal": {
+          "components": []
+        },
+        "version": "1.0"
+      },
+      "rl_training": {
+        "emotion_inference": {
+          "batch_first": true,
+          "dropout": 0.0,
+          "emotion_count": 1,
+          "emotion_head_hidden_size": 64,
+          "emotions": [
+            {
+              "action_updates": {},
+              "change_rate": 0.0,
+              "decay_rate": 0.0,
+              "description": "",
+              "effects": {},
+              "event_updates": {},
+              "initial_value": null,
+              "name": "emotion_0",
+              "reward_updates": {},
+              "terminal_updates": {}
+            }
+          ],
+          "encoder": "GRU",
+          "formula": null,
+          "hidden_size": 128,
+          "hp_lethal_threshold": null,
+          "hp_low_threshold": null,
+          "initial_baseline": 0.0,
+          "loss": "MSE",
+          "num_layers": 1,
+          "optimizer": {
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "eps": 1e-08,
+            "learning_rate": 0.001,
+            "name": "Adam",
+            "weight_decay": 0.0
+          },
+          "output_activation": "Sigmoid",
+          "relation_baseline": 0.0,
+          "relation_updates": {},
+          "schema_version": "1.0"
+        },
+        "ppo": {
+          "activation": "ReLU",
+          "clip_epsilon": 0.2,
+          "entropy_coef": 0.01,
+          "gae_lambda": 0.95,
+          "gamma": 0.99,
+          "max_grad_norm": 0.5,
+          "minibatch_size": 64,
+          "optimizer": {
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "eps": 1e-08,
+            "learning_rate": 0.0003,
+            "name": "Adam",
+            "weight_decay": 0.0
+          },
+          "policy_output_size": 6,
+          "ppo_epochs": 4,
+          "rollout_transitions_per_worker": 256,
+          "shared_trunk_hidden_size": 256,
+          "shared_trunk_layers": 2,
+          "value_loss_coef": 0.5,
+          "value_output_size": 1
+        }
+      },
+      "seed": 0,
+      "sl_training": {
+        "batch_size": 64,
+        "emotion": {
+          "batch_first": true,
+          "dropout": 0.0,
+          "emotion_count": 1,
+          "emotion_head_hidden_size": 64,
+          "emotions": [
+            {
+              "action_updates": {},
+              "change_rate": 0.0,
+              "decay_rate": 0.0,
+              "description": "",
+              "effects": {},
+              "event_updates": {},
+              "initial_value": null,
+              "name": "emotion_0",
+              "reward_updates": {},
+              "terminal_updates": {}
+            }
+          ],
+          "encoder": "GRU",
+          "formula": null,
+          "hidden_size": 128,
+          "hp_lethal_threshold": null,
+          "hp_low_threshold": null,
+          "initial_baseline": 0.0,
+          "loss": "MSE",
+          "num_layers": 1,
+          "optimizer": {
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "eps": 1e-08,
+            "learning_rate": 0.001,
+            "name": "Adam",
+            "weight_decay": 0.0
+          },
+          "output_activation": "Sigmoid",
+          "relation_baseline": 0.0,
+          "relation_updates": {},
+          "schema_version": "1.0"
+        },
+        "epochs": 1,
+        "intent_policy": {
+          "batch_first": true,
+          "deputy_outlaw_weight": 4.0,
+          "deputy_pass_score": -1.0,
+          "deputy_role_bonus": 0.25,
+          "deputy_sheriff_intent_score": -5.0,
+          "deputy_target_threshold": 0.4,
+          "deputy_traitor_weight": 2.0,
+          "dropout": 0.0,
+          "encoder": "GRU",
+          "finish_bonus": 0.1,
+          "goal_finish_bonus": 1.0,
+          "hidden_size": 128,
+          "main_target_score": 1.0,
+          "num_layers": 1,
+          "one_on_one_pass_score": -5.0,
+          "optimizer": {
+            "betas": [
+              0.9,
+              0.999
+            ],
+            "eps": 1e-08,
+            "learning_rate": 0.001,
+            "name": "Adam",
+            "weight_decay": 0.0
+          },
+          "outlaw_ally_penalty": 3.0,
+          "outlaw_deputy_weight": 4.0,
+          "outlaw_identity_reveal_cost_after_sheriff_attacked": 0.3,
+          "outlaw_identity_reveal_cost_opening": 1.0,
+          "outlaw_pass_score": 0.0,
+          "outlaw_pressure_per_survivor": 2.0,
+          "outlaw_sheriff_finish_score": 5.0,
+          "outlaw_sheriff_setup_score": 1.0,
+          "outlaw_target_threshold": 0.6,
+          "outlaw_team_attack_weight": 1.0,
+          "pass_confidence_score": 0.45,
+          "pass_score": 0.0,
+          "relation_target_weight": 0.0,
+          "role_head_hidden_size": 64,
+          "role_mass_epsilon": 0.05,
+          "role_output_size": 5,
+          "role_target_weights": {},
+          "secondary_traitor_weight": 0.35,
+          "sheriff_deputy_penalty": 4.0,
+          "sheriff_direct_duel_weight": 2.0,
+          "sheriff_direct_non_duel_weight": 0.25,
+          "sheriff_known_deputy_intent_score": -5.0,
+          "sheriff_outlaw_weight": 4.0,
+          "sheriff_pass_score": 1.5,
+          "sheriff_role_bonus": 1.0,
+          "sheriff_team_attack_weight": 1.0,
+          "sheriff_traitor_weight": 2.0,
+          "target_health_weight": 0.0,
+          "tie_policy": "sheriff",
+          "traitor_attack_weight": 1.0,
+          "traitor_deputy_weight": 5.0,
+          "traitor_duel_sheriff_score": 5.0,
+          "traitor_outlaw_weight": 5.0,
+          "traitor_pass_score": 0.0,
+          "traitor_secondary_target_weight": 1.0,
+          "traitor_sheriff_avoid_score": -5.0
+        }
+      }
+    },
+    "config_version": "1.0",
+    "emotion_schema_snapshot": {
+      "batch_first": true,
+      "dropout": 0.0,
+      "emotion_count": 1,
+      "emotion_head_hidden_size": 64,
+      "emotions": [
+        {
+          "action_updates": {},
+          "change_rate": 0.0,
+          "decay_rate": 0.0,
+          "description": "",
+          "effects": {},
+          "event_updates": {},
+          "initial_value": null,
+          "name": "emotion_0",
+          "reward_updates": {},
+          "terminal_updates": {}
+        }
+      ],
+      "encoder": "GRU",
+      "formula": null,
+      "hidden_size": 128,
+      "hp_lethal_threshold": null,
+      "hp_low_threshold": null,
+      "initial_baseline": 0.0,
+      "loss": "MSE",
+      "num_layers": 1,
+      "optimizer": {
+        "betas": [
+          0.9,
+          0.999
+        ],
+        "eps": 1e-08,
+        "learning_rate": 0.001,
+        "name": "Adam",
+        "weight_decay": 0.0
+      },
+      "output_activation": "Sigmoid",
+      "relation_baseline": 0.0,
+      "relation_updates": {},
+      "schema_version": "1.0"
+    },
+    "job_id": "0d4ae839-2ad6-4aea-b3fa-ad6a81752da9",
+    "mode": "rl",
+    "model_architecture": {
+      "emotion_batch_first": true,
+      "emotion_dropout": 0.0,
+      "emotion_encoder": "GRU",
+      "emotion_head": "Linear(128,64)->ReLU->Linear(64,E)->Sigmoid",
+      "emotion_hidden_size": 128,
+      "emotion_num_layers": 1,
+      "intent_batch_first": true,
+      "intent_dropout": 0.0,
+      "intent_encoder": "GRU",
+      "intent_hidden_size": 128,
+      "intent_num_layers": 1,
+      "intent_role_head": "Linear(128,64)->ReLU->Linear(64,5)",
+      "ppo_policy_head": "Linear(256,6)",
+      "ppo_shared_trunk": "Linear(input_dim,256)->ReLU->Linear(256,256)->ReLU",
+      "ppo_value_head": "Linear(256,1)"
+    },
+    "optimizers": {
+      "emotion": {
+        "betas": [
+          0.9,
+          0.999
+        ],
+        "eps": 1e-08,
+        "learning_rate": 0.001,
+        "name": "Adam",
+        "weight_decay": 0.0
+      },
+      "intent": {
+        "betas": [
+          0.9,
+          0.999
+        ],
+        "eps": 1e-08,
+        "learning_rate": 0.001,
+        "name": "Adam",
+        "weight_decay": 0.0
+      },
+      "ppo": {
+        "betas": [
+          0.9,
+          0.999
+        ],
+        "eps": 1e-08,
+        "learning_rate": 0.0003,
+        "name": "Adam",
+        "weight_decay": 0.0
+      }
+    },
+    "preset_snapshot": {
+      "emotion": {
+        "batch_first": true,
+        "dropout": 0.0,
+        "emotion_count": 1,
+        "emotion_head_hidden_size": 64,
+        "emotions": [
+          {
+            "action_updates": {},
+            "change_rate": 0.0,
+            "decay_rate": 0.0,
+            "description": "",
+            "effects": {},
+            "event_updates": {},
+            "initial_value": null,
+            "name": "emotion_0",
+            "reward_updates": {},
+            "terminal_updates": {}
+          }
+        ],
+        "encoder": "GRU",
+        "formula": null,
+        "hidden_size": 128,
+        "hp_lethal_threshold": null,
+        "hp_low_threshold": null,
+        "initial_baseline": 0.0,
+        "loss": "MSE",
+        "num_layers": 1,
+        "optimizer": {
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "learning_rate": 0.001,
+          "name": "Adam",
+          "weight_decay": 0.0
+        },
+        "output_activation": "Sigmoid",
+        "relation_baseline": 0.0,
+        "relation_updates": {},
+        "schema_version": "1.0"
+      },
+      "intent_policy": {
+        "batch_first": true,
+        "deputy_outlaw_weight": 4.0,
+        "deputy_pass_score": -1.0,
+        "deputy_role_bonus": 0.25,
+        "deputy_sheriff_intent_score": -5.0,
+        "deputy_target_threshold": 0.4,
+        "deputy_traitor_weight": 2.0,
+        "dropout": 0.0,
+        "encoder": "GRU",
+        "finish_bonus": 0.1,
+        "goal_finish_bonus": 1.0,
+        "hidden_size": 128,
+        "main_target_score": 1.0,
+        "num_layers": 1,
+        "one_on_one_pass_score": -5.0,
+        "optimizer": {
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "learning_rate": 0.001,
+          "name": "Adam",
+          "weight_decay": 0.0
+        },
+        "outlaw_ally_penalty": 3.0,
+        "outlaw_deputy_weight": 4.0,
+        "outlaw_identity_reveal_cost_after_sheriff_attacked": 0.3,
+        "outlaw_identity_reveal_cost_opening": 1.0,
+        "outlaw_pass_score": 0.0,
+        "outlaw_pressure_per_survivor": 2.0,
+        "outlaw_sheriff_finish_score": 5.0,
+        "outlaw_sheriff_setup_score": 1.0,
+        "outlaw_target_threshold": 0.6,
+        "outlaw_team_attack_weight": 1.0,
+        "pass_confidence_score": 0.45,
+        "pass_score": 0.0,
+        "relation_target_weight": 0.0,
+        "role_head_hidden_size": 64,
+        "role_mass_epsilon": 0.05,
+        "role_output_size": 5,
+        "role_target_weights": {},
+        "secondary_traitor_weight": 0.35,
+        "sheriff_deputy_penalty": 4.0,
+        "sheriff_direct_duel_weight": 2.0,
+        "sheriff_direct_non_duel_weight": 0.25,
+        "sheriff_known_deputy_intent_score": -5.0,
+        "sheriff_outlaw_weight": 4.0,
+        "sheriff_pass_score": 1.5,
+        "sheriff_role_bonus": 1.0,
+        "sheriff_team_attack_weight": 1.0,
+        "sheriff_traitor_weight": 2.0,
+        "target_health_weight": 0.0,
+        "tie_policy": "sheriff",
+        "traitor_attack_weight": 1.0,
+        "traitor_deputy_weight": 5.0,
+        "traitor_duel_sheriff_score": 5.0,
+        "traitor_outlaw_weight": 5.0,
+        "traitor_pass_score": 0.0,
+        "traitor_secondary_target_weight": 1.0,
+        "traitor_sheriff_avoid_score": -5.0
+      },
+      "preset_id": "default",
+      "version": "1.0"
+    },
+    "reward_snapshot": {
+      "clipping": {
+        "enabled": false,
+        "max_value": null,
+        "min_value": null
+      },
+      "shaping": {
+        "components": []
+      },
+      "terminal": {
+        "components": []
+      },
+      "version": "1.0"
+    },
+    "seed": 0,
+    "snapshot_format_version": "1.0",
+    "split": {
+      "seed": 0
+    },
+    "split_seed": 0,
+    "versions": {
+      "action_space_version": "1.0",
+      "config_version": "1.0",
+      "dataset_split_seed": 0,
+      "dummy_preset_version": "1.0",
+      "emotion_schema_version": "1.0",
+      "environment_version": "1.0",
+      "inference_model_artifact_format_version": "1.0",
+      "observation_schema_version": "1.0",
+      "preprocessing_version": "1.0",
+      "reward_config_version": "1.0"
+    }
+  },
+  "status": "faulted"
+}
