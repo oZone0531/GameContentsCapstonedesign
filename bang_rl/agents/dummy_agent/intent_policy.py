@@ -18,7 +18,16 @@ from typing import Any, ClassVar
 import numpy as np
 
 from ..base import ACTION_SPACE_SIZE, validate_action_mask
-from .role_belief import PLAYER_COUNT, ROLE_COUNT, RoleBeliefEstimator
+from .role_belief import (
+    DEPUTY_ROLE,
+    OUTLAW_A_ROLE,
+    OUTLAW_B_ROLE,
+    PLAYER_COUNT,
+    ROLE_COUNT,
+    SHERIFF_ROLE,
+    TRAITOR_ROLE,
+    RoleBeliefEstimator,
+)
 
 SHERIFF_FACTION = "sheriff"
 OUTLAW_FACTION = "outlaw"
@@ -34,6 +43,15 @@ _ROLE_TO_FACTION = (
 )
 
 
+class RoleGoal(str, Enum):
+    """Ultimate role objective that owns the tactical Intent layer."""
+
+    SHERIFF_ELIMINATE_ENEMIES = "sheriff_eliminate_enemies"
+    DEPUTY_PROTECT_SHERIFF = "deputy_protect_sheriff"
+    OUTLAW_ELIMINATE_SHERIFF = "outlaw_eliminate_sheriff"
+    TRAITOR_REACH_DUEL_THEN_ELIMINATE_SHERIFF = "traitor_reach_duel_then_eliminate_sheriff"
+
+
 class IntentCategory(str, Enum):
     """Stable, serializable high-level intent labels."""
 
@@ -43,6 +61,8 @@ class IntentCategory(str, Enum):
     ATTACK_ENEMY = "attack_enemy"
     ATTACK_STRONG_FACTION = "attack_strong_faction"
     ATTACK_SHERIFF_DUEL = "attack_sheriff_duel"
+    ATTACK_OUTLAW_SUSPECT = "attack_outlaw_suspect"
+    ATTACK_DEPUTY_SUSPECT = "attack_deputy_suspect"
 
 
 @dataclass(frozen=True)
@@ -67,6 +87,48 @@ class IntentPolicyConfig:
     target_health_weight: float = 0.0
     relation_target_weight: float = 0.0
     role_target_weights: Mapping[str, float] = field(default_factory=dict)
+    # v1 role-intent rules.  These are policy settings, not game rules.
+    pass_confidence_score: float = 0.45
+    outlaw_target_threshold: float = 0.60
+    deputy_target_threshold: float = 0.40
+    secondary_traitor_weight: float = 0.35
+    finish_bonus: float = 0.10
+    main_target_score: float = 1.0
+    outlaw_pressure_per_survivor: float = 2.0
+    role_mass_epsilon: float = 0.05
+    # Role-inconsistent actions stay legal but receive a very low finite score.
+    # In deterministic mode they normally lose unless Emotion overturns them;
+    # in stochastic mode they retain a tiny non-zero probability.
+    deputy_sheriff_intent_score: float = -5.0
+    sheriff_known_deputy_intent_score: float = -5.0
+    one_on_one_pass_score: float = -5.0
+
+    # v5 goal-aware Intent weights.  The role goal owns these tactical scores;
+    # Emotion is applied only after this module returns them.
+    sheriff_outlaw_weight: float = 4.0
+    sheriff_traitor_weight: float = 2.0
+    sheriff_deputy_penalty: float = 4.0
+    sheriff_pass_score: float = 1.5
+    deputy_outlaw_weight: float = 4.0
+    deputy_traitor_weight: float = 2.0
+    deputy_pass_score: float = -1.0
+    outlaw_sheriff_finish_score: float = 5.0
+    outlaw_sheriff_setup_score: float = 1.0
+    # Strategic identity-exposure cost for an Outlaw shooting the public Sheriff.
+    # Opening combat carries the highest cost; once public combat has started the
+    # cost falls, and after this Outlaw has already shot Sheriff it becomes zero.
+    outlaw_identity_reveal_cost_opening: float = 1.0
+    outlaw_identity_reveal_cost_after_sheriff_attacked: float = 0.3
+    outlaw_deputy_weight: float = 4.0
+    outlaw_ally_penalty: float = 3.0
+    outlaw_pass_score: float = 0.0
+    traitor_outlaw_weight: float = 5.0
+    traitor_secondary_target_weight: float = 1.0
+    traitor_deputy_weight: float = 5.0
+    traitor_sheriff_avoid_score: float = -5.0
+    traitor_duel_sheriff_score: float = 5.0
+    traitor_pass_score: float = 0.0
+    goal_finish_bonus: float = 1.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.schema_version, str) or not self.schema_version.strip():
@@ -84,6 +146,38 @@ class IntentPolicyConfig:
             "deputy_role_bonus",
             "target_health_weight",
             "relation_target_weight",
+            "pass_confidence_score",
+            "outlaw_target_threshold",
+            "deputy_target_threshold",
+            "secondary_traitor_weight",
+            "finish_bonus",
+            "main_target_score",
+            "outlaw_pressure_per_survivor",
+            "role_mass_epsilon",
+            "deputy_sheriff_intent_score",
+            "sheriff_known_deputy_intent_score",
+            "one_on_one_pass_score",
+            "sheriff_outlaw_weight",
+            "sheriff_traitor_weight",
+            "sheriff_deputy_penalty",
+            "sheriff_pass_score",
+            "deputy_outlaw_weight",
+            "deputy_traitor_weight",
+            "deputy_pass_score",
+            "outlaw_sheriff_finish_score",
+            "outlaw_sheriff_setup_score",
+            "outlaw_identity_reveal_cost_opening",
+            "outlaw_identity_reveal_cost_after_sheriff_attacked",
+            "outlaw_deputy_weight",
+            "outlaw_ally_penalty",
+            "outlaw_pass_score",
+            "traitor_outlaw_weight",
+            "traitor_secondary_target_weight",
+            "traitor_deputy_weight",
+            "traitor_sheriff_avoid_score",
+            "traitor_duel_sheriff_score",
+            "traitor_pass_score",
+            "goal_finish_bonus",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(float(value)):
@@ -93,6 +187,20 @@ class IntentPolicyConfig:
             if not isinstance(role, str) or not isinstance(weight, (int, float)) or not isfinite(float(weight)):
                 raise ValueError("role_target_weights must contain finite numeric values")
         object.__setattr__(self, "role_target_weights", weights)
+        for name in ("pass_confidence_score", "outlaw_target_threshold", "deputy_target_threshold", "role_mass_epsilon"):
+            value = float(getattr(self, name))
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be in [0, 1]")
+        for name in (
+            "secondary_traitor_weight",
+            "finish_bonus",
+            "main_target_score",
+            "outlaw_pressure_per_survivor",
+            "outlaw_identity_reveal_cost_opening",
+            "outlaw_identity_reveal_cost_after_sheriff_attacked",
+        ):
+            if float(getattr(self, name)) < 0.0:
+                raise ValueError(f"{name} must be non-negative")
 
     @classmethod
     def from_value(cls, value: Any | None) -> "IntentPolicyConfig":
@@ -112,6 +220,21 @@ class IntentPolicyConfig:
         # Accept the descriptive spelling used by some preset files.
         if "faction_tie_policy" in values and "tie_policy" not in values:
             values["tie_policy"] = values["faction_tie_policy"]
+        # v10 renamed the exposure-cost trigger: ordinary combat no longer
+        # lowers the cost; only a public attack on Sheriff does.  Accept the
+        # older key when loading a v9-style preset.
+        if (
+            "outlaw_identity_reveal_cost_after_combat" in values
+            and "outlaw_identity_reveal_cost_after_sheriff_attacked" not in values
+        ):
+            values["outlaw_identity_reveal_cost_after_sheriff_attacked"] = values[
+                "outlaw_identity_reveal_cost_after_combat"
+            ]
+        if (
+            "traitor_deputy_secondary_weight" in values
+            and "traitor_secondary_target_weight" not in values
+        ):
+            values["traitor_secondary_target_weight"] = values["traitor_deputy_secondary_weight"]
         # The Pydantic IntentPolicyConfig also contains architecture fields.
         # They are metadata for inference and not behavioral policy settings.
         accepted = set(cls.__dataclass_fields__)
@@ -132,6 +255,38 @@ class IntentPolicyConfig:
             "target_health_weight": float(self.target_health_weight),
             "relation_target_weight": float(self.relation_target_weight),
             "role_target_weights": dict(sorted(self.role_target_weights.items())),
+            "pass_confidence_score": float(self.pass_confidence_score),
+            "outlaw_target_threshold": float(self.outlaw_target_threshold),
+            "deputy_target_threshold": float(self.deputy_target_threshold),
+            "secondary_traitor_weight": float(self.secondary_traitor_weight),
+            "finish_bonus": float(self.finish_bonus),
+            "main_target_score": float(self.main_target_score),
+            "outlaw_pressure_per_survivor": float(self.outlaw_pressure_per_survivor),
+            "role_mass_epsilon": float(self.role_mass_epsilon),
+            "deputy_sheriff_intent_score": float(self.deputy_sheriff_intent_score),
+            "sheriff_known_deputy_intent_score": float(self.sheriff_known_deputy_intent_score),
+            "one_on_one_pass_score": float(self.one_on_one_pass_score),
+            "sheriff_outlaw_weight": float(self.sheriff_outlaw_weight),
+            "sheriff_traitor_weight": float(self.sheriff_traitor_weight),
+            "sheriff_deputy_penalty": float(self.sheriff_deputy_penalty),
+            "sheriff_pass_score": float(self.sheriff_pass_score),
+            "deputy_outlaw_weight": float(self.deputy_outlaw_weight),
+            "deputy_traitor_weight": float(self.deputy_traitor_weight),
+            "deputy_pass_score": float(self.deputy_pass_score),
+            "outlaw_sheriff_finish_score": float(self.outlaw_sheriff_finish_score),
+            "outlaw_sheriff_setup_score": float(self.outlaw_sheriff_setup_score),
+            "outlaw_identity_reveal_cost_opening": float(self.outlaw_identity_reveal_cost_opening),
+            "outlaw_identity_reveal_cost_after_sheriff_attacked": float(self.outlaw_identity_reveal_cost_after_sheriff_attacked),
+            "outlaw_deputy_weight": float(self.outlaw_deputy_weight),
+            "outlaw_ally_penalty": float(self.outlaw_ally_penalty),
+            "outlaw_pass_score": float(self.outlaw_pass_score),
+            "traitor_outlaw_weight": float(self.traitor_outlaw_weight),
+            "traitor_secondary_target_weight": float(self.traitor_secondary_target_weight),
+            "traitor_deputy_weight": float(self.traitor_deputy_weight),
+            "traitor_sheriff_avoid_score": float(self.traitor_sheriff_avoid_score),
+            "traitor_duel_sheriff_score": float(self.traitor_duel_sheriff_score),
+            "traitor_pass_score": float(self.traitor_pass_score),
+            "goal_finish_bonus": float(self.goal_finish_bonus),
         }
 
     @classmethod
@@ -203,6 +358,8 @@ class IntentDecision:
     target_scores: tuple[float, ...]
     strong_faction: str | None = None
     one_on_one_sheriff_duel: bool = False
+    ultimate_goal: RoleGoal | None = None
+    goal_stage: str | None = None
 
     @property
     def scores(self) -> np.ndarray:
@@ -215,6 +372,8 @@ class IntentDecision:
             "target_scores": list(self.target_scores),
             "strong_faction": self.strong_faction,
             "one_on_one_sheriff_duel": self.one_on_one_sheriff_duel,
+            "ultimate_goal": None if self.ultimate_goal is None else self.ultimate_goal.value,
+            "goal_stage": self.goal_stage,
         }
 
 
@@ -530,6 +689,100 @@ class IntentModule:
             return int(np.argmax(row))
         return int(np.argmax(row))
 
+    @classmethod
+    def _alive_outlaw_count(cls, observation: Any, alive: np.ndarray) -> int:
+        """Return the exact publicly knowable number of living Outlaws.
+
+        The game always starts with exactly two Outlaws.  A dead player's role
+        is public, so the count can be derived without using hidden role labels:
+        ``2 - number of dead players publicly revealed as Outlaw``.  The
+        viewer's own living role may also appear in ``revealed_roles``; checking
+        ``alive`` prevents that private self-knowledge from being mistaken for
+        an eliminated Outlaw.
+        """
+
+        revealed_values = cls._field(observation, "revealed_roles", default=None)
+        if revealed_values is None:
+            return 2
+        revealed = np.asarray(revealed_values).reshape(-1)
+        if revealed.shape != (PLAYER_COUNT,):
+            raise ValueError("revealed_roles must contain five entries")
+        dead_outlaws = 0
+        for idx in range(PLAYER_COUNT):
+            if bool(alive[idx]):
+                continue
+            try:
+                role = int(revealed[idx])
+            except (TypeError, ValueError):
+                continue
+            if role in (OUTLAW_A_ROLE, OUTLAW_B_ROLE):
+                dead_outlaws += 1
+        return max(0, 2 - dead_outlaws)
+
+    @classmethod
+    def _outlaw_reveal_context(
+        cls,
+        observation: Any,
+        *,
+        player_idx: int,
+        sheriff_idx: int,
+    ) -> tuple[int, bool]:
+        """Return public Sheriff-attack count and whether this Outlaw shot Sheriff.
+
+        IdentityRevealCost is a tactical Intent cost, not hidden information.
+        It uses only PUBLIC Bang history.  Ordinary crossfire does not reduce
+        the cost.  The cost falls only after Sheriff has actually been attacked,
+        and becomes zero once this Outlaw has personally exposed itself by
+        attacking Sheriff.
+        """
+
+        events = cls._field(observation, "event_sequence", "event_history", default=())
+        if events is None:
+            return 0, False
+        try:
+            iterator = iter(events)
+        except TypeError:
+            return 0, False
+
+        sheriff_attack_count = 0
+        self_attacked_sheriff = False
+        for event in iterator:
+            if isinstance(event, Mapping):
+                value = event
+            elif hasattr(event, "to_public_dict"):
+                value = event.to_public_dict()
+                if not isinstance(value, Mapping):
+                    continue
+            elif hasattr(event, "to_dict"):
+                try:
+                    value = event.to_dict(privileged=False)
+                except TypeError:
+                    value = event.to_dict()
+                if not isinstance(value, Mapping):
+                    continue
+            else:
+                continue
+
+            event_type = str(
+                getattr(value.get("event_type", ""), "value", value.get("event_type", ""))
+            ).rsplit(".", 1)[-1].lower()
+            if event_type != "bang":
+                continue
+
+            actor = value.get("actor_idx")
+            target = value.get("target_idx")
+            try:
+                actor_value = int(np.asarray(actor).reshape(-1)[0])
+                target_value = int(np.asarray(target).reshape(-1)[0])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if target_value == sheriff_idx:
+                sheriff_attack_count += 1
+                if actor_value == player_idx:
+                    self_attacked_sheriff = True
+
+        return sheriff_attack_count, self_attacked_sheriff
+
     def update_config(self, config: IntentPolicyConfig | Mapping[str, Any] | Any) -> None:
         """Apply a new non-structural policy preset at the next decision."""
 
@@ -537,73 +790,307 @@ class IntentModule:
         self.faction_estimator = FactionStrengthEstimator(tie_policy=self.config.tie_policy)
 
     def decision(self, observation: Any, beliefs: Any) -> IntentDecision:
+        """Return goal-aware role Intent scores from public state and role beliefs.
+
+        The decision is intentionally split into two conceptual layers.
+
+        1. ``RoleGoal`` states what the role ultimately needs in order to win.
+        2. Tactical Intent scores state which currently legal-looking action best
+           advances that goal under the agent's *beliefs*, never true hidden roles.
+
+        Emotion is not used here.  It is applied later by ``ActionSelector``.
+        """
+
         matrix = FactionStrengthEstimator._normalise_beliefs(beliefs)
         board = self._alive_and_health(observation)
         if board is None or self.player_idx is None:
-            decision = IntentDecision(IntentCategory.PASS, (self.config.pass_score,) + (0.0,) * 5, (0.0,) * 5)
+            decision = IntentDecision(
+                IntentCategory.PASS,
+                (self.config.pass_confidence_score,) + (0.0,) * 5,
+                (0.0,) * 5,
+                ultimate_goal=None,
+                goal_stage="insufficient_public_state",
+            )
             self.last_decision = decision
             return decision
+
         health, alive = board
         self_role = self._self_role(matrix)
         if self_role is None:
-            decision = IntentDecision(IntentCategory.PASS, (self.config.pass_score,) + (0.0,) * 5, (0.0,) * 5)
+            decision = IntentDecision(
+                IntentCategory.PASS,
+                (self.config.pass_confidence_score,) + (0.0,) * 5,
+                (0.0,) * 5,
+                ultimate_goal=None,
+                goal_stage="unknown_self_role",
+            )
             self.last_decision = decision
             return decision
 
-        report = self.faction_estimator.estimate(observation, matrix)
-        living = [idx for idx in range(PLAYER_COUNT) if alive[idx]]
-        duel = len(living) == 2 and alive[self.player_idx] and alive[int(np.asarray(self._field(observation, "sheriff_idx", default=0)).reshape(-1)[0])]
         sheriff_idx = int(np.asarray(self._field(observation, "sheriff_idx", default=0)).reshape(-1)[0])
+        living = [idx for idx in range(PLAYER_COUNT) if bool(alive[idx])]
+        opponents = [idx for idx in living if idx != self.player_idx]
+
+        p_outlaw = matrix[:, OUTLAW_A_ROLE] + matrix[:, OUTLAW_B_ROLE]
+        p_deputy = matrix[:, DEPUTY_ROLE]
+        p_traitor = matrix[:, TRAITOR_ROLE]
+        p_sheriff = matrix[:, SHERIFF_ROLE]
+
+        alive_outlaw_count = self._alive_outlaw_count(observation, alive)
+        # Publicly knowable living non-Outlaw count.  In the Outlaw policy this
+        # is named AliveTeamCount by design: Sheriff + Deputy + Traitor who are
+        # still alive.  Because the game always starts with exactly two
+        # Outlaws and eliminated roles are public, this does not inspect hidden
+        # role labels.
+        alive_team_count = max(0, len(living) - alive_outlaw_count)
+        estimated_alive_deputies = float(sum(float(p_deputy[idx]) for idx in living))
+        sheriff_hp = float(health[sheriff_idx]) if bool(alive[sheriff_idx]) else 0.0
+
         target_scores = np.zeros(PLAYER_COUNT, dtype=np.float64)
-        category = IntentCategory.ATTACK_ENEMY
+        pass_score = float(self.config.pass_confidence_score)
+        category = IntentCategory.PASS
+        goal_stage = "unknown"
+        duel = (
+            self_role == TRAITOR_ROLE
+            and len(living) == 2
+            and self.player_idx in living
+            and sheriff_idx in living
+        )
 
-        if self_role in (0, 1):  # Sheriff team pursues Outlaws and Traitor.
-            category = IntentCategory.ATTACK_ENEMY
-            for target in living:
-                if target == self.player_idx:
-                    continue
-                enemy_probability = float(matrix[target, 2] + matrix[target, 3] + matrix[target, 4])
-                target_scores[target] = enemy_probability * self.config.sheriff_team_attack_weight
-                target_scores[target] += float(matrix[target, 4]) * self.config.traitor_attack_weight
-                target_scores[target] += float(matrix[target, 2] + matrix[target, 3]) * self.config.outlaw_team_attack_weight
-                target_scores[target] += float(matrix[target, 0]) * self.config.sheriff_role_bonus
-                target_scores[target] += float(matrix[target, 1]) * self.config.deputy_role_bonus
-        elif self_role in (2, 3):  # Outlaws prioritize the Sheriff victory goal.
-            category = IntentCategory.ATTACK_SHERIFF_TEAM
-            for target in living:
-                if target == self.player_idx:
-                    continue
-                target_scores[target] = float(matrix[target, 0]) * self.config.sheriff_role_bonus
-                target_scores[target] += float(matrix[target, 1]) * self.config.deputy_role_bonus
-                target_scores[target] *= self.config.outlaw_team_attack_weight
-        else:  # Traitor attacks the currently stronger public-estimated faction.
-            category = IntentCategory.ATTACK_STRONG_FACTION
-            if duel and sheriff_idx != self.player_idx:
-                category = IntentCategory.ATTACK_SHERIFF_DUEL
-            for target in living:
-                if target == self.player_idx:
-                    continue
-                sheriff_probability = float(matrix[target, 0] + matrix[target, 1])
-                outlaw_probability = float(matrix[target, 2] + matrix[target, 3])
-                target_faction_probability = sheriff_probability if report.strong_faction == SHERIFF_FACTION else outlaw_probability
-                target_scores[target] = target_faction_probability * self.config.traitor_attack_weight
-                target_scores[target] += float(matrix[target, 0]) * (
-                    self.config.sheriff_direct_duel_weight if duel else self.config.sheriff_direct_non_duel_weight
+        goals = {
+            SHERIFF_ROLE: RoleGoal.SHERIFF_ELIMINATE_ENEMIES,
+            DEPUTY_ROLE: RoleGoal.DEPUTY_PROTECT_SHERIFF,
+            OUTLAW_A_ROLE: RoleGoal.OUTLAW_ELIMINATE_SHERIFF,
+            OUTLAW_B_ROLE: RoleGoal.OUTLAW_ELIMINATE_SHERIFF,
+            TRAITOR_ROLE: RoleGoal.TRAITOR_REACH_DUEL_THEN_ELIMINATE_SHERIFF,
+        }
+        ultimate_goal = goals[self_role]
+
+        def finish_bonus(target: int) -> float:
+            return self.config.goal_finish_bonus if int(health[target]) == 1 else 0.0
+
+        def best_attack_score() -> float:
+            return max((float(target_scores[t]) for t in opponents), default=-np.inf)
+
+        # ------------------------------------------------------------------
+        # SHERIFF
+        # Ultimate goal: survive while eliminating both Outlaws and Traitor.
+        # The Sheriff therefore values enemy probability, avoids likely Deputy,
+        # and may wait when all targets remain too ambiguous.
+        # ------------------------------------------------------------------
+        if self_role == SHERIFF_ROLE:
+            goal_stage = "identify_and_eliminate_enemies"
+            pass_score = float(self.config.sheriff_pass_score)
+
+            # If a non-terminal game has only Sheriff and one other player alive,
+            # the remaining player should normally be an enemy.  Do not let an
+            # equal PASS score stall the duel.  A nearly-certain Deputy is kept
+            # as the exception because Sheriff+Deputy should normally have
+            # already terminated as a Sheriff-team win.
+            if len(living) == 2 and len(opponents) == 1:
+                last_target = opponents[0]
+                if float(p_deputy[last_target]) < 0.99:
+                    goal_stage = "finish_last_enemy"
+                    pass_score = float(self.config.one_on_one_pass_score)
+
+            for target in opponents:
+                score = (
+                    self.config.sheriff_outlaw_weight * float(p_outlaw[target])
+                    + self.config.sheriff_traitor_weight * float(p_traitor[target])
+                    - self.config.sheriff_deputy_penalty * float(p_deputy[target])
                 )
-                target_scores[target] += float(matrix[target, 1]) * self.config.deputy_role_bonus
+                target_scores[target] = score
 
-        for target in living:
-            role_weight = self.config.role_target_weights.get(self._role_name(int(np.argmax(matrix[target]))), 0.0)
-            target_scores[target] += role_weight
-            target_scores[target] += self.config.target_health_weight * float(health[target])
-        action_scores = np.full(ACTION_SPACE_SIZE, self.config.pass_score, dtype=np.float64)
+            if best_attack_score() > pass_score:
+                category = IntentCategory.ATTACK_OUTLAW_SUSPECT
+            else:
+                category = IntentCategory.PASS
+
+        # ------------------------------------------------------------------
+        # DEPUTY
+        # Ultimate goal: keep Sheriff alive and remove threats to Sheriff.
+        # Sheriff is still a legal target, but receives an extremely poor
+        # role-intent score rather than a hard ban.
+        # ------------------------------------------------------------------
+        elif self_role == DEPUTY_ROLE:
+            goal_stage = "protect_sheriff_and_remove_threats"
+            pass_score = float(self.config.deputy_pass_score)
+            for target in opponents:
+                if target == sheriff_idx:
+                    target_scores[target] = self.config.deputy_sheriff_intent_score
+                    continue
+                target_scores[target] = (
+                    self.config.deputy_outlaw_weight * float(p_outlaw[target])
+                    + self.config.deputy_traitor_weight * float(p_traitor[target])
+                    + finish_bonus(target)
+                )
+            category = (
+                IntentCategory.ATTACK_OUTLAW_SUSPECT
+                if best_attack_score() > pass_score
+                else IntentCategory.PASS
+            )
+
+        # ------------------------------------------------------------------
+        # OUTLAW
+        # Ultimate goal: eliminate Sheriff.  ``alive_outlaw_count`` starts at
+        # two and decreases only when an eliminated Outlaw is publicly revealed.
+        # This keeps the pressure rule based on public facts instead of hidden
+        # roles or belief-mass estimates.
+        # ------------------------------------------------------------------
+        elif self_role in (OUTLAW_A_ROLE, OUTLAW_B_ROLE):
+            pressure_limit = alive_outlaw_count * self.config.outlaw_pressure_per_survivor
+            deputy_gone = estimated_alive_deputies <= self.config.role_mass_epsilon
+            numerical_advantage = alive_outlaw_count >= alive_team_count
+            can_finish_sheriff = bool(alive[sheriff_idx]) and (
+                numerical_advantage
+                or sheriff_hp <= pressure_limit
+                or deputy_gone
+            )
+
+            if can_finish_sheriff:
+                goal_stage = "finish_sheriff"
+                pass_score = float(self.config.outlaw_pass_score)
+                if sheriff_idx != self.player_idx and bool(alive[sheriff_idx]):
+                    target_scores[sheriff_idx] = self.config.outlaw_sheriff_finish_score
+                for target in opponents:
+                    if target == sheriff_idx:
+                        continue
+                    target_scores[target] = (
+                        self.config.outlaw_deputy_weight * float(p_deputy[target])
+                        - self.config.outlaw_ally_penalty * float(p_outlaw[target])
+                        + finish_bonus(target)
+                    )
+                category = IntentCategory.ATTACK_SHERIFF_TEAM
+            else:
+                goal_stage = "weaken_sheriff_team_before_finish"
+                pass_score = float(self.config.outlaw_pass_score)
+
+                # Shooting the public Sheriff is strategically informative: at
+                # the opening it effectively announces hostile alignment.  Keep
+                # that as an Intent cost rather than randomizing the action.
+                # Ordinary crossfire does NOT reduce the cost.  It falls only
+                # after Sheriff has actually been attacked, and disappears once
+                # this Outlaw has personally exposed itself by shooting Sheriff.
+                sheriff_attack_count, self_attacked_sheriff = self._outlaw_reveal_context(
+                    observation,
+                    player_idx=self.player_idx,
+                    sheriff_idx=sheriff_idx,
+                )
+                if self_attacked_sheriff:
+                    identity_reveal_cost = 0.0
+                elif sheriff_attack_count == 0:
+                    identity_reveal_cost = float(self.config.outlaw_identity_reveal_cost_opening)
+                else:
+                    identity_reveal_cost = float(
+                        self.config.outlaw_identity_reveal_cost_after_sheriff_attacked
+                    )
+
+                if sheriff_idx != self.player_idx and bool(alive[sheriff_idx]):
+                    target_scores[sheriff_idx] = (
+                        self.config.outlaw_sheriff_setup_score - identity_reveal_cost
+                    )
+                for target in opponents:
+                    if target == sheriff_idx:
+                        continue
+                    target_scores[target] = (
+                        self.config.outlaw_deputy_weight * float(p_deputy[target])
+                        - self.config.outlaw_ally_penalty * float(p_outlaw[target])
+                        + finish_bonus(target)
+                    )
+                best_non_sheriff = max(
+                    (float(target_scores[t]) for t in opponents if t != sheriff_idx),
+                    default=-np.inf,
+                )
+                category = (
+                    IntentCategory.ATTACK_DEPUTY_SUSPECT
+                    if best_non_sheriff > max(pass_score, float(target_scores[sheriff_idx]))
+                    else IntentCategory.ATTACK_SHERIFF_TEAM
+                )
+
+        # ------------------------------------------------------------------
+        # TRAITOR
+        # Ultimate goal: preserve Sheriff until the final duel while keeping
+        # Sheriff-team and Outlaw-team strength in balance.  If Outlaws are
+        # stronger, pressure likely Outlaws.  If Sheriff+Deputy are stronger,
+        # pressure the likely Deputy.  This avoids turning Traitor into a fixed
+        # third member of Sheriff team.
+        # ------------------------------------------------------------------
+        else:
+            pass_score = float(self.config.traitor_pass_score)
+            strength_report = self.faction_estimator.estimate(observation, matrix)
+
+            if duel:
+                goal_stage = "final_sheriff_duel"
+                pass_score = float(self.config.one_on_one_pass_score)
+                if sheriff_idx != self.player_idx and bool(alive[sheriff_idx]):
+                    target_scores[sheriff_idx] = self.config.traitor_duel_sheriff_score
+                category = IntentCategory.ATTACK_SHERIFF_DUEL
+
+            elif alive_outlaw_count == 0:
+                # No Outlaws remain publicly alive: Deputy is now the only
+                # non-Sheriff obstacle to the final duel.
+                goal_stage = "remove_deputy_preserve_sheriff"
+                for target in opponents:
+                    if target == sheriff_idx:
+                        target_scores[target] = self.config.traitor_sheriff_avoid_score
+                        continue
+                    target_scores[target] = (
+                        self.config.traitor_deputy_weight * float(p_deputy[target])
+                        + finish_bonus(target)
+                    )
+                category = (
+                    IntentCategory.ATTACK_DEPUTY_SUSPECT
+                    if best_attack_score() > pass_score
+                    else IntentCategory.PASS
+                )
+
+            elif strength_report.strong_faction == OUTLAW_FACTION:
+                goal_stage = "balance_against_outlaw_strength"
+                for target in opponents:
+                    if target == sheriff_idx:
+                        target_scores[target] = self.config.traitor_sheriff_avoid_score
+                        continue
+                    target_scores[target] = (
+                        self.config.traitor_outlaw_weight * float(p_outlaw[target])
+                        + self.config.traitor_secondary_target_weight * float(p_deputy[target])
+                        + finish_bonus(target)
+                    )
+                category = (
+                    IntentCategory.ATTACK_OUTLAW_SUSPECT
+                    if best_attack_score() > pass_score
+                    else IntentCategory.PASS
+                )
+
+            else:
+                goal_stage = "balance_against_sheriff_strength"
+                for target in opponents:
+                    if target == sheriff_idx:
+                        target_scores[target] = self.config.traitor_sheriff_avoid_score
+                        continue
+                    target_scores[target] = (
+                        self.config.traitor_deputy_weight * float(p_deputy[target])
+                        + self.config.traitor_secondary_target_weight * float(p_outlaw[target])
+                        + finish_bonus(target)
+                    )
+                category = (
+                    IntentCategory.ATTACK_DEPUTY_SUSPECT
+                    if best_attack_score() > pass_score
+                    else IntentCategory.PASS
+                )
+
+        action_scores = np.zeros(ACTION_SPACE_SIZE, dtype=np.float64)
+        action_scores[0] = pass_score
         action_scores[1:] = target_scores
+
+        report = self.faction_estimator.estimate(observation, matrix)
         decision = IntentDecision(
             category=category,
             action_scores=tuple(float(value) for value in action_scores),
             target_scores=tuple(float(value) for value in target_scores),
-            strong_faction=report.strong_faction if self_role == 4 else None,
-            one_on_one_sheriff_duel=bool(duel and self_role == 4),
+            strong_faction=report.strong_faction if self_role == TRAITOR_ROLE else None,
+            one_on_one_sheriff_duel=bool(duel),
+            ultimate_goal=ultimate_goal,
+            goal_stage=goal_stage,
         )
         self.last_decision = decision
         return decision
@@ -645,6 +1132,12 @@ class IntentModule:
                 target_scores=tuple(float(item) for item in value["target_scores"]),
                 strong_faction=value.get("strong_faction"),
                 one_on_one_sheriff_duel=bool(value.get("one_on_one_sheriff_duel", False)),
+                ultimate_goal=(
+                    None
+                    if value.get("ultimate_goal") is None
+                    else RoleGoal(value["ultimate_goal"])
+                ),
+                goal_stage=value.get("goal_stage"),
             )
         return module
 
@@ -663,6 +1156,7 @@ __all__ = [
     "FactionStrengthEstimator",
     "FactionStrengthReport",
     "IntentCategory",
+    "RoleGoal",
     "IntentDecision",
     "IntentModule",
     "IntentPolicy",

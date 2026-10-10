@@ -19,7 +19,20 @@ PLAYER_COUNT = 5
 ROLE_COUNT = 5
 HIDDEN_ROLE_SENTINEL = 255
 SHERIFF_ROLE = 0
+DEPUTY_ROLE = 1
+OUTLAW_A_ROLE = 2
+OUTLAW_B_ROLE = 3
+TRAITOR_ROLE = 4
 STATE_SCHEMA_VERSION = "1.0"
+
+DEFAULT_EVIDENCE_MULTIPLIERS = {
+    "attack_sheriff_outlaw": 2.0,
+    "crossfire_traitor": 1.5,
+    "crossfire_target_outlaw": 1.25,
+    "attack_outlaw_self_deputy": 1.5,
+    "attack_outlaw_self_traitor": 1.5,
+    "protect_sheriff_deputy": 1.5,
+}
 ROLE_NAMES = ("sheriff", "deputy", "outlaw_a", "outlaw_b", "traitor")
 
 _PRIVILEGED_KEYS = frozenset(
@@ -147,7 +160,13 @@ class RoleBeliefEstimator:
     PLAYER_COUNT: ClassVar[int] = PLAYER_COUNT
     role_names: ClassVar[tuple[str, ...]] = ROLE_NAMES
 
-    def __init__(self, player_idx: int | None = None, *, self_idx: int | None = None) -> None:
+    def __init__(
+        self,
+        player_idx: int | None = None,
+        *,
+        self_idx: int | None = None,
+        evidence_multipliers: Mapping[str, float] | None = None,
+    ) -> None:
         if player_idx is not None and self_idx is not None and int(player_idx) != int(self_idx):
             raise ValueError("player_idx and self_idx must identify the same slot")
         resolved = player_idx if player_idx is not None else self_idx
@@ -157,6 +176,23 @@ class RoleBeliefEstimator:
         self.last_environment_step: int | None = None
         self._known_roles: dict[int, int] = {}
         self._processed_event_ids: set[int] = set()
+        values = dict(DEFAULT_EVIDENCE_MULTIPLIERS)
+        if evidence_multipliers is not None:
+            incoming = dict(evidence_multipliers)
+            # Intent v1 serialized this now-removed heuristic.  Ignore the
+            # legacy key so old development snapshots can still be inspected,
+            # but never apply the rule again.
+            incoming.pop("attacked_twice_deputy", None)
+            for key, value in incoming.items():
+                if key not in values:
+                    raise ValueError(f"unknown role-belief evidence multiplier: {key}")
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(float(value)) or float(value) <= 0.0:
+                    raise ValueError("role-belief evidence multipliers must be positive finite numbers")
+                values[key] = float(value)
+        self.evidence_multipliers = values
+        self._evidence = np.ones((PLAYER_COUNT, ROLE_COUNT), dtype=np.float64)
+        self._attack_received_counts = np.zeros(PLAYER_COUNT, dtype=np.int64)
+        self._sheriff_attackers: set[int] = set()
         self._beliefs = np.full((PLAYER_COUNT, ROLE_COUNT), 1.0 / ROLE_COUNT, dtype=np.float32)
 
     @property
@@ -187,6 +223,9 @@ class RoleBeliefEstimator:
         self.last_environment_step = None
         self._known_roles.clear()
         self._processed_event_ids.clear()
+        self._evidence = np.ones((PLAYER_COUNT, ROLE_COUNT), dtype=np.float64)
+        self._attack_received_counts = np.zeros(PLAYER_COUNT, dtype=np.int64)
+        self._sheriff_attackers.clear()
         self._beliefs = np.full((PLAYER_COUNT, ROLE_COUNT), 1.0 / ROLE_COUNT, dtype=np.float32)
         if observation is not None:
             return self.initialize(observation)
@@ -297,13 +336,86 @@ class RoleBeliefEstimator:
                         continue
                     self._processed_event_ids.add(event_id)
                     self.last_event_id = event_id if self.last_event_id is None else max(self.last_event_id, event_id)
+
             event_role = value.get("revealed_role")
             role = _role(event_role, "revealed_role") if event_role is not None else None
-            if role is None:
+            if role is not None:
+                slot = value.get("eliminated_idx", value.get("target_idx"))
+                if slot is not None:
+                    self._confirm(_player_index(slot, "event player index"), role)
+
+            event_type = str(getattr(value.get("event_type", ""), "value", value.get("event_type", ""))).rsplit(".", 1)[-1].lower()
+            if event_type != "bang":
                 continue
-            slot = value.get("eliminated_idx", value.get("target_idx"))
-            if slot is not None:
-                self._confirm(_player_index(slot, "event player index"), role)
+            actor = value.get("actor_idx")
+            target = value.get("target_idx")
+            if actor is None or target is None:
+                continue
+            self._apply_bang_evidence(
+                _player_index(actor, "actor_idx"),
+                _player_index(target, "target_idx"),
+            )
+
+    def _boost(self, player_idx: int, roles: Iterable[int], multiplier_key: str) -> None:
+        if player_idx in self._known_roles:
+            return
+        factor = float(self.evidence_multipliers[multiplier_key])
+        for role in roles:
+            self._evidence[player_idx, int(role)] *= factor
+
+    def _apply_bang_evidence(self, actor: int, target: int) -> None:
+        """Update soft role evidence from one PUBLIC Bang event.
+
+        The rules deliberately stop at role-belief updates.  They never add an
+        attack score here; that belongs to IntentModule.
+        """
+
+        self._attack_received_counts[target] += 1
+        sheriff_idx = next((idx for idx, role in self._known_roles.items() if role == SHERIFF_ROLE), None)
+        if sheriff_idx is None:
+            return
+        if target == sheriff_idx:
+            self._sheriff_attackers.add(actor)
+
+        self_role = self._known_roles.get(self.player_idx) if self.player_idx is not None else None
+        if self_role is None:
+            return
+
+        # Common strong evidence: intentionally attacking the public Sheriff is
+        # most compatible with an Outlaw objective.
+        if target == sheriff_idx and actor != sheriff_idx:
+            self._boost(actor, (OUTLAW_A_ROLE, OUTLAW_B_ROLE), "attack_sheriff_outlaw")
+
+        if self_role == SHERIFF_ROLE:
+            # Being attacked repeatedly is NOT role evidence anymore.  The
+            # Sheriff handles that public situation as an Intent preference
+            # (temporary target de-prioritisation) instead of changing the
+            # target's Deputy probability.
+            pass
+
+        elif self_role == DEPUTY_ROLE:
+            # From the Deputy's perspective the three hidden players are
+            # Outlaw, Outlaw, Traitor.  If one hidden player shoots another,
+            # the actor looks more Traitor-like (an Outlaw should normally
+            # pressure the public Sheriff), while the target becomes modestly
+            # more Outlaw-like.
+            if actor not in {self.player_idx, sheriff_idx} and target not in {self.player_idx, sheriff_idx}:
+                self._boost(actor, (TRAITOR_ROLE,), "crossfire_traitor")
+                self._boost(target, (OUTLAW_A_ROLE, OUTLAW_B_ROLE), "crossfire_target_outlaw")
+
+        elif self_role in (OUTLAW_A_ROLE, OUTLAW_B_ROLE):
+            # An unknown non-Sheriff who attacks the Outlaw observer is more
+            # compatible with Sheriff-team protection or Traitor survival play.
+            if target == self.player_idx and actor != sheriff_idx:
+                self._boost(actor, (DEPUTY_ROLE,), "attack_outlaw_self_deputy")
+                self._boost(actor, (TRAITOR_ROLE,), "attack_outlaw_self_traitor")
+
+        elif self_role == TRAITOR_ROLE:
+            # The user had not yet specified a Traitor-specific belief rule.
+            # As a provisional public-only rule, a player who attacks someone
+            # already observed attacking the Sheriff looks more Deputy-like.
+            if target in self._sheriff_attackers and actor not in {self.player_idx, sheriff_idx}:
+                self._boost(actor, (DEPUTY_ROLE,), "protect_sheriff_deputy")
 
     def _confirm(self, player_idx: int, role: int | None) -> None:
         if role is None:
@@ -328,7 +440,33 @@ class RoleBeliefEstimator:
         if np.any(remaining < -1e-9) or len(unresolved) != int(round(float(remaining.sum()))):
             raise ValueError("public role constraints cannot form the five-role assignment")
         if unresolved:
-            beliefs[unresolved, :] = remaining / float(len(unresolved))
+            # Start from soft public evidence, then iteratively scale rows and
+            # columns.  This keeps each player's row normalized while also
+            # respecting the exact remaining role counts (one Sheriff, one
+            # Deputy, two distinct Outlaw slots, one Traitor globally).
+            matrix = np.maximum(self._evidence[unresolved, :].copy(), 1e-12)
+            matrix[:, remaining <= 0.0] = 0.0
+            for _ in range(128):
+                for role in range(ROLE_COUNT):
+                    if remaining[role] <= 0.0:
+                        matrix[:, role] = 0.0
+                        continue
+                    total = float(matrix[:, role].sum())
+                    if total <= 0.0:
+                        matrix[:, role] = remaining[role] / float(len(unresolved))
+                    else:
+                        matrix[:, role] *= remaining[role] / total
+                row_sums = matrix.sum(axis=1, keepdims=True)
+                if np.any(row_sums <= 0.0):
+                    raise ValueError("public role evidence produced an empty role row")
+                matrix /= row_sums
+                column_error = float(np.max(np.abs(matrix.sum(axis=0) - remaining)))
+                if column_error < 1e-10:
+                    break
+            # One final row normalization protects callers from tiny floating
+            # error while preserving the column-count constraint closely.
+            matrix /= matrix.sum(axis=1, keepdims=True)
+            beliefs[unresolved, :] = matrix
         self._beliefs = beliefs.astype(np.float32)
 
     def state_dict(self) -> dict[str, Any]:
@@ -342,6 +480,10 @@ class RoleBeliefEstimator:
             "last_environment_step": self.last_environment_step,
             "known_roles": {str(index): int(role) for index, role in sorted(self._known_roles.items())},
             "processed_event_ids": sorted(self._processed_event_ids),
+            "evidence_multipliers": dict(sorted(self.evidence_multipliers.items())),
+            "evidence": self._evidence.astype(float).tolist(),
+            "attack_received_counts": self._attack_received_counts.astype(int).tolist(),
+            "sheriff_attackers": sorted(self._sheriff_attackers),
             "beliefs": self._beliefs.astype(float).tolist(),
         }
 
@@ -354,7 +496,10 @@ class RoleBeliefEstimator:
             raise TypeError("state must be a mapping")
         if state.get("schema_version", STATE_SCHEMA_VERSION) != STATE_SCHEMA_VERSION:
             raise ValueError("unsupported RoleBeliefEstimator state schema")
-        estimator = cls(player_idx=state.get("player_idx"))
+        estimator = cls(
+            player_idx=state.get("player_idx"),
+            evidence_multipliers=state.get("evidence_multipliers"),
+        )
         estimator.episode_id = state.get("episode_id")
         estimator.last_event_id = state.get("last_event_id")
         estimator.last_environment_step = state.get("last_environment_step")
@@ -364,6 +509,17 @@ class RoleBeliefEstimator:
         for index, role in known.items():
             estimator._confirm(_player_index(int(index), "known role player index"), _role(role, "known role"))
         estimator._processed_event_ids = {int(event_id) for event_id in state.get("processed_event_ids", [])}
+        evidence = np.asarray(state.get("evidence", estimator._evidence), dtype=np.float64)
+        if evidence.shape != (PLAYER_COUNT, ROLE_COUNT) or not np.all(np.isfinite(evidence)) or np.any(evidence <= 0.0):
+            raise ValueError("serialized role evidence must be a positive finite (5, 5) matrix")
+        estimator._evidence = evidence
+        counts = np.asarray(state.get("attack_received_counts", estimator._attack_received_counts), dtype=np.int64)
+        if counts.shape != (PLAYER_COUNT,) or np.any(counts < 0):
+            raise ValueError("serialized attack_received_counts must contain five non-negative values")
+        estimator._attack_received_counts = counts
+        estimator._sheriff_attackers = {int(index) for index in state.get("sheriff_attackers", [])}
+        if any(index < 0 or index >= PLAYER_COUNT for index in estimator._sheriff_attackers):
+            raise ValueError("serialized sheriff_attackers contains an invalid player index")
         estimator._recompute_beliefs()
         expected = np.asarray(state.get("beliefs", estimator._beliefs), dtype=np.float32)
         if expected.shape != (PLAYER_COUNT, ROLE_COUNT) or not np.allclose(expected, estimator._beliefs, atol=1e-6):
