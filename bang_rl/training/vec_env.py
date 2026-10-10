@@ -413,7 +413,7 @@ class WorkerRuntime:
         try:
             self.control.safe_point()
             observation = _public_observation(self.environment)
-            observed_mask = observation["action_mask"] if isinstance(observation, Mapping) else observation.action_mask
+            observed_mask = observation["action_mask"] if isinstance(observation, Mapping) or hasattr(observation, "to_observation_dict") else observation.action_mask
             mask = np.asarray(observed_mask, dtype=np.uint8).copy()
             selected_action = self._choose_action(observation, mask) if action is None and action_provider is None else _action_from_provider(action_provider, observation, mask) if action is None else int(action)
             self.environment.step(selected_action)
@@ -805,7 +805,7 @@ class SubprocVecEnv:
             actions: list[Mapping[str, Any]] = []
             events: list[Mapping[str, Any]] = []
             while True:
-                mask = np.asarray(observation["action_mask"] if isinstance(observation, Mapping) else observation.action_mask, dtype=np.uint8)
+                mask = np.asarray(observation["action_mask"] if isinstance(observation, Mapping) or hasattr(observation, "to_observation_dict") else observation.action_mask, dtype=np.uint8)
                 action = _action_from_provider(action_provider, observation, mask)
                 step = self._request_one(assignment.worker_id, "step", action)
                 observation = step.observation

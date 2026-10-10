@@ -108,7 +108,11 @@ def test_elimination_creates_public_role_reveal_for_every_viewer() -> None:
         assert values["event_sequence"][-1]["revealed_role"] == Role.DEPUTY
 
 
-def test_only_logically_confirmed_remaining_role_is_one_hot() -> None:
+def test_living_non_sheriff_role_is_never_revealed_by_deduction() -> None:
+    # Game rule: only the Sheriff, the viewer's own seat and eliminated players
+    # are public.  Even when the last living seat's role could be deduced by
+    # elimination (here: the Traitor), the environment does NOT reveal it; any
+    # deduction is left to the agent's own role-belief estimator.
     state = make_state(
         health=(5, 0, 0, 0, 4),
         alive=(True, False, False, False, True),
@@ -117,9 +121,9 @@ def test_only_logically_confirmed_remaining_role_is_one_hot() -> None:
     environment = BangEnvironment(state=state, max_episode_steps=None)
     values = environment.observe(agent=0).to_observation_dict()
 
-    assert values["revealed_roles"].tolist() == [0, 1, 2, 3, 4]
-    assert values["role_visibility"].tolist() == [1, 2, 2, 2, 3]
-    assert values["confirmed_role_distribution"][4].tolist() == [0, 0, 0, 0, 1]
+    assert values["revealed_roles"].tolist() == [0, 1, 2, 3, HIDDEN_ROLE_SENTINEL]
+    assert values["role_visibility"].tolist() == [1, 2, 2, 2, 0]
+    assert values["confirmed_role_distribution"][4].tolist() == [0, 0, 0, 0, 0]
 
 
 def test_event_history_is_bounded_only_in_observation_and_reset_step_integrate_it() -> None:
