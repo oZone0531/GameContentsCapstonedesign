@@ -1000,9 +1000,21 @@ class GameSessionController:
             # the Qt-free helper. Best-effort/defensive: build_replay_filename
             # sanitizes the mode so a bad value never crashes the save (and
             # falls back to the mode-less name).
-            replay_store.save_replay(
+            saved_path = replay_store.save_replay(
                 record, filename=replay_store.build_replay_filename(self.mode.value)
             )
+            # Emotion decision trace: a human-readable <replay>.txt beside every
+            # FULL replay (per turn: emotion state, intent + emotion = total,
+            # and whether emotion changed the pick). Best-effort; never raises.
+            if self._save_full_replay and self._replay_states:
+                try:
+                    from pathlib import Path
+
+                    from bang_rl.gui.emotion_trace import write_trace
+
+                    write_trace(record, Path(saved_path).with_suffix(".txt"))
+                except Exception:
+                    pass
         except Exception:
             # Never let a replay-save failure crash or interrupt the game.
             return

@@ -970,6 +970,17 @@ class GameService:
             env.step(None)
             return StepResult(self._state(session), 0.0, None, _freeze({"cleanup": True}), cleanup=True)
         selected = int(env.state.agent_selection)
+        # Emotion formula: every living dummy (not only the actor) advances its
+        # emotion state at every step, each from its OWN public observation.
+        # No-op for dummies on the rule-table EmotionModule (the default).
+        for index, seat_agent in enumerate(session.agents):
+            if (
+                index != selected
+                and isinstance(seat_agent, DummyAgent)
+                and seat_agent.uses_emotion_formula
+                and env.state.alive[index]
+            ):
+                seat_agent.observe_public_boundary(env.observe(index))
         selected_action = action
         if selected_action is None:
             agent = session.agents[selected]

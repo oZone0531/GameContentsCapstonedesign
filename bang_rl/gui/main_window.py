@@ -324,6 +324,11 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             # torn-down) GameScreen so controller.start()'s internal publish
             # cannot render into deleted C++ widgets.
             self.controller.on_update = None
+            # Start the game with the settings staged in the Settings screen
+            # (e.g. Dummy AI emotion). Previously games always ran on the
+            # config given at window construction (the default SystemConfig).
+            self.config = self.settings_editor.snapshot.config
+            self.controller.config = self.config
             # Item 1 (FEAT-003): for a HUMAN mode whose first turn is an AI
             # (Sheriff-first), let the GameScreen animate the AI run-up one turn
             # at a time instead of the controller silently fast-forwarding it.

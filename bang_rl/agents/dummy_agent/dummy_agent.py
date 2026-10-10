@@ -9,6 +9,8 @@ from typing import Any
 import numpy as np
 
 from ..base import BaseAgent, validate_action_mask
+from .emotion_formula import FormulaEmotionModule, formula_block
+
 from .emotion_module import EmotionModule
 from .intent_policy import ActionSelection, ActionSelector, IntentModule, IntentPolicyConfig
 from .role_belief import DEPUTY_ROLE, SHERIFF_ROLE, RoleBeliefEstimator
@@ -127,14 +129,23 @@ class DummyAgent(BaseAgent):
                 player_idx=player_idx,
                 config=policy_config if policy_config is not None else intent_config,
             )
-        if emotion_module is not None and not isinstance(emotion_module, EmotionModule):
-            raise TypeError("emotion_module must be an EmotionModule or None")
+        if emotion_module is not None and not isinstance(
+            emotion_module, (EmotionModule, FormulaEmotionModule)
+        ):
+            raise TypeError("emotion_module must be an EmotionModule, FormulaEmotionModule, or None")
         if emotion_config is not None and emotion is not None:
             raise ValueError("provide only one of emotion_config or emotion")
-        self.emotion_module = emotion_module or EmotionModule(
-            emotion_config if emotion_config is not None else emotion,
-            player_idx=player_idx,
-        )
+        selected_emotion = emotion_config if emotion_config is not None else emotion
+        if emotion_module is not None:
+            self.emotion_module = emotion_module
+        elif formula_block(selected_emotion) is not None:
+            # Emotion formula (FormulaEmotionModule) is used ONLY when the emotion
+            # config carries a ``formula`` block; otherwise nothing changes.
+            self.emotion_module = FormulaEmotionModule(
+                selected_emotion, player_idx=player_idx, seed=self._emotion_seed()
+            )
+        else:
+            self.emotion_module = EmotionModule(selected_emotion, player_idx=player_idx)
         self._action_mode = action_mode
         self._rng = rng if rng is not None else np.random.default_rng(self.action_seed())
         self._last_selection: ActionSelection | None = None
@@ -142,6 +153,32 @@ class DummyAgent(BaseAgent):
     @property
     def role_beliefs(self) -> np.ndarray:
         return self.role_estimator.beliefs
+
+    @property
+    def uses_emotion_formula(self) -> bool:
+        return isinstance(self.emotion_module, FormulaEmotionModule)
+
+    def _emotion_seed(self, seed: int | None = None) -> int | None:
+        root = self.seed if seed is None else seed
+        if root is None:
+            return None
+        return int(self.action_seed(root)) ^ 0x454D4F54  # separate stream from actions
+
+    def observe_public_boundary(self, observation: Any) -> None:
+        """Advance role beliefs and the emotion formula at a boundary where this
+        dummy does NOT act (called for every living dummy at every step).
+
+        ``observation`` must be THIS dummy's own public observation. With the
+        rule-table EmotionModule this is a no-op, so default behaviour is unchanged.
+        """
+
+        if not self.uses_emotion_formula:
+            return
+        if self.emotion_module.terminated or self.emotion_module.truncated:
+            return
+        self._public_events(observation)  # rejects privileged fields
+        self.role_estimator.update(observation)
+        self.emotion_module.observe(observation, self.role_beliefs)
 
     @property
     def belief_estimator(self) -> RoleBeliefEstimator:
@@ -217,7 +254,11 @@ class DummyAgent(BaseAgent):
             context_observation = context.observation
         if context_observation is not None:
             self.role_estimator.update(context_observation)
-        self.emotion_module.on_episode_start(context)
+        if self.uses_emotion_formula:
+            seed = self._emotion_seed(self.episode_seed) if self.episode_seed is not None else None
+            self.emotion_module.on_episode_start(context, seed=seed)
+        else:
+            self.emotion_module.on_episode_start(context)
         self._last_selection = None
         if self.episode_seed is not None:
             self._rng = np.random.default_rng(self.action_seed(self.episode_seed))
@@ -371,15 +412,24 @@ class DummyAgent(BaseAgent):
         environment_step = self._environment_step(observation)
         board_healths, board_alive = self._board_state(observation)
         self.role_estimator.update(observation)
-        self._prepare_emotion_values(
-            public_events, environment_step, board_healths, board_alive
-        )
+        if self.uses_emotion_formula:
+            # Formula path: the same boundary may already have been observed by
+            # observe_public_boundary; processed events are skipped and decay /
+            # noise only run when the environment step advances.
+            self.emotion_module.observe(observation, self.role_beliefs)
+            contribution = self.emotion_module.action_contribution()
+        else:
+            self._prepare_emotion_values(
+                public_events, environment_step, board_healths, board_alive
+            )
+            contribution = self._emotion_contribution()
         intent = self.intent_module.decision(observation, self.role_beliefs)
         policy_mask = self._policy_action_mask(observation, mask)
         selection = ActionSelector.select_with_info(
             intent.scores,
             policy_mask,
-            emotion_contribution=self._emotion_contribution(),
+            emotion_contribution=contribution,
+
             mode=effective_mode,
             rng=self._rng,
         )
@@ -436,7 +486,12 @@ class DummyAgent(BaseAgent):
         intent_state = state.get("intent_module")
         intent_module = IntentModule.from_state_dict(intent_state) if intent_state is not None else None
         emotion_state = state.get("emotion_module")
-        emotion_module = EmotionModule.from_state_dict(emotion_state) if emotion_state is not None else None
+        if emotion_state is None:
+            emotion_module = None
+        elif FormulaEmotionModule.is_formula_state(emotion_state):
+            emotion_module = FormulaEmotionModule.from_state_dict(emotion_state)
+        else:
+            emotion_module = EmotionModule.from_state_dict(emotion_state)
         selector_state = state.get("action_selector", {})
         mode = selector_state.get("mode", "deterministic")
         agent = cls(
