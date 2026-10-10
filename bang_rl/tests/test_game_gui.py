@@ -9,6 +9,7 @@ import pytest
 from types import SimpleNamespace
 from bang_rl.gui import GameGuiError, GameMode, GameSessionController, GuiDependencyError, QT_AVAILABLE
 from bang_rl.gui.dialogs.model_select import ArtifactOption, ModelSelection
+from bang_rl.gui.i18n import tr
 from bang_rl.gui.widgets import opponent_public_rows
 from bang_rl.gui.widgets import board_layout
 
@@ -109,8 +110,10 @@ def test_controller_pause_resume_and_terminal_cleanup_are_idempotent() -> None:
     assert service.steps == [1]
     assert not controller.active
     # The normal-termination message names the winning faction (localized).
-    assert snapshot.message and "finished normally" in snapshot.message
-    assert "Sheriff team" in snapshot.message
+    # Compare through tr() so the test passes in any saved GUI language.
+    assert snapshot.message == tr(
+        "game.finished_normally_faction", faction=tr("faction.sheriff_team")
+    )
     controller.close()
     assert len(service.closed) == 1
 
@@ -140,7 +143,7 @@ def test_truncated_state_is_closed_and_has_no_winner_view() -> None:
     result = controller.submit_human_action(1)
     assert result.state is not None and result.state.truncated
     assert not result.active
-    assert result.message and "episode limit" in result.message
+    assert result.message == tr("game.finished_truncated")
     assert len(service.closed) == 1
 
 
@@ -183,7 +186,7 @@ def test_model_selection_keeps_incompatible_artifacts_unselectable() -> None:
 
     options = ModelSelection(Compatibility()).discover(["bad.bangmodel", "good.bangmodel"])
     assert ModelSelection.selectable(options) == (options[1],)
-    assert options[0].compatibility_text == "Not compatible"
+    assert options[0].compatibility_text == tr("model.not_compatible")
 
 
 def test_gui_dependency_is_graceful_and_cross_layer_imports_stay_clean() -> None:
@@ -257,9 +260,11 @@ def test_human_seat_is_at_the_bottom_and_seats_are_distinct() -> None:
     positions = board_layout.seat_positions(width, height, human_player=0)
     assert set(positions) == {0, 1, 2, 3, 4}
     human_x, human_y = positions[0]
-    # The human seat is centred horizontally and near the bottom edge.
+    # The human seat is centred horizontally in the lower half (its slot was
+    # raised to 70% height to leave room below the board).
     assert human_x == pytest.approx(width / 2)
-    assert human_y > height * 0.75
+    assert human_y == pytest.approx(board_layout._HUMAN_SLOT[1] * height)
+    assert human_y > height * 0.5
     # Every opponent sits above (smaller y) the human seat.
     for player in (1, 2, 3, 4):
         assert positions[player][1] < human_y
@@ -458,8 +463,10 @@ def test_restore_to_moment_falls_back_to_review_without_restore_support() -> Non
     controller = GameSessionController(service)
     controller.start(GameMode.HUMAN_RANDOM)
     controller.submit_human_action(1)
-    # No authoritative state captured -> falls back to read-only review.
-    assert controller._replay_states == []
+    # No authoritative state captured -> only None placeholders (they keep the
+    # buffers one-to-one with the observations) -> falls back to read-only review.
+    assert controller._replay_states
+    assert all(entry is None for entry in controller._replay_states)
     controller.restore_to_moment(0)
     assert controller.previewing is True
     assert controller.active is False
@@ -875,15 +882,18 @@ def test_game_log_hover_preview_keeps_full_log_and_restores_emphasis() -> None:
     log.update_state(_log_state_with_events(3))
     assert log.list.count() == 6, "a shorter hover sequence must not shrink the log"
 
-    # Leaving the log restores emphasis on every row (none left dimmed).
-    from bang_rl.gui.widgets.game_widgets import _LOG_NORMAL_FG
+    # Leaving the log restores emphasis on every row (none left dimmed). The
+    # last row keeps the persistent current-step highlight.
+    from bang_rl.gui.widgets.game_widgets import _LOG_CURRENT_FG, _LOG_NORMAL_FG
 
     log.clear_preview()
     assert log.list.count() == 6
+    last = log.list.count() - 1
     for row in range(log.list.count()):
         item = log.list.item(row)
         assert item is not None
-        assert item.foreground().color() == _LOG_NORMAL_FG
+        expected = _LOG_CURRENT_FG if row == last else _LOG_NORMAL_FG
+        assert item.foreground().color() == expected
 
     # Live play that GROWS the log still appends and re-renders the full set.
     log.update_state(_log_state_with_events(8))

@@ -118,7 +118,8 @@ def test_agents_drive_the_aec_environment_through_public_observation_only() -> N
     }
     for selected in env.agent_iter(max_iter=4):
         public_observation = env.observe(selected)
-        mask = env.infos[selected]["action_mask"].astype(np.uint8)
+        # infos carries a plain list (see BangEnvironment.infos); normalise it.
+        mask = np.asarray(env.infos[selected]["action_mask"], dtype=np.uint8)
         action = agents[selected].act(public_observation, mask)
         assert mask[action] == 1
         env.step(action)

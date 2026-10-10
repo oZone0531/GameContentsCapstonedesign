@@ -117,11 +117,11 @@ def test_gun_sits_on_the_right_of_the_facing_direction() -> None:
         # The barrel points along the facing angle.
         assert math.isclose(angle, facing, abs_tol=1e-9)
         cx, cy = positions[player]
-        # Offset of the anchor from the seat centre lies on the RIGHT of the
-        # facing direction. Right-of-facing in screen coords (y down) is
-        # (sin f, -cos f); the dot product with the offset is positive.
+        # Offset of the anchor from the seat centre lies on the character's
+        # VISUAL right (ITEM 1 in board_layout.gun_anchor_and_angle): facing
+        # rotated by +90 degrees, i.e. (-sin f, cos f) in screen coords (y down).
         off_x, off_y = ax - cx, ay - cy
-        right_x, right_y = math.sin(facing), -math.cos(facing)
+        right_x, right_y = -math.sin(facing), math.cos(facing)
         assert off_x * right_x + off_y * right_y > 0
 
 

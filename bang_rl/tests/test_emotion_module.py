@@ -7,7 +7,7 @@ import inspect
 import numpy as np
 import pytest
 
-from bang_rl.agents import DummyAgent, EmotionModule
+from bang_rl.agents import EMOTION_MODULE_STATE_VERSION, DummyAgent, EmotionModule
 from bang_rl.config import EmotionConfig
 
 
@@ -145,7 +145,7 @@ def test_public_privacy_and_schema_versioning() -> None:
         module.apply_event({"event_id": 1, "event_type": "bang", "true_roles": [0, 1, 2, 3, 4]})
 
     encoded = module.state_dict()
-    assert encoded["schema_version"] == "1.0"
+    assert encoded["schema_version"] == EMOTION_MODULE_STATE_VERSION
     assert encoded["emotion_schema_version"] == "emotion-test-v1"
     assert "true_roles" not in module.to_json()
     assert "reward_breakdown" not in module.to_json()
@@ -254,14 +254,15 @@ def test_plain_only_config_is_backward_compatible() -> None:
 def test_actor_relative_key_beats_target_relative_key() -> None:
     seat = 1
     module = EmotionModule(
-        _relationship_config({"bang_by_me": 0.7, "bang_at_me": 0.5}), player_idx=seat
+        _relationship_config({"bang_by_me": 0.3, "bang_at_me": 0.2}), player_idx=seat
     )
     # actor == target == our seat: both by_me and at_me match, but the
-    # actor-relative by_me key is tried first and wins.
+    # actor-relative by_me key is tried first and wins.  The deltas stay below
+    # 0.5 so the result is not clipped at 1.0 from the 0.5 initial value.
     delta = _applied_delta(
         module, {"event_id": 1, "event_type": "bang", "actor_idx": seat, "target_idx": seat}
     )
-    assert delta == pytest.approx(0.7)
+    assert delta == pytest.approx(0.3)
 
 
 # ---------------------------------------------------------------------------
@@ -482,13 +483,14 @@ def test_hp_lethal_key_wins_over_plain_event_key() -> None:
     seat = 0
     module = EmotionModule(
         _hp_config(
-            {"target_lethal": 0.6, "bang": 0.1},
+            {"target_lethal": 0.4, "bang": 0.1},
             hp_low_threshold=2,
             hp_lethal_threshold=0,
         ),
         player_idx=seat,
     )
-    # hp_after 0 -> target_lethal precedes plain bang.
+    # hp_after 0 -> target_lethal precedes plain bang.  0.4 keeps the result
+    # below the 1.0 clip from the 0.5 initial value.
     delta = _applied_delta(
         module,
         {
@@ -499,7 +501,7 @@ def test_hp_lethal_key_wins_over_plain_event_key() -> None:
             "hp_after": 0,
         },
     )
-    assert delta == pytest.approx(0.6)
+    assert delta == pytest.approx(0.4)
 
 
 def test_relationship_key_still_wins_over_hp_key() -> None:

@@ -34,12 +34,33 @@ from bang_rl.training import (
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def _requirement_key(name: str, marker: str = "") -> str:
+    """Normalise ``name`` plus an optional environment marker into one key.
+
+    A pin may be split per Python version (e.g. numpy for <3.13 and >=3.13);
+    the marker is part of the key so both pins are compared separately.
+    Quotes and spaces are dropped so ``'3.13'`` and ``"3.13"`` compare equal.
+    """
+
+    key = name.strip().lower().replace("_", "-")
+    marker = re.sub(r"[\s'\"]", "", marker)
+    return f"{key};{marker}" if marker else key
+
+
+def _split_requirement(requirement: str) -> tuple[str, str]:
+    spec, _, marker = requirement.partition(";")
+    name, version = spec.strip().split("==", 1)
+    return _requirement_key(name, marker), version.strip()
+
+
 def _pinned_requirements(path: Path) -> dict[str, str]:
     result: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
-        match = re.fullmatch(r"([A-Za-z0-9_.-]+)==([^\s#]+)", line.strip())
-        if match:
-            result[match.group(1).lower().replace("_", "-")] = match.group(2)
+        text = line.strip()
+        if not text or text.startswith("#") or "==" not in text:
+            continue
+        key, version = _split_requirement(text)
+        result[key] = version
     return result
 
 
@@ -88,13 +109,13 @@ def test_lock_files_match_project_extras_and_keep_gui_optional() -> None:
     gui_lock = _pinned_requirements(ROOT / "requirements-gui.lock")
 
     for requirement in project["project"]["dependencies"] + project["project"]["optional-dependencies"]["test"]:
-        name, version = requirement.split("==", 1)
-        assert lock[name.lower().replace("_", "-")] == version
+        key, version = _split_requirement(requirement)
+        assert lock[key] == version
 
     for requirement in project["project"]["optional-dependencies"]["gui"]:
-        name, version = requirement.split("==", 1)
-        assert gui_lock[name.lower().replace("_", "-")] == version
-        assert name.lower().replace("_", "-") not in lock
+        key, version = _split_requirement(requirement)
+        assert gui_lock[key] == version
+        assert key not in lock
 
     assert "pyqt6" not in lock
     assert "pyqtgraph" not in lock

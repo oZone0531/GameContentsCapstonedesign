@@ -379,7 +379,10 @@ def highlight_color(base_rgba: Sequence[int]) -> tuple[int, int, int, int]:
     preserved.  Pure and Qt-free so the highlight math is unit-testable.
     """
 
-    values = list(base_rgba) + [0, 0, 0, 255]
+    values = list(base_rgba)[:4]
+    values += [0] * max(0, 3 - len(values))  # missing colour channels -> 0
+    if len(values) < 4:
+        values.append(255)  # missing alpha -> opaque
     r, g, b, a = (int(values[0]), int(values[1]), int(values[2]), int(values[3]))
 
     def _lighten(channel: int) -> int:

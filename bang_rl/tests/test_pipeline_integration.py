@@ -266,12 +266,15 @@ def test_emotion_reward_and_transition_records_share_the_pre_action_boundary() -
     env = BangEnvironment(episode_id="alignment", seed=8, max_episode_steps=20, warn_turn_threshold=5, critical_turn_threshold=10)
     emotion.reset({"episode_id": env.state.episode_id, "seed": env.state.seed})
     reward.reset(episode_id=env.state.episode_id)
-    labels = emotion.before_action(0, actor_idx=0, observation=env.observe())
-    assert labels[0].environment_step == 0
-    assert labels[0].input_event_ids == ()
+    # The Sheriff acts first, so the opening actor is the Sheriff's seat (not
+    # necessarily seat 0).
+    actor = int(env.state.agent_selection)
+    labels = emotion.before_action(0, actor_idx=actor, observation=env.observe())
+    assert labels[actor].environment_step == 0
+    assert labels[actor].input_event_ids == ()
     before_invalid = (emotion.records, emotion.processed_event_ids, emotion.environment_step)
     with pytest.raises(InvalidActionError):
-        env.step(1)
+        env.step(actor + 1)  # bang at the actor's own seat
     assert (emotion.records, emotion.processed_event_ids, emotion.environment_step) == before_invalid
     env.step(0)
     result = env.last_result
@@ -283,9 +286,10 @@ def test_emotion_reward_and_transition_records_share_the_pre_action_boundary() -
     assert record.label_step == 0
     assert record.post_action_event_ids == (1,)
     assert batch is reward.on_action_result(result, roles=env.state.roles)
-    next_labels = emotion.before_action(1, events=result.events, actor_idx=1, observation=env.observe())
-    assert next_labels[1].environment_step == 1
-    assert next_labels[1].input_event_ids == (1,)
+    next_actor = int(env.state.agent_selection)
+    next_labels = emotion.before_action(1, events=result.events, actor_idx=next_actor, observation=env.observe())
+    assert next_labels[next_actor].environment_step == 1
+    assert next_labels[next_actor].input_event_ids == (1,)
     assert all("emotion" not in key.lower() for key in env.observe().keys())
     env.close()
 
@@ -423,6 +427,14 @@ def test_application_and_gui_controller_seams_have_no_cross_layer_gui_imports() 
             text = source.read_text(encoding="utf-8").lower()
             assert "pyqt6" not in text
             assert "pyqtgraph" not in text
-    assert {mode.value for mode in GameMode} == {"human_random", "human_dummy", "human_main_dummy"}
+    assert {mode.value for mode in GameMode} == {
+        "human_random",
+        "human_dummy",
+        "human_main_dummy",
+        # Spectator modes (all-AI games watched from the GUI).
+        "random_five",
+        "dummy_five",
+        "main_one_dummy_four",
+    }
     assert GameSessionController is not None
     assert (root / "app" / "services.py").is_file()

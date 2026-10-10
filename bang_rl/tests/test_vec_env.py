@@ -72,7 +72,11 @@ def test_vector_shape_fixed_order_and_user_resource_metadata() -> None:
     try:
         observations = vector.reset()
         assert vector.n_envs == vector.num_workers == 2
-        assert [observation.current_player_idx for observation in observations] == [0, 0]
+        # The Sheriff opens every game, so the first actor is each worker's
+        # Sheriff seat (the seat assignment is seeded per worker).
+        assert [observation.current_player_idx for observation in observations] == [
+            observation.sheriff_idx for observation in observations
+        ]
         assert vector.metadata["batch_size"] == 8
         assert vector.metadata["buffer_size"] == 32
         assert vector.metadata["hardware"]["workers"] == 2
