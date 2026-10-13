@@ -103,9 +103,38 @@ def test_training_runner_lifecycle_pause_resume_cancel_and_report(tmp_path: Path
     assert (tmp_path / "report.json").is_file()
 
 
-def test_default_training_rejects_unwired_pipeline_without_reporting_success() -> None:
-    with pytest.raises(TrainingError, match="declared collection/SL/PPO/artifact pipeline"):
-        TrainingService().start(TrainingConfig(config=SystemConfig(), episodes=1))
+def test_default_training_uses_wired_pipeline_runner(monkeypatch, tmp_path) -> None:
+    """Starting with no runner now RUNS the default pipeline instead of raising.
+
+    The old test (test_default_training_rejects_unwired_pipeline_without_reporting_success)
+    asserted that ``TrainingService.start`` raised ``TrainingError`` whenever no
+    runner was injected.  That encoded the exact bug the user reported: pressing
+    "AI 학습" did nothing because the default collection/SL/PPO/artifact pipeline
+    was never wired in.  FEAT-002 wires ``default_training_runner`` as the default,
+    so start no longer raises; it resolves and runs the pipeline.  We monkeypatch
+    the default runner to a fast fake (avoiding real torch training) and assert the
+    service engages it and folds its sentinel metrics into a finished report.
+    """
+
+    import bang_rl.training.pipeline_runner as pipeline_runner
+
+    engaged = {"value": False}
+
+    def fake_default_runner(handle, run):
+        engaged["value"] = True
+        return {"environment_steps": 5, "main_agent_transitions": 2, "metrics": {"sentinel": "default-runner"}}
+
+    # start() imports default_training_runner from this module at call time.
+    monkeypatch.setattr(pipeline_runner, "default_training_runner", fake_default_runner)
+
+    service = TrainingService()
+    handle = service.start(TrainingConfig(config=SystemConfig(), episodes=1, report_path=tmp_path / "report.json"))
+    report = service.wait(handle, timeout=2)
+
+    assert engaged["value"] is True, "the default pipeline runner was never engaged"
+    assert report.status == "finished"
+    assert report.progress.environment_steps == 5
+    assert report.progress.metrics["sentinel"] == "default-runner"
 
 
 def test_training_resource_validation_and_fault_are_structured() -> None:

@@ -389,6 +389,10 @@ class _TrainingRun:
     logs: list[Mapping[str, Any]] = field(default_factory=list)
     records: list[Mapping[str, Any]] = field(default_factory=list)
     thread: Thread | None = None
+    # The runner actually invoked by ``_execute``: an injected ``config.runner``
+    # when provided, otherwise the default pipeline runner resolved in
+    # ``TrainingService.start``.
+    resolved_runner: Callable[..., Any] | None = None
 
 
 class _ArtifactAgent:
@@ -1034,11 +1038,16 @@ class TrainingService:
             raise ValueError("episodes must be a non-negative integer")
         if options.target_transitions is not None and (isinstance(options.target_transitions, bool) or options.target_transitions < 1):
             raise ValueError("target_transitions must be positive when provided")
-        if options.runner is None:
-            raise TrainingError(
-                "default TrainingService execution is not wired to the declared collection/SL/PPO/artifact pipeline; "
-                "provide an explicit runner or use a pipeline orchestrator"
-            )
+        # Resolve the runner: an injected runner is used verbatim; otherwise the
+        # default end-to-end pipeline runner is wired in so that pressing "AI 학습"
+        # actually trains and saves an artifact.  The pipeline runner is imported
+        # lazily (not at module top) so importing ``bang_rl.app`` never pulls torch.
+        if options.runner is not None:
+            resolved_runner = options.runner
+        else:
+            from bang_rl.training.pipeline_runner import default_training_runner
+
+            resolved_runner = default_training_runner
         seed = config.seed if options.seed is None else int(options.seed)
         ensure_training_directories()
         job = TrainingJob.start(config, mode=options.mode, seed=seed, split_seed=options.split_seed)
@@ -1049,29 +1058,12 @@ class TrainingService:
             # bundle and leaves PPO trainable with a fresh optimizer created by
             # the caller's PPOTrainer.
             resume_artifact = load_final_artifact_for_training(resume_source)
-        guard = ResourceGuard(job.snapshot)
-        agents = tuple(options.agents) if options.agents is not None else tuple(
-            DummyAgent(f"player_{index}", seed=SeedManager(seed, snapshot=job.snapshot).agent_seed(f"player_{index}"), player_idx=index, policy_config=config.preset.intent_policy, emotion_config=config.preset.emotion)
-            for index in range(5)
-        )
         logger = self.logger or get_component_logger("training-service", channel=LogChannel.TRAINING, job_id=job.job_id)
+        # The default pipeline runner builds and owns its own vectorized env /
+        # collector from ``run.system_config``; the service no longer builds a
+        # DummyVecEnv up front.  ``run.vector`` stays None so pause/resume route
+        # through the cooperative status-based cancel in ``_execute``.
         vector = None
-        if options.runner is None:
-            vector = DummyVecEnv(
-                num_workers=config.hardware.workers,
-                environment_factory=_safe_environment_factory(config),
-                seed=seed,
-                snapshot=job.snapshot,
-                config=config,
-                agents=agents,
-                hardware=config.hardware,
-                batch_size=config.hardware.batch_size,
-                buffer_size=config.hardware.buffer_size,
-                job_id=job.job_id,
-                logger=logger,
-                pause_timeout_seconds=config.pause.ack_timeout_seconds,
-            )
-            guard.validate_workers(vector.num_workers)
         handle = TrainingHandle(job.job_id, job.snapshot)
         output_root = OUTPUTS_DIR if options.output_path is None else Path(options.output_path).expanduser()
         output_root.mkdir(parents=True, exist_ok=True)
@@ -1084,6 +1076,7 @@ class TrainingService:
             output_path=str(output_root),
             resume_artifact_path=None if resume_source is None else str(resume_source),
             resume_artifact=resume_artifact,
+            resolved_runner=resolved_runner,
         )
         # Paths are public job metadata and should be visible before completion.
         run.report_path = str(resolve_training_file(options.report_path, root=REPORTS_DIR, filename=f"{job.job_id}.json", suffix=".json"))
@@ -1106,41 +1099,29 @@ class TrainingService:
     def _execute(self, run: _TrainingRun) -> None:
         started = datetime.now(timezone.utc)
         try:
-            if run.config.runner is not None:
-                result = run.config.runner(run.handle, run)
-                if isinstance(result, Mapping):
-                    run.records.extend(_json_value(result.get("records", ())))
-                    run.artifact_path = _path_string(result.get("artifact_path", run.artifact_path))
-                    run.environment_steps = int(result.get("environment_steps", 0))
-                    run.transitions = int(result.get("main_agent_transitions", result.get("transitions", 0)))
-                    run.episodes_completed = int(result.get("episodes_completed", run.episodes_completed))
-                    run.truncated_episodes = int(result.get("truncated_episodes", result.get("truncated_count", 0)))
-                    run.normal_episodes = int(result.get("normal_episodes", result.get("normal_count", 0)))
-                    run.win_rate = result.get("win_rate")
-                    run.metrics.update(_json_value(result.get("metrics", {})))
-                    raw_logs = _json_value(result.get("logs", result.get("public_logs", ())))
-                    if isinstance(raw_logs, Mapping):
-                        raw_logs = (raw_logs,)
-                    elif isinstance(raw_logs, str):
-                        raw_logs = ({"message": raw_logs},)
-                    run.logs.extend(raw_logs or ())
-            else:
-                target = run.config.target_transitions
-                episode_index = 0
-                while episode_index < run.config.episodes or (target is not None and run.transitions < target):
-                    records = run.vector.run_episodes(1, action_provider=run.config.action_provider)
-                    if not records:
-                        break
-                    record = records[0]
-                    run.records.append(_json_value(record.to_dict()))
-                    run.episodes_completed += 1
-                    run.environment_steps += int(record.environment_steps)
-                    run.transitions += len(record.actions)
-                    if record.truncated:
-                        run.truncated_episodes += 1
-                    elif record.terminated:
-                        run.normal_episodes += 1
-                    episode_index += 1
+            # ``resolved_runner`` is the injected runner when provided, otherwise
+            # the default end-to-end pipeline runner wired in by ``start``.  Both
+            # follow the same ``runner(handle, run) -> Mapping`` seam; the default
+            # runner also mutates ``run`` progress counters as it advances so the
+            # GUI poll stays live.
+            runner = run.resolved_runner if run.resolved_runner is not None else run.config.runner
+            result = runner(run.handle, run)
+            if isinstance(result, Mapping):
+                run.records.extend(_json_value(result.get("records", ())))
+                run.artifact_path = _path_string(result.get("artifact_path", run.artifact_path))
+                run.environment_steps = int(result.get("environment_steps", run.environment_steps))
+                run.transitions = int(result.get("main_agent_transitions", result.get("transitions", run.transitions)))
+                run.episodes_completed = int(result.get("episodes_completed", run.episodes_completed))
+                run.truncated_episodes = int(result.get("truncated_episodes", result.get("truncated_count", run.truncated_episodes)))
+                run.normal_episodes = int(result.get("normal_episodes", result.get("normal_count", run.normal_episodes)))
+                run.win_rate = result.get("win_rate", run.win_rate)
+                run.metrics.update(_json_value(result.get("metrics", {})))
+                raw_logs = _json_value(result.get("logs", result.get("public_logs", ())))
+                if isinstance(raw_logs, Mapping):
+                    raw_logs = (raw_logs,)
+                elif isinstance(raw_logs, str):
+                    raw_logs = ({"message": raw_logs},)
+                run.logs.extend(raw_logs or ())
             if run.status == "running":
                 run.status = "finished"
             elif run.status == "cancelling":
