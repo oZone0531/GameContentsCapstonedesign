@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, TYPE_CHECKING
 
+from bang_rl.gui.i18n import tr
 from bang_rl.paths import ARTIFACTS_DIR, OUTPUTS_DIR, REPORTS_DIR
 
 if TYPE_CHECKING:
@@ -189,9 +190,10 @@ class TrainingMonitorController:
             if message is None and getattr(progress, "error", None):
                 error = progress.error
                 if isinstance(error, Mapping):
-                    message = str(error.get("message") or error.get("error_type") or error)
+                    detail = str(error.get("message") or error.get("error_type") or error)
                 else:
-                    message = str(error)
+                    detail = str(error)
+                message = tr("training.run_failed", detail=detail)
         handle = self.handle
         snapshot = None if handle is None else getattr(handle, "snapshot", None)
         metadata = {}
@@ -239,15 +241,19 @@ class TrainingMonitorController:
             return self._publish(message=None)
         except Exception as exc:
             self.handle = None
-            return self._publish(message=self._error_message(exc))
+            return self._publish(
+                message=tr("training.start_failed", detail=self._error_message(exc))
+            )
 
     def refresh(self) -> TrainingMonitorSnapshot:
         if self.handle is None or self.service is None:
-            return self._publish(message="No training job is running.")
+            return self._publish(message=tr("training.no_job_running"))
         try:
             return self._publish()
         except Exception as exc:
-            return self._publish(message=self._error_message(exc))
+            return self._publish(
+                message=tr("training.unavailable", detail=self._error_message(exc))
+            )
 
     def pause(self, timeout: float | None = None) -> TrainingMonitorSnapshot:
         return self._lifecycle("pause", timeout=timeout)
@@ -263,12 +269,14 @@ class TrainingMonitorController:
 
     def _lifecycle(self, action: str, **kwargs: Any) -> TrainingMonitorSnapshot:
         if self.handle is None or self.service is None:
-            return self._publish(message="No training job is running.")
+            return self._publish(message=tr("training.no_job_running"))
         try:
             getattr(self.service, action)(self.handle, **kwargs)
             return self._publish()
         except Exception as exc:
-            return self._publish(message=self._error_message(exc))
+            return self._publish(
+                message=tr("training.unavailable", detail=self._error_message(exc))
+            )
 
     @staticmethod
     def _error_message(exc: Exception) -> str:

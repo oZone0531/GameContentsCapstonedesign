@@ -131,7 +131,14 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self.paths = QLabel("Report: — · Output: — · Artifact: —", self)
             self.logs = QPlainTextEdit(self)
             self.logs.setReadOnly(True)
+            # Dedicated status / error area. Styled so a start failure, a
+            # faulted run, or a missing-dependency notice stands out from the
+            # normal counter labels, mirroring the game screen's error-surfacing
+            # area. Only the label's own appearance changes; the layout contract
+            # (a single QLabel appended at the end) is untouched.
             self.message = QLabel(self)
+            self.message.setWordWrap(True)
+            self.message.setStyleSheet("color: #b00020; font-weight: bold;")
             self.start_button = QPushButton(tr("training.start"), self)
             self.pause_button = QPushButton(tr("training.pause"), self)
             self.resume_button = QPushButton(tr("training.resume"), self)
