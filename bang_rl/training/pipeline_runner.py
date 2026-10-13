@@ -55,6 +55,10 @@ __all__ = ["default_training_runner", "build_default_training_runner"]
 # per-run episode / rollout budgets stay modest; the fixed-hyperparameter
 # contracts (learning rates, architecture) always come from the config.
 _DEFAULT_COLLECTION_EPISODES = 8
+# Short post-training evaluation budget used when the user left the default
+# primary protocol in place.  The fixed 500-game primary benchmark cannot be
+# shortened (its reproducibility invariant), so Stage 7 runs this many games
+# through the configurable custom protocol instead to keep the button quick.
 _DEFAULT_EVALUATION_GAMES = 10
 _CANCEL_POLL_EPISODES = 1
 
@@ -130,7 +134,10 @@ def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
         save_final_inference_artifact,
         save_phase2_inference_artifact,
     )
-    from bang_rl.evaluation import run_primary_evaluation
+    from bang_rl.evaluation import (
+        PRIMARY_PROTOCOL_ID,
+        run_custom_evaluation,
+    )
 
     config = run.system_config
     snapshot = handle.snapshot
@@ -198,11 +205,22 @@ def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
         emotion.reset({"episode_id": env.state.episode_id, "seed": env.state.seed})
         reward_runtime.reset(episode_id=env.state.episode_id)
         collector.start_episode(env)
+        completed_before = len(collector.episodes)
         prior_events: tuple[Any, ...] = ()
         try:
             while not (env.state.terminated or env.state.truncated):
                 actor = int(env.state.agent_selection)
-                observation = env.observe(actor)
+                # Feed the CANONICAL observation mapping (to_observation_dict),
+                # not the PublicEnvironmentState object.  The collector stores
+                # whatever it is handed as the step's pre_observation, and the
+                # NPZ tensor-cache writer later runs
+                # ObservationPreprocessor.preprocess(step.pre_observation),
+                # which requires the to_observation_dict schema (healths, alive,
+                # turn_order, action_mask, ...).  The full-state to_dict shape
+                # (players/event_log, no action_mask) would raise DataError in
+                # Stage 3 (SL pretrain).  This matches the canonical _observation
+                # fixtures the SL stage consumes in test_pipeline_integration.py.
+                observation = env.observe(actor).to_observation_dict()
                 # The emotion runtime requires the environment_step to advance by
                 # exactly one per boundary and the previous action's events to be
                 # staged here (the pre-action boundary contract exercised by
@@ -226,9 +244,19 @@ def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
                 emotion.on_action_result(attached)
                 collector.record_step(attached)
                 prior_events = tuple(getattr(result, "events", ()) or ())
-            # finish_episode (alias finalize_episode) reads terminated/truncated
-            # from the environment state and returns the CanonicalEpisode.
-            canonical = collector.finish_episode()
+            # record_step auto-calls finish_episode on the terminal/truncated
+            # result, so by the time the loop exits the episode is already
+            # finalized and appended to collector.episodes.  Read the completed
+            # episode from there rather than calling finish_episode() again
+            # (a second call with no active episode would only return the last
+            # completed one via the fallback path).  If the loop exited without
+            # a terminal step (e.g. a None result broke out early), episodes may
+            # be unchanged, so guard on the completed count.
+            canonical = (
+                collector.episodes[-1]
+                if len(collector.episodes) > completed_before
+                else None
+            )
             if canonical is not None:
                 episodes.append(canonical)
                 parquet.append(canonical)
@@ -392,9 +420,18 @@ def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
     log("artifact_saved", artifact_path=str(artifact_path))
 
     # ------------------------------------------------------------------ #
-    # Stage 7: EVALUATE the saved artifact with the primary protocol.  A
-    # genuine failure here still propagates to _execute's except Exception
-    # handler, so the GUI shows a real error (user-instruction item 1).
+    # Stage 7: EVALUATE the saved artifact.  The fixed primary protocol
+    # ("deterministic_v1") is an immutable 500-game benchmark (PRIMARY_GAMES is
+    # hardcoded in PrimaryEvaluationProtocol and its reproducibility manifest
+    # asserts exactly 500 seeds), so it CANNOT be shortened without violating
+    # that invariant.  A "AI 학습" button press must stay quick, so when the
+    # user left the default primary protocol in place we run a short custom
+    # evaluation (_DEFAULT_EVALUATION_GAMES games via CustomEvaluationProtocol,
+    # which honours a configurable games count) instead of the 500-game
+    # benchmark.  If the user explicitly configured a custom/stochastic
+    # protocol we respect their EvaluationConfig verbatim.  A genuine failure
+    # here still propagates to _execute's except Exception handler, so the GUI
+    # shows a real error (user-instruction item 1).
     # ------------------------------------------------------------------ #
     win_rate: float | str | None = None
     metrics: dict[str, Any] = {
@@ -404,16 +441,43 @@ def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
     }
     if not _cancelled(run):
         try:
-            evaluation = run_primary_evaluation(
-                artifact_path,
-                config=config,
-                snapshot=snapshot,
-                report_path=scratch / "evaluation.json",
-            )
+            evaluation_config = config.evaluation
+            if evaluation_config.protocol_id == PRIMARY_PROTOCOL_ID:
+                # Keep the button quick: derive a short, schema-valid custom
+                # evaluation from the primary config rather than running the
+                # fixed 500-game benchmark.  model_copy keeps every validator
+                # (deterministic == action_mode=='deterministic', balanced seat
+                # policy with an empty seats list) satisfied.
+                quick_evaluation = evaluation_config.model_copy(
+                    update={
+                        "protocol_id": "custom_v1",
+                        "games": _DEFAULT_EVALUATION_GAMES,
+                    }
+                )
+                evaluation = run_custom_evaluation(
+                    artifact_path,
+                    config=config,
+                    snapshot=snapshot,
+                    evaluation=quick_evaluation,
+                    report_path=scratch / "evaluation.json",
+                )
+                metrics["evaluation_protocol"] = "custom_v1"
+                metrics["evaluation_games"] = _DEFAULT_EVALUATION_GAMES
+            else:
+                # The user explicitly asked for a non-primary protocol; honour
+                # whatever games/seat schedule their EvaluationConfig declares.
+                evaluation = run_custom_evaluation(
+                    artifact_path,
+                    config=config,
+                    snapshot=snapshot,
+                    report_path=scratch / "evaluation.json",
+                )
+                metrics["evaluation_protocol"] = evaluation_config.protocol_id
+                metrics["evaluation_games"] = evaluation_config.games
             win_rate = getattr(evaluation, "win_rate", None)
             metrics["evaluation"] = evaluation.to_dict() if hasattr(evaluation, "to_dict") else {}
             _set_counters(run, win_rate=win_rate)
-            log("evaluation_finished", win_rate=win_rate)
+            log("evaluation_finished", win_rate=win_rate, protocol=metrics["evaluation_protocol"])
         except Exception as exc:  # pragma: no cover - evaluation surfaces as a metric, not a fault
             metrics["evaluation_error"] = str(exc)
             log("evaluation_failed", error=str(exc))

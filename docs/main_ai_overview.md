@@ -151,7 +151,7 @@
 5. Phase-2 아티팩트 저장/로드. `save_phase2_inference_artifact`로 Intent/Emotion 모듈을 `.phase2model`로 저장하고 `load_phase2_inference_artifact`로 다시 불러옵니다. 이렇게 라운드트립된 Phase-2 번들은 다음 PPO 단계의 초기화 입력(frozen 번들)으로만 쓰입니다. 산출물은 로드된 Phase-2 아티팩트입니다.
 6. PPO 학습 (PPO). `PPOModule`을 만들고 `PPOTrainer(ppo, phase2_artifact=phase2, config=ppo_config, snapshot, seed)`에 Phase-2 번들을 넣습니다. 수집한 정식 스텝을 `PPOTransition`으로 투영한 뒤 `collect_rollout(transitions)`로 롤아웃을 모으고 `update()`로 정책을 갱신합니다. PPO 학습률은 `FixedOptimizerConfig`를 통해 `PPOConfig`에서 3e-4로 고정됩니다. 이어 학습(resume) 시에는 로드한 최종 아티팩트의 PPO 가중치만 복사해 가중치 전용 연속으로 시작합니다. 산출물은 학습된 PPO 모듈과 카운터입니다.
 7. 최종 아티팩트 저장. `save_final_inference_artifact`로 PPO 모듈과 Phase-2 번들, 잡 스냅샷, 설정 스냅샷, 학습 카운터를 묶어 `.bangmodel`을 `TrainingService.start`가 미리 정한 목적지 경로(`ARTIFACTS_DIR` 아래)에 저장합니다. 산출물은 최종 게임 아티팩트 파일 경로입니다.
-8. 평가 (EVALUATE). 저장된 아티팩트를 기본 평가 프로토콜로 `run_primary_evaluation`에 넘겨 Win Rate와 지표를 얻습니다. 산출물은 평가 결과(win_rate, metrics)입니다.
+8. 평가 (EVALUATE). 저장된 아티팩트로 Win Rate와 지표를 얻습니다. 기본 평가 프로토콜 `deterministic_v1`은 500게임(좌석당 100게임)으로 고정된 불변 벤치마크여서 게임 수를 줄일 수 없습니다. "AI 학습" 버튼을 눌렀을 때 평가가 오래 걸리지 않도록, 사용자가 기본 프로토콜을 그대로 둔 경우 러너는 500게임 벤치마크 대신 게임 수를 조절할 수 있는 `custom_v1` 프로토콜로 짧은 평가(`_DEFAULT_EVALUATION_GAMES`게임)를 `run_custom_evaluation`으로 실행합니다. 사용자가 `custom_v1`/`stochastic_v1` 같은 비기본 프로토콜을 명시적으로 설정한 경우에는 그 `EvaluationConfig`를 그대로 존중합니다. 산출물은 평가 결과(win_rate, metrics)입니다.
 
 러너는 마지막에 `environment_steps`, `main_agent_transitions`, `episodes_completed`, `truncated_episodes`, `normal_episodes`, `win_rate`, `metrics`, `logs`, `records`, `artifact_path` 키를 가진 Mapping을 반환하고, `_execute`가 이를 학습 리포트에 접습니다.
 

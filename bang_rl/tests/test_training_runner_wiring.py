@@ -155,3 +155,61 @@ def test_injected_runner_overrides_the_default(monkeypatch, tmp_path: Path) -> N
     assert report.status == "finished"
     assert report.progress.environment_steps == 11
     assert report.progress.metrics["sentinel"] == "injected-runner"
+
+
+# --- Real end-to-end composition test (CI-only) ------------------------- #
+
+
+def test_default_training_runner_runs_the_real_pipeline_end_to_end(tmp_path: Path) -> None:
+    """CI-ONLY: execute the REAL ``default_training_runner`` body end to end.
+
+    Every other test in this module fakes the runner or inspects its source, and
+    ``test_pipeline_integration.py`` composes the stages inline but never calls
+    the runner.  So the exact composition that must be correct for the "AI 학습"
+    button to work had no executable coverage, which let a real-API mismatch
+    (the observation-schema bug: feeding ``PublicEnvironmentState`` instead of
+    its ``to_observation_dict()`` into collection, breaking the SL tensor cache)
+    pass every in-repo test and only fail the first time a user pressed the
+    button.
+
+    This test closes that gap: it starts ``TrainingService`` with NO injected
+    runner (so the real default runner is resolved and executed on the daemon
+    thread) against the REAL stage components with a tiny budget, and asserts
+    that the full collect -> split -> cache -> SL -> phase2 -> PPO -> artifact
+    -> evaluation composition finishes and writes a ``.bangmodel``.  It is the
+    regression guard for the real composition.
+
+    CI-ONLY: it needs numpy / pydantic / torch, which are NOT installable in the
+    restricted sandbox, so it SKIPS there.  The ``importorskip`` guards keep
+    collection import-error-free in-sandbox.
+    """
+
+    pytest.importorskip("numpy")
+    pytest.importorskip("pydantic")
+    pytest.importorskip("torch")
+
+    from bang_rl.app import TrainingConfig, TrainingService
+    from bang_rl.config import SystemConfig
+
+    service = TrainingService()
+    handle = service.start(
+        TrainingConfig(
+            config=SystemConfig(),
+            episodes=1,  # the runner floors this to its small collection budget
+            report_path=tmp_path / "report.json",
+            artifact_path=tmp_path / "model.bangmodel",
+            resume_artifact_path=tmp_path / "no-resume",
+        )
+    )
+    # The real pipeline (collection + SL + PPO + a short custom evaluation) can
+    # take a while on CI, so allow a generous timeout.
+    report = service.wait(handle, timeout=600.0)
+
+    assert report.status == "finished", f"real pipeline did not finish: {report.status}"
+    assert report.progress.environment_steps > 0
+    assert report.progress.artifact_path is not None
+    assert Path(report.progress.artifact_path).exists(), "a .bangmodel artifact must be written"
+    # The SL stage only runs if the observation schema fed into collection was
+    # the canonical to_observation_dict() shape; a schema mismatch would have
+    # raised DataError and faulted the run before reaching PPO/artifact save.
+    assert report.progress.metrics is not None
