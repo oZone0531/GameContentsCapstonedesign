@@ -309,6 +309,26 @@ _STRINGS: dict[str, dict[str, str]] = {
     "training.stop": {"en": "Stop", "ko": "정지"},
     "training.no_job": {"en": "No training job", "ko": "진행 중인 학습 작업이 없습니다"},
     "training.snapshot_not_started": {"en": "Snapshot: not started", "ko": "스냅샷: 시작 안 됨"},
+    # Localized failure / notice messages surfaced in the monitor status area
+    # when a start, refresh, or lifecycle call fails, or when the running job
+    # reports a structured error (faulted run). Korean is the primary language;
+    # {detail} carries the underlying message extracted by the controller.
+    "training.start_failed": {
+        "en": "Could not start training: {detail}",
+        "ko": "학습을 시작할 수 없습니다: {detail}",
+    },
+    "training.run_failed": {
+        "en": "Training failed: {detail}",
+        "ko": "학습이 실패했습니다: {detail}",
+    },
+    "training.unavailable": {
+        "en": "Training is unavailable: {detail}",
+        "ko": "학습을 사용할 수 없습니다: {detail}",
+    },
+    "training.no_job_running": {
+        "en": "No training job is running.",
+        "ko": "진행 중인 학습 작업이 없습니다.",
+    },
     "training.graph_needs_pyqtgraph": {
         "en": "Win-rate graph requires optional pyqtgraph.",
         "ko": "승률 그래프에는 pyqtgraph(선택 설치)가 필요합니다.",
