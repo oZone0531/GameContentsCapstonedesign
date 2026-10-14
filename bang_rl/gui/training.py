@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, TYPE_CHECKING
 
+from bang_rl.gui.i18n import tr
 from bang_rl.paths import ARTIFACTS_DIR, OUTPUTS_DIR, REPORTS_DIR
 
 if TYPE_CHECKING:
@@ -186,12 +187,32 @@ class TrainingMonitorController:
                 text = str(cleaned.get("message", cleaned) if isinstance(cleaned, Mapping) else cleaned)
                 if text and (not self._logs or self._logs[-1] != text):
                     self._logs.append(text)
-            if message is None and getattr(progress, "error", None):
-                error = progress.error
+            status = getattr(progress, "status", None)
+            error = getattr(progress, "error", None)
+            # Surface a localized failure message whenever the run FAULTED, not
+            # only when a structured error payload happens to be present.  A
+            # faulted background run always sets ``status == 'faulted'`` (see
+            # TrainingService._execute); the error Mapping is the usual detail
+            # source, but if it is ever empty we still show a non-empty message
+            # so a fault can never leave the monitor silent.
+            if message is None and (error or status == "faulted"):
                 if isinstance(error, Mapping):
-                    message = str(error.get("message") or error.get("error_type") or error)
+                    # The no-normal-episodes guard (NoNormalEpisodesError,
+                    # code 'no_normal_episodes') carries a localized message in
+                    # error['message'] (ko) already, but prefer the active GUI
+                    # language via the i18n key so the detail matches the UI.
+                    if (
+                        error.get("code") == "no_normal_episodes"
+                        or error.get("error_type") == "NoNormalEpisodesError"
+                    ):
+                        detail = tr("training.no_normal_episodes")
+                    else:
+                        detail = str(error.get("message") or error.get("error_type") or error)
+                elif error:
+                    detail = str(error)
                 else:
-                    message = str(error)
+                    detail = tr("training.run_failed_unknown")
+                message = tr("training.run_failed", detail=detail)
         handle = self.handle
         snapshot = None if handle is None else getattr(handle, "snapshot", None)
         metadata = {}
@@ -236,18 +257,26 @@ class TrainingMonitorController:
             self.handle = self.service.start(request)
             self._win_rates.clear()
             self._logs.clear()
+            # Seed a visible baseline point so the win-rate graph has a starting
+            # point from the start of the run instead of being empty until the
+            # first evaluation. Real evaluation win-rates append after this.
+            self._win_rates.append(0.0)
             return self._publish(message=None)
         except Exception as exc:
             self.handle = None
-            return self._publish(message=self._error_message(exc))
+            return self._publish(
+                message=tr("training.start_failed", detail=self._error_message(exc))
+            )
 
     def refresh(self) -> TrainingMonitorSnapshot:
         if self.handle is None or self.service is None:
-            return self._publish(message="No training job is running.")
+            return self._publish(message=tr("training.no_job_running"))
         try:
             return self._publish()
         except Exception as exc:
-            return self._publish(message=self._error_message(exc))
+            return self._publish(
+                message=tr("training.unavailable", detail=self._error_message(exc))
+            )
 
     def pause(self, timeout: float | None = None) -> TrainingMonitorSnapshot:
         return self._lifecycle("pause", timeout=timeout)
@@ -263,12 +292,14 @@ class TrainingMonitorController:
 
     def _lifecycle(self, action: str, **kwargs: Any) -> TrainingMonitorSnapshot:
         if self.handle is None or self.service is None:
-            return self._publish(message="No training job is running.")
+            return self._publish(message=tr("training.no_job_running"))
         try:
             getattr(self.service, action)(self.handle, **kwargs)
             return self._publish()
         except Exception as exc:
-            return self._publish(message=self._error_message(exc))
+            return self._publish(
+                message=tr("training.unavailable", detail=self._error_message(exc))
+            )
 
     @staticmethod
     def _error_message(exc: Exception) -> str:

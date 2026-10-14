@@ -21,6 +21,20 @@ htmlcov/
 .env.*
 !.env.example
 
+# Per-machine AI-training hardware and training settings (cpu cores, workers,
+# RAM, batch size, buffer size, episodes, mode). The GUI persists these via
+# SettingsEditor.save() and the config loader can read any of these paths, so
+# they must not be committed and each computer keeps its own settings.
+config.json
+config.yaml
+config.yml
+config/default.yaml
+config/default.yml
+config/default.json
+# Keep the committed example template tracked.
+!config.example.yaml
+!*.example
+
 # Generated Bang RL artifacts and runtime data
 bang_rl/models/*
 !bang_rl/models/.gitkeep
@@ -32,4 +46,3 @@ bang_rl/datasets/cache/*
 !bang_rl/datasets/cache/.gitkeep
 bang_rl/replays/*
 !bang_rl/replays/.gitkeep
-config.json

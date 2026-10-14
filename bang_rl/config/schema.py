@@ -73,6 +73,12 @@ class EnvConfig(ConfigModel):
     critical_turn_threshold: StrictInt = Field(default=500, ge=1)
     event_history: EventHistoryConfig = Field(default_factory=EventHistoryConfig)
     action_space_size: Literal[6] = 6
+    # Optional per-episode step cap for the training-collection loop only.
+    # Defaults to None, meaning the runner uses its module constant
+    # (_COLLECTION_STEP_CAP). It deliberately does NOT participate in the
+    # warn < critical < max_episode_steps ordering validator and never changes
+    # the env's own truncation contract.
+    collection_step_cap: StrictInt | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def validate_threshold_order(self) -> "EnvConfig":
