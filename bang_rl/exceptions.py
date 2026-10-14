@@ -356,6 +356,57 @@ class TrainingError(BangRLError):
     error_code = "training_error"
 
 
+# Localized text for the no-normal-episodes guard.  The training runner is a
+# Qt-free module and must not import bang_rl.gui.i18n, so the ko (primary) and
+# en strings live here, in a module the runner can already import cheaply (no
+# numpy / torch).  bang_rl/gui/i18n.py mirrors these under the key
+# ``training.no_normal_episodes`` so the GUI can prefer the active language;
+# keep the two in sync.  Korean is the primary language.
+NO_NORMAL_EPISODES_MESSAGE_KO = (
+    "완료된(정상 종료) 게임이 없어 학습 데이터를 만들 수 없습니다. "
+    "수집에서 정상적으로 끝난 에피소드가 생성되지 않았습니다."
+)
+NO_NORMAL_EPISODES_MESSAGE_EN = (
+    "No completed (normal) games were produced, so no training data could be "
+    "built. Collection generated no normally finished episodes."
+)
+
+
+class NoNormalEpisodesError(TrainingError):
+    """Collection produced zero normal (completed) episodes.
+
+    Raised by the training runner BEFORE the tensor-cache writer so the user
+    sees a clear, localized explanation instead of the raw English
+    ``DataError`` from the cache ("validation/test cache requires normal
+    training episodes for statistics").  The exception message is the ko
+    (primary) text; both the ko and en strings are also carried in ``context``
+    (keys ``message_ko`` / ``message_en``) so the GUI i18n layer can render the
+    message in whichever language is active.
+    """
+
+    error_code = "no_normal_episodes"
+
+    def __init__(
+        self,
+        *,
+        episodes_completed: int | None = None,
+        truncated_episodes: int | None = None,
+        context: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.episodes_completed = episodes_completed
+        self.truncated_episodes = truncated_episodes
+        details: dict[str, Any] = {
+            "message_ko": NO_NORMAL_EPISODES_MESSAGE_KO,
+            "message_en": NO_NORMAL_EPISODES_MESSAGE_EN,
+        }
+        if episodes_completed is not None:
+            details["episodes_completed"] = episodes_completed
+        if truncated_episodes is not None:
+            details["truncated_episodes"] = truncated_episodes
+        details.update(context or {})
+        super().__init__(NO_NORMAL_EPISODES_MESSAGE_KO, context=details)
+
+
 class ResourceLimitError(TrainingError):
     """A configured resource limit prevents an operation from proceeding."""
 
@@ -410,6 +461,9 @@ __all__ = [
     "InvalidActionError",
     "InvalidConfigError",
     "MissingConfigKeyError",
+    "NoNormalEpisodesError",
+    "NO_NORMAL_EPISODES_MESSAGE_EN",
+    "NO_NORMAL_EPISODES_MESSAGE_KO",
     "ResourceLimitError",
     "SchemaChangedError",
     "TerminalStateActionError",

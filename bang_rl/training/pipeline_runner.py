@@ -485,6 +485,30 @@ def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
             artifact_path=run.artifact_path,
         )
 
+    # Defensive guard (FEAT-002): collection produced episodes but none of them
+    # terminated 'normal' (all truncated).  The tensor cache keeps only normal
+    # train episodes for its statistics and would otherwise raise the raw
+    # English DataError ("validation/test cache requires normal training
+    # episodes for statistics") deep inside NPZTensorCacheWriter.write_all.
+    # Stop here and raise a localized NoNormalEpisodesError instead so the GUI
+    # shows an understandable ko/en message.  TrainingService._execute folds
+    # the exception into run.error via _error_dict, keeping main_agent
+    # transitions at 0.  This never fires on the FEAT-001 happy path, where a
+    # DummyAgent-driven default run yields normal_episodes >= 1.
+    if normal_episodes == 0:
+        from bang_rl.exceptions import NoNormalEpisodesError
+
+        log(
+            "collection_no_normal_episodes",
+            episodes=len(episodes),
+            truncated_episodes=truncated_episodes,
+            normal_episodes=normal_episodes,
+        )
+        raise NoNormalEpisodesError(
+            episodes_completed=len(episodes),
+            truncated_episodes=truncated_episodes,
+        )
+
     # ------------------------------------------------------------------ #
     # Stage 2: SPLIT + tensor CACHE (EpisodeSplitter -> NPZTensorCacheWriter).
     # ------------------------------------------------------------------ #

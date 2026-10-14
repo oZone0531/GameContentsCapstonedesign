@@ -197,7 +197,17 @@ class TrainingMonitorController:
             # so a fault can never leave the monitor silent.
             if message is None and (error or status == "faulted"):
                 if isinstance(error, Mapping):
-                    detail = str(error.get("message") or error.get("error_type") or error)
+                    # The no-normal-episodes guard (NoNormalEpisodesError,
+                    # code 'no_normal_episodes') carries a localized message in
+                    # error['message'] (ko) already, but prefer the active GUI
+                    # language via the i18n key so the detail matches the UI.
+                    if (
+                        error.get("code") == "no_normal_episodes"
+                        or error.get("error_type") == "NoNormalEpisodesError"
+                    ):
+                        detail = tr("training.no_normal_episodes")
+                    else:
+                        detail = str(error.get("message") or error.get("error_type") or error)
                 elif error:
                     detail = str(error)
                 else:

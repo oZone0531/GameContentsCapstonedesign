@@ -325,6 +325,22 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "an unexpected error occurred",
         "ko": "예상치 못한 오류가 발생했습니다",
     },
+    # Localized detail shown when collection produced zero normal (completed)
+    # games, so no training data could be built.  Mirrors
+    # bang_rl.exceptions.NO_NORMAL_EPISODES_MESSAGE_{KO,EN}; the training runner
+    # raises NoNormalEpisodesError (code 'no_normal_episodes') and the monitor
+    # renders this key via the training.run_failed envelope so the user sees a
+    # clear message instead of the raw English cache DataError.
+    "training.no_normal_episodes": {
+        "en": (
+            "No completed (normal) games were produced, so no training data "
+            "could be built. Collection generated no normally finished episodes."
+        ),
+        "ko": (
+            "완료된(정상 종료) 게임이 없어 학습 데이터를 만들 수 없습니다. "
+            "수집에서 정상적으로 끝난 에피소드가 생성되지 않았습니다."
+        ),
+    },
     "training.unavailable": {
         "en": "Training is unavailable: {detail}",
         "ko": "학습을 사용할 수 없습니다: {detail}",
