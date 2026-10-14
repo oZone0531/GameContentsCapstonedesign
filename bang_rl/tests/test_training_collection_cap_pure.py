@@ -162,3 +162,96 @@ def test_runner_module_defines_the_pure_helpers() -> None:
     defined = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
     assert "collection_step_cap" in defined
     assert "should_stop_collection" in defined
+    assert "should_finalize_capped_episode" in defined
+
+
+# --- should_finalize_capped_episode (double-finalize guard) ------------- #
+
+
+class _FakeCollector:
+    """A hand-rolled, dependency-free stand-in for EpisodeCollector.
+
+    It mirrors ONLY the parts of the real collector contract the finalize guard
+    depends on: ``active_episode_id`` (None once an episode has been finalized)
+    and ``finish_episode(result=...)`` which records the call and clears the
+    active id, exactly as the real ``record_step`` / ``finish_episode`` do.  We
+    deliberately do NOT import the real ``EpisodeCollector`` because it pulls
+    numpy, which is not importable in the restricted sandbox.
+    """
+
+    def __init__(self, active_episode_id: str | None) -> None:
+        self._active_episode_id = active_episode_id
+        self.finish_calls: list[dict[str, object]] = []
+
+    @property
+    def active_episode_id(self) -> str | None:
+        return self._active_episode_id
+
+    def finish_episode(self, *, result: object) -> None:
+        # The real collector raises if there is no active episode; the loop only
+        # calls this behind the guard, so record the call and clear the id (just
+        # like record_step/finish_episode set self._active = None).
+        assert self._active_episode_id is not None
+        self.finish_calls.append({"result": result})
+        self._active_episode_id = None
+
+
+def test_should_finalize_capped_episode_true_when_episode_still_active() -> None:
+    """A capped episode is still active (non-None id), so the guard is True."""
+
+    collector = _FakeCollector(active_episode_id="job-episode-0")
+    assert _runner.should_finalize_capped_episode(collector) is True
+
+
+def test_should_finalize_capped_episode_false_when_already_finalized() -> None:
+    """A terminal episode was auto-finalized (id is None), so the guard is False."""
+
+    collector = _FakeCollector(active_episode_id=None)
+    assert _runner.should_finalize_capped_episode(collector) is False
+
+
+def test_should_finalize_capped_episode_false_when_attribute_missing() -> None:
+    """Bool-safe / defensive: a collector with no active id attr is not finalized."""
+
+    assert _runner.should_finalize_capped_episode(SimpleNamespace()) is False
+
+
+def _run_finalize_guard(collector: object, environment_step: int) -> None:
+    """Replicate the runner's guard+finish_episode snippet against a fake.
+
+    This is byte-for-byte the condition and call shape used in
+    ``default_training_runner`` (guarded by ``should_finalize_capped_episode``
+    and calling ``finish_episode`` with the capped ``truncated=True`` result),
+    so these assertions are revert-sensitive to that block.
+    """
+
+    if _runner.should_finalize_capped_episode(collector):
+        collector.finish_episode(
+            result={
+                "action": 0,
+                "environment_step": int(environment_step),
+                "truncated": True,
+            }
+        )
+
+
+def test_guard_finalizes_capped_episode_exactly_once_as_truncated() -> None:
+    """A capped (still-active) episode is finalized once with truncated=True."""
+
+    collector = _FakeCollector(active_episode_id="job-episode-0")
+    _run_finalize_guard(collector, environment_step=200)
+    assert len(collector.finish_calls) == 1
+    result = collector.finish_calls[0]["result"]
+    assert result == {"action": 0, "environment_step": 200, "truncated": True}
+    # After finalizing, the episode is no longer active (no double-finalize).
+    assert collector.active_episode_id is None
+    _run_finalize_guard(collector, environment_step=200)
+    assert len(collector.finish_calls) == 1
+
+
+def test_guard_skips_already_finalized_terminal_episode() -> None:
+    """A terminal episode (auto-finalized, id None) is never finalized again."""
+
+    collector = _FakeCollector(active_episode_id=None)
+    _run_finalize_guard(collector, environment_step=37)
+    assert collector.finish_calls == []

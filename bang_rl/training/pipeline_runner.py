@@ -138,6 +138,21 @@ def should_stop_collection(step: int, cap: int) -> bool:
     return cap > 0 and step >= cap
 
 
+def should_finalize_capped_episode(collector: Any) -> bool:
+    """Return True when the collection loop must explicitly finalize an episode.
+
+    Pure and dependency-free (no numpy / torch) so it is testable in the
+    restricted sandbox.  This is the double-finalize guard: a capped episode is
+    broken out of the step loop while still active, so ``active_episode_id`` is
+    non-None and it must be finalized explicitly (as ``truncated``).  A genuinely
+    terminal episode has already been auto-finalized by ``EpisodeCollector.
+    record_step`` (which sets ``active_episode_id`` back to ``None``), so this
+    returns False and the loop does NOT finalize it a second time.
+    """
+
+    return getattr(collector, "active_episode_id", None) is not None
+
+
 def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
     """Compose and execute the full collection -> SL -> PPO -> artifact pipeline.
 
@@ -331,7 +346,7 @@ def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
             # still has an active, unfinished episode; a genuinely terminal
             # episode has already been auto-finalized by record_step, so we do
             # NOT double-finalize it.
-            if collector.active_episode_id is not None:
+            if should_finalize_capped_episode(collector):
                 collector.finish_episode(
                     result={
                         "action": 0,
