@@ -69,6 +69,16 @@ _DEFAULT_COLLECTION_EPISODES = 1
 # environment-step total onto run so the GUI progress poll stays live during a
 # single long episode instead of only updating after the episode completes.
 _PROGRESS_STEP_INTERVAL = 25
+# A modest per-episode step cap applied ONLY inside this runner's collection
+# loop.  It is deliberately independent of ``BangEnvironment.max_episode_steps``
+# (default 2000) and does NOT change the env's own truncation contract used
+# elsewhere.  It exists because the collection policy here always selects the
+# first legal action, and the legal action mask always sets index 0 (PASS), so
+# every seat passes every turn: no HP changes, nobody is eliminated, and the
+# episode can only end via the env's 2000-step truncation.  On a single core
+# that reads as a silent hang after ``training_started``, so we stop a passive
+# PASS standoff at ``_COLLECTION_STEP_CAP`` instead.
+_COLLECTION_STEP_CAP = 200
 # Short post-training evaluation budget used when the user left the default
 # primary protocol in place.  The fixed 500-game primary benchmark cannot be
 # shortened (its reproducibility invariant), so Stage 7 runs this many games
@@ -98,6 +108,34 @@ def _set_counters(run: Any, **updates: Any) -> None:
     else:  # pragma: no cover - run always carries a lock in production
         for key, value in updates.items():
             setattr(run, key, value)
+
+
+def collection_step_cap(env_config: Any, default: int = _COLLECTION_STEP_CAP) -> int:
+    """Return the effective per-episode step cap for the collection loop.
+
+    Pure and dependency-free (no numpy / torch), so it is testable in the
+    restricted sandbox.  The cap honours an optional positive integer override
+    on ``env_config`` (``collection_step_cap``) and otherwise uses ``default``.
+    The result is additionally clamped so it can never exceed the env's own
+    ``max_episode_steps`` when that attribute is available, keeping the cap at or
+    below the env truncation contract.  ``env_config`` may be ``None`` (returns
+    ``default``).
+    """
+
+    cap = int(default)
+    override = getattr(env_config, "collection_step_cap", None)
+    if isinstance(override, int) and not isinstance(override, bool) and override > 0:
+        cap = int(override)
+    max_steps = getattr(env_config, "max_episode_steps", None)
+    if isinstance(max_steps, int) and not isinstance(max_steps, bool) and max_steps > 0:
+        cap = min(cap, int(max_steps))
+    return cap
+
+
+def should_stop_collection(step: int, cap: int) -> bool:
+    """True once ``step`` reaches a positive collection ``cap``."""
+
+    return cap > 0 and step >= cap
 
 
 def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
@@ -200,6 +238,13 @@ def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
 
     reward_runtime = RewardRuntime(RewardCalculator(config.reward_config))
 
+    # Emit an early log BEFORE the collection loop so a run is never silent
+    # after training_started.  The per-episode step cap bounds the passive
+    # first-legal-action (PASS) standoff so a default episode finishes promptly
+    # instead of running to the env's max_episode_steps truncation.
+    step_cap = collection_step_cap(env_config)
+    log("collection_started", episode_budget=episode_budget, step_cap=step_cap)
+
     for episode_index in range(episode_budget):
         if _cancelled(run):
             log("training_cancelled", stage="collection", episode_index=episode_index)
@@ -276,14 +321,31 @@ def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
                 if in_progress_step - last_progress_step >= _PROGRESS_STEP_INTERVAL:
                     last_progress_step = in_progress_step
                     _set_counters(run, environment_steps=environment_steps + in_progress_step)
-            # record_step auto-calls finish_episode on the terminal/truncated
-            # result, so by the time the loop exits the episode is already
-            # finalized and appended to collector.episodes.  Read the completed
-            # episode from there rather than calling finish_episode() again
-            # (a second call with no active episode would only return the last
-            # completed one via the fallback path).  If the loop exited without
-            # a terminal step (e.g. a None result broke out early), episodes may
-            # be unchanged, so guard on the completed count.
+                # Stop a passive PASS standoff at the collection cap instead of
+                # running to the env's ~2000-step truncation on a single core.
+                if should_stop_collection(int(env.environment_step), step_cap):
+                    break
+            # A capped episode is NOT env-terminated/truncated, so record_step
+            # never auto-finalized it.  Finalize it explicitly (marking it
+            # truncated so it is a valid canonical episode) when the collector
+            # still has an active, unfinished episode; a genuinely terminal
+            # episode has already been auto-finalized by record_step, so we do
+            # NOT double-finalize it.
+            if collector.active_episode_id is not None:
+                collector.finish_episode(
+                    result={
+                        "action": 0,
+                        "environment_step": int(env.environment_step),
+                        "truncated": True,
+                    }
+                )
+            # record_step auto-finalizes on a terminal/truncated result and the
+            # explicit finish_episode above finalizes a capped episode, so by
+            # this point any collected episode is appended to collector.episodes.
+            # Read it from there rather than calling finish_episode() again.  If
+            # the loop exited without any finalized episode (e.g. a None result
+            # broke out before the first step), episodes may be unchanged, so
+            # guard on the completed count.
             canonical = (
                 collector.episodes[-1]
                 if len(collector.episodes) > completed_before
@@ -306,6 +368,14 @@ def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
             episodes_completed=len(episodes),
             truncated_episodes=truncated_episodes,
             normal_episodes=normal_episodes,
+        )
+        # Per-episode progress so the run is visible between training_started
+        # and collection_finished, not only after the whole loop.
+        log(
+            "episode_finished",
+            episode_index=episode_index,
+            environment_steps=environment_steps,
+            episodes_completed=len(episodes),
         )
 
     parquet.finalize()
