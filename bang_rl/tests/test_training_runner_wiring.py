@@ -213,3 +213,13 @@ def test_default_training_runner_runs_the_real_pipeline_end_to_end(tmp_path: Pat
     # the canonical to_observation_dict() shape; a schema mismatch would have
     # raised DataError and faulted the run before reaching PPO/artifact save.
     assert report.progress.metrics is not None
+    # FEAT-001 regression guard: the per-seat DummyAgent collection policy must
+    # produce at least one NORMAL (non-truncated) episode.  Before the fix the
+    # collection loop hard-selected the first legal action (always PASS), so no
+    # HP ever changed, every episode only truncated, and the tensor cache raised
+    # DataError('validation/test cache requires normal training episodes for
+    # statistics'), faulting the run with zero transitions.  A normal episode
+    # here proves games actually play out and reach a win condition.
+    assert report.progress.normal_episodes >= 1, (
+        "collection must yield at least one normal (non-truncated) episode"
+    )

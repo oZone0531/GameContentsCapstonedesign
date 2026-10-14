@@ -57,10 +57,10 @@ __all__ = ["default_training_runner", "build_default_training_runner"]
 #
 # This is the collection floor applied ONLY when run.config.episodes is left
 # unset (None or 0).  It is intentionally 1 (a deliberate reduction from the
-# previous forced minimum of 8): with env max_episode_steps defaulting to 2000,
-# a single first-legal-action standoff episode can run up to ~2000 environment
-# steps on a single core, so forcing 8 full episodes meant up to ~16000 steps
-# and made a default run (episodes=1, 1 core, 1 GB) look like a hang.  When the
+# previous forced minimum of 8): a DummyAgent-driven episode terminates 'normal'
+# within the collection step cap, so forcing 8 full episodes multiplied the
+# default run cost needlessly and made a default run (episodes=1, 1 core, 1 GB)
+# look slow.  When the
 # user DOES set episodes we honour that value verbatim and never raise it to
 # this floor, so pressing "AI 학습" with episodes=1 collects exactly 1 episode
 # and a quick run is really quick.
@@ -72,12 +72,13 @@ _PROGRESS_STEP_INTERVAL = 25
 # A modest per-episode step cap applied ONLY inside this runner's collection
 # loop.  It is deliberately independent of ``BangEnvironment.max_episode_steps``
 # (default 2000) and does NOT change the env's own truncation contract used
-# elsewhere.  It exists because the collection policy here always selects the
-# first legal action, and the legal action mask always sets index 0 (PASS), so
-# every seat passes every turn: no HP changes, nobody is eliminated, and the
-# episode can only end via the env's 2000-step truncation.  On a single core
-# that reads as a silent hang after ``training_started``, so we stop a passive
-# PASS standoff at ``_COLLECTION_STEP_CAP`` instead.
+# elsewhere.  Collection is now driven by per-seat DummyAgents that prefer a
+# BANG over PASS (see select_collection_action), so games actually reduce HP,
+# eliminate seats, and reach a win condition (termination_status 'normal') long
+# before any cap.  This cap is retained only as a safety net: if a pathological
+# game somehow fails to terminate it stops at ``_COLLECTION_STEP_CAP`` rather
+# than running to the env's 2000-step truncation on a single core, which would
+# read as a silent hang after ``training_started``.
 _COLLECTION_STEP_CAP = 200
 # Short post-training evaluation budget used when the user left the default
 # primary protocol in place.  The fixed 500-game primary benchmark cannot be
@@ -151,6 +152,41 @@ def should_finalize_capped_episode(collector: Any) -> bool:
     """
 
     return getattr(collector, "active_episode_id", None) is not None
+
+
+def select_collection_action(mask_values: Any, agent_action: Any = None) -> int:
+    """Pick the collection action for the current actor from its legal mask.
+
+    Pure and dependency-free (plain Python ints only, no numpy / torch) so it is
+    importable and testable in the restricted sandbox.  ``mask_values`` is an
+    iterable of 0/1 flags over the length-6 action space where index 0 == PASS
+    and indices 1..5 == BANG a living opponent (target seat index minus one).
+
+    Selection rules:
+
+    * If ``agent_action`` is given AND it is a legal index
+      (``mask_values[agent_action] == 1``), honour it verbatim.  This is how the
+      per-seat DummyAgent policy drives collection.
+    * Otherwise prefer any non-PASS legal action over PASS.  Preferring a
+      non-PASS (BANG) action makes an opponent's HP drop, so seats are
+      eliminated and the game reaches a win condition and terminates 'normal'
+      instead of every seat PASSing forever (which only ever truncated).
+    * Fall back to the first legal index, and finally to 0, only when no
+      non-PASS legal action exists (a PASS-only or all-zero mask).
+    """
+
+    flags = [int(flag) for flag in mask_values]
+    if agent_action is not None:
+        index = int(agent_action)
+        if 0 <= index < len(flags) and flags[index] == 1:
+            return index
+    legal = [i for i, flag in enumerate(flags) if flag == 1]
+    nonpass = [i for i in legal if i != 0]
+    if nonpass:
+        return nonpass[0]
+    if legal:
+        return legal[0]
+    return 0
 
 
 def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
@@ -228,11 +264,18 @@ def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
 
     # ------------------------------------------------------------------ #
     # Stage 1: COLLECT canonical episodes by driving the environment with
-    # the emotion + reward runtimes (the pre-action boundary alignment that
+    # per-seat DummyAgents plus the emotion + reward runtimes (the pre-action
+    # boundary alignment that
     # test_emotion_reward_and_transition_records_share_the_pre_action_boundary
-    # establishes).  Each completed episode is appended to the canonical shard
-    # writer; this reuses EpisodeCollector/ParquetCanonicalShardWriter as-is.
+    # establishes).  Each seat asks its own role-aware DummyAgent for an action
+    # each turn (the proven drive loop from test_pipeline_integration.py
+    # _public_trace), so games prefer BANG over PASS, reduce HP, eliminate
+    # seats, and terminate 'normal' instead of only ever truncating.  Each
+    # completed episode is appended to the canonical shard writer; this reuses
+    # EpisodeCollector / ParquetCanonicalShardWriter / DummyAgent as-is.  The
+    # DummyAgent import is lazy here to keep ``import bang_rl.app`` torch-free.
     # ------------------------------------------------------------------ #
+    from bang_rl.agents import DummyAgent
     from bang_rl.data import EpisodeCollector
 
     # Honour an explicit user episode count verbatim (episodes=1 collects
@@ -254,9 +297,10 @@ def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
     reward_runtime = RewardRuntime(RewardCalculator(config.reward_config))
 
     # Emit an early log BEFORE the collection loop so a run is never silent
-    # after training_started.  The per-episode step cap bounds the passive
-    # first-legal-action (PASS) standoff so a default episode finishes promptly
-    # instead of running to the env's max_episode_steps truncation.
+    # after training_started.  Collection is driven by per-seat DummyAgents that
+    # prefer BANG over PASS, so a default episode plays out and terminates
+    # 'normal' quickly; the per-episode step cap remains only as a safety net
+    # against a pathological non-terminating game.
     step_cap = collection_step_cap(env_config)
     log("collection_started", episode_budget=episode_budget, step_cap=step_cap)
 
@@ -265,9 +309,10 @@ def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
             log("training_cancelled", stage="collection", episode_index=episode_index)
             break
         episode_id = f"{handle.job_id}-episode-{episode_index}"
+        episode_seed = snapshot.seed + episode_index if hasattr(snapshot, "seed") else episode_index
         env = BangEnvironment(
             episode_id=episode_id,
-            seed=snapshot.seed + episode_index if hasattr(snapshot, "seed") else episode_index,
+            seed=episode_seed,
             config=env_config,
         )
         emotion_modules = {
@@ -286,6 +331,27 @@ def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
         reward_runtime.reset(episode_id=env.state.episode_id)
         collector.start_episode(env)
         completed_before = len(collector.episodes)
+        # Build one role-aware DummyAgent per seat and start each on this
+        # episode, mirroring test_pipeline_integration.py _public_trace.  The
+        # agents prefer a BANG target over PASS, so the game actually plays out
+        # and terminates 'normal' within the collection cap.
+        agents = [
+            DummyAgent(
+                f"player_{idx}",
+                seed=episode_seed + idx,
+                player_idx=idx,
+                action_mode="deterministic",
+            )
+            for idx in range(5)
+        ]
+        for idx, agent in enumerate(agents):
+            agent.on_episode_start(
+                {
+                    "episode_id": env.state.episode_id,
+                    "seed": episode_seed,
+                    "observation": env.observe(idx).to_observation_dict(),
+                }
+            )
         prior_events: tuple[Any, ...] = ()
         last_progress_step = 0
         try:
@@ -313,9 +379,16 @@ def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
                     observation=observation,
                 )
                 collector.before_action(observation, action_mask=env.action_mask, actor_idx=actor)
-                mask = np.asarray(env.action_mask)
-                legal = [index for index, flag in enumerate(mask) if int(flag) == 1]
-                action = legal[0] if legal else 0
+                # Ask the current actor's DummyAgent for its action (it reads
+                # only public fields of the canonical observation dict).  A
+                # defensive failure falls back to the pure helper, which still
+                # prefers a non-PASS legal action over PASS so the game keeps
+                # progressing toward a win condition instead of stalling.
+                try:
+                    agent_action = agents[actor].act(observation, env.action_mask)
+                except Exception:  # pragma: no cover - defensive agent fallback
+                    agent_action = None
+                action = select_collection_action(env.action_mask, agent_action)
                 env.step(action)
                 result = env.last_result
                 if result is None:
@@ -336,8 +409,10 @@ def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
                 if in_progress_step - last_progress_step >= _PROGRESS_STEP_INTERVAL:
                     last_progress_step = in_progress_step
                     _set_counters(run, environment_steps=environment_steps + in_progress_step)
-                # Stop a passive PASS standoff at the collection cap instead of
-                # running to the env's ~2000-step truncation on a single core.
+                # Safety net only: DummyAgent-driven games terminate 'normal'
+                # well within this cap, but if a pathological game fails to
+                # terminate we stop at the collection cap instead of running to
+                # the env's ~2000-step truncation on a single core.
                 if should_stop_collection(int(env.environment_step), step_cap):
                     break
             # A capped episode is NOT env-terminated/truncated, so record_step
