@@ -220,7 +220,21 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self.truncated.setText(f"Truncated: {count} ({'N/A' if rate is None else f'{rate:.1%}'})")
             self.metrics.setText(f"Metrics: {json.dumps(getattr(progress, 'metrics', {}) or {}, sort_keys=True)}")
             status_text = f"Status: {progress.status} · PPO updates: {progress.ppo_updates}"
-            if progress.status == "running":
+            # Gate the localized in-progress indicator on the snapshot's own
+            # active flag rather than the literal 'running' status. ``active``
+            # covers every non-terminal status the controller recognizes
+            # (running/paused/pause_failed/cancelling) so a freshly started run
+            # and a paused/cancelling run both show the indicator.
+            # CI-only static trace (PyQt6 is not importable in-sandbox, so this
+            # branch is verified by the PyQt6-guarded GUI tests in
+            # bang_rl/tests/test_training_gui.py / test_gui_layout.py):
+            # _TrainingRun.status defaults to 'running' -> TrainingService.start()
+            # returns while status is 'running' -> TrainingMonitorController.start()
+            # publishes a snapshot immediately -> snapshot.active is True ->
+            # _render shows the tr('training.in_progress') prefix. The pure,
+            # Qt-free bang_rl/tests/test_training_monitor_progress.py locks in the
+            # snapshot.active logic this gate depends on.
+            if state.active:
                 status_text = f"{tr('training.in_progress')} · {status_text}"
             self.status.setText(status_text)
             if state.snapshot is not None:

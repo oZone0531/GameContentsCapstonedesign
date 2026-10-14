@@ -105,6 +105,41 @@ def test_running_progress_is_active() -> None:
     assert snapshot.win_rate_points[0] == 0.0
 
 
+def test_start_immediately_reports_active() -> None:
+    # FEAT-002: the Qt screen gates its localized in-progress indicator on
+    # snapshot.active. start() publishes a snapshot right after the service
+    # start() returns (status defaults to 'running'), so the indicator can
+    # appear before the first 250ms poll tick, not only after a refresh.
+    controller = TrainingMonitorController(_RunningService())
+
+    snapshot = controller.start(_FAKE_REQUEST)
+
+    assert snapshot.progress is not None
+    assert snapshot.progress.status == "running"
+    assert snapshot.active is True
+
+
+def _snapshot_with_status(status: str):
+    # Build a snapshot carrying only a status so we exercise the active logic
+    # directly, independent of any service. Reuse the controller's own snapshot
+    # dataclass loaded from the Qt-free module under test.
+    cls = _load_gui_module("training").TrainingMonitorSnapshot
+    progress = SimpleNamespace(status=status)
+    return cls(handle=None, progress=progress, snapshot=None)
+
+
+def test_snapshot_active_covers_all_active_statuses() -> None:
+    # The indicator must show for every non-terminal status the controller
+    # recognizes, not only the literal 'running'.
+    for status in ("running", "paused", "pause_failed", "cancelling"):
+        assert _snapshot_with_status(status).active is True, status
+
+
+def test_snapshot_active_is_false_for_terminal_statuses() -> None:
+    for status in ("finished", "faulted", "cancelled"):
+        assert _snapshot_with_status(status).active is False, status
+
+
 def test_in_progress_string_is_localized_both_locales() -> None:
     # The in-progress indicator the Qt screen renders must be localized in both
     # locales (no raw UI text outside i18n.py).
