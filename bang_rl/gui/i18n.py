@@ -333,6 +333,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "No training job is running.",
         "ko": "진행 중인 학습 작업이 없습니다.",
     },
+    "training.in_progress": {
+        "en": "Training in progress...",
+        "ko": "학습 중...",
+    },
     "training.graph_needs_pyqtgraph": {
         "en": "Win-rate graph requires optional pyqtgraph.",
         "ko": "승률 그래프에는 pyqtgraph(선택 설치)가 필요합니다.",

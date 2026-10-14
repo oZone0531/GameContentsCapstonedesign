@@ -219,7 +219,10 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             rate = getattr(progress, "truncated_rate", None)
             self.truncated.setText(f"Truncated: {count} ({'N/A' if rate is None else f'{rate:.1%}'})")
             self.metrics.setText(f"Metrics: {json.dumps(getattr(progress, 'metrics', {}) or {}, sort_keys=True)}")
-            self.status.setText(f"Status: {progress.status} · PPO updates: {progress.ppo_updates}")
+            status_text = f"Status: {progress.status} · PPO updates: {progress.ppo_updates}"
+            if progress.status == "running":
+                status_text = f"{tr('training.in_progress')} · {status_text}"
+            self.status.setText(status_text)
             if state.snapshot is not None:
                 self.snapshot.setText(
                     f"Snapshot: {state.snapshot.job_id} · config {state.snapshot.config_version} "

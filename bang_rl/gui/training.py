@@ -247,6 +247,10 @@ class TrainingMonitorController:
             self.handle = self.service.start(request)
             self._win_rates.clear()
             self._logs.clear()
+            # Seed a visible baseline point so the win-rate graph has a starting
+            # point from the start of the run instead of being empty until the
+            # first evaluation. Real evaluation win-rates append after this.
+            self._win_rates.append(0.0)
             return self._publish(message=None)
         except Exception as exc:
             self.handle = None
