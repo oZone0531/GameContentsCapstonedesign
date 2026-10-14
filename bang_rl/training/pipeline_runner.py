@@ -54,7 +54,21 @@ __all__ = ["default_training_runner", "build_default_training_runner"]
 # real, saved artifact quickly rather than launching a multi-hour job.  The
 # per-run episode / rollout budgets stay modest; the fixed-hyperparameter
 # contracts (learning rates, architecture) always come from the config.
-_DEFAULT_COLLECTION_EPISODES = 8
+#
+# This is the collection floor applied ONLY when run.config.episodes is left
+# unset (None or 0).  It is intentionally 1 (a deliberate reduction from the
+# previous forced minimum of 8): with env max_episode_steps defaulting to 2000,
+# a single first-legal-action standoff episode can run up to ~2000 environment
+# steps on a single core, so forcing 8 full episodes meant up to ~16000 steps
+# and made a default run (episodes=1, 1 core, 1 GB) look like a hang.  When the
+# user DOES set episodes we honour that value verbatim and never raise it to
+# this floor, so pressing "AI 학습" with episodes=1 collects exactly 1 episode
+# and a quick run is really quick.
+_DEFAULT_COLLECTION_EPISODES = 1
+# How often (in environment steps) the collection loop mirrors the growing
+# environment-step total onto run so the GUI progress poll stays live during a
+# single long episode instead of only updating after the episode completes.
+_PROGRESS_STEP_INTERVAL = 25
 # Short post-training evaluation budget used when the user left the default
 # primary protocol in place.  The fixed 500-game primary benchmark cannot be
 # shortened (its reproducibility invariant), so Stage 7 runs this many games
@@ -168,8 +182,14 @@ def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
     # ------------------------------------------------------------------ #
     from bang_rl.data import EpisodeCollector
 
-    episode_budget = int(run.config.episodes) if run.config.episodes else _DEFAULT_COLLECTION_EPISODES
-    episode_budget = max(episode_budget, _DEFAULT_COLLECTION_EPISODES)
+    # Honour an explicit user episode count verbatim (episodes=1 collects
+    # exactly 1 episode); apply the small default floor ONLY when the user left
+    # episodes unset/None/0.  We deliberately do NOT re-raise an explicit value
+    # to the floor, so a quick run really is quick.
+    if run.config.episodes:
+        episode_budget = max(1, int(run.config.episodes))
+    else:
+        episode_budget = _DEFAULT_COLLECTION_EPISODES
 
     parquet = ParquetCanonicalShardWriter(scratch / "canonical")
     episodes: list[Any] = []
@@ -207,6 +227,7 @@ def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
         collector.start_episode(env)
         completed_before = len(collector.episodes)
         prior_events: tuple[Any, ...] = ()
+        last_progress_step = 0
         try:
             while not (env.state.terminated or env.state.truncated):
                 actor = int(env.state.agent_selection)
@@ -244,6 +265,17 @@ def default_training_runner(handle: Any, run: Any) -> Mapping[str, Any]:
                 emotion.on_action_result(attached)
                 collector.record_step(attached)
                 prior_events = tuple(getattr(result, "events", ()) or ())
+                # Mirror the growing environment-step total onto run during the
+                # episode so the GUI poll is not frozen while a single long
+                # (up to max_episode_steps=2000) episode runs.  We publish the
+                # already-finalized episodes' steps plus this episode's current
+                # env.environment_step, updating only every few steps to keep the
+                # lock contention negligible.  The authoritative post-episode
+                # counter update below still records the completed totals.
+                in_progress_step = int(env.environment_step)
+                if in_progress_step - last_progress_step >= _PROGRESS_STEP_INTERVAL:
+                    last_progress_step = in_progress_step
+                    _set_counters(run, environment_steps=environment_steps + in_progress_step)
             # record_step auto-calls finish_episode on the terminal/truncated
             # result, so by the time the loop exits the episode is already
             # finalized and appended to collector.episodes.  Read the completed
