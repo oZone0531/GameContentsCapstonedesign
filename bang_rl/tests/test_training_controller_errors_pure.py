@@ -86,8 +86,9 @@ class _RaisingStartService:
 class _FaultedProgressService:
     """Service that starts fine but reports a faulted (errored) progress."""
 
-    def __init__(self, error) -> None:  # noqa: ANN001 - test fake
+    def __init__(self, error, *, status: str = "faulted") -> None:  # noqa: ANN001 - test fake
         self._error = error
+        self._status = status
         self.handle = SimpleNamespace(job_id="job-fault", snapshot=None)
 
     def start(self, request):  # noqa: ANN001 - test fake
@@ -95,7 +96,7 @@ class _FaultedProgressService:
 
     def progress(self, handle):  # noqa: ANN001 - test fake
         return SimpleNamespace(
-            status="faulted",
+            status=self._status,
             win_rate=None,
             logs=(),
             error=self._error,
@@ -127,6 +128,24 @@ def test_faulted_progress_publishes_localized_run_failed_message() -> None:
     assert snapshot.message
     assert snapshot.message == tr("training.run_failed", detail=detail)
     assert detail in snapshot.message
+
+
+def test_faulted_status_without_error_payload_still_surfaces_run_failed() -> None:
+    # Regression guard: a run can report status == "faulted" with an empty
+    # error payload. The monitor must still show a NON-EMPTY localized
+    # run_failed message instead of staying silent (the user-reported symptom:
+    # the GUI showed no error when the run faulted). Revert-sensitive: if
+    # _publish only keys off ``error`` this assertion fails because the fake
+    # error below is falsy.
+    i18n.set_language("en")
+    service = _FaultedProgressService(None, status="faulted")
+    controller = TrainingMonitorController(service)
+
+    controller.start(_FAKE_REQUEST)
+    snapshot = controller.refresh()
+
+    assert snapshot.message
+    assert snapshot.message == tr("training.run_failed", detail=tr("training.run_failed_unknown"))
 
 
 def test_korean_locale_start_message_is_not_raw_english_exception() -> None:

@@ -321,6 +321,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Training failed: {detail}",
         "ko": "학습이 실패했습니다: {detail}",
     },
+    "training.run_failed_unknown": {
+        "en": "an unexpected error occurred",
+        "ko": "예상치 못한 오류가 발생했습니다",
+    },
     "training.unavailable": {
         "en": "Training is unavailable: {detail}",
         "ko": "학습을 사용할 수 없습니다: {detail}",

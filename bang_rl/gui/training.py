@@ -187,12 +187,21 @@ class TrainingMonitorController:
                 text = str(cleaned.get("message", cleaned) if isinstance(cleaned, Mapping) else cleaned)
                 if text and (not self._logs or self._logs[-1] != text):
                     self._logs.append(text)
-            if message is None and getattr(progress, "error", None):
-                error = progress.error
+            status = getattr(progress, "status", None)
+            error = getattr(progress, "error", None)
+            # Surface a localized failure message whenever the run FAULTED, not
+            # only when a structured error payload happens to be present.  A
+            # faulted background run always sets ``status == 'faulted'`` (see
+            # TrainingService._execute); the error Mapping is the usual detail
+            # source, but if it is ever empty we still show a non-empty message
+            # so a fault can never leave the monitor silent.
+            if message is None and (error or status == "faulted"):
                 if isinstance(error, Mapping):
                     detail = str(error.get("message") or error.get("error_type") or error)
-                else:
+                elif error:
                     detail = str(error)
+                else:
+                    detail = tr("training.run_failed_unknown")
                 message = tr("training.run_failed", detail=detail)
         handle = self.handle
         snapshot = None if handle is None else getattr(handle, "snapshot", None)

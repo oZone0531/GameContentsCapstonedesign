@@ -222,6 +222,20 @@ def _emotion_record(value: Any) -> tuple[dict[str, Any], str | None, dict[str, A
     public = getattr(value, "public_observation", None)
     if public is None and isinstance(value, Mapping):
         public = value.get("public_observation")
+    # ``EmotionRuntime`` exposes ``public_observation`` as a *method* (its
+    # per-boundary projection is produced on demand), so a bare attribute probe
+    # yields a bound method rather than a stored mapping.  Treat such callables
+    # (and any value that is not a mapping/serializable projection) as "no
+    # stored observation" so a runtime handed straight to the collector never
+    # feeds a non-serializable object into ``_observation`` -> ``_as_mapping``.
+    if callable(public):
+        public = None
+    elif public is not None and not (
+        isinstance(public, Mapping)
+        or hasattr(public, "to_public_dict")
+        or hasattr(public, "to_dict")
+    ):
+        public = None
     return reduced, schema, None if public is None else _observation(public)
 
 
