@@ -345,7 +345,11 @@ def _label(value: Mapping[str, Any]) -> dict[str, Any]:
             None if value.get("emotion_schema_version") is None else str(value["emotion_schema_version"])
         ),
         "input_event_ids": _ids(value.get("input_event_ids", ()), "label.input_event_ids"),
-        "public_observation": _observation(value.get("public_observation")) if value.get("public_observation") else None,
+        # Never write a null struct here: PyArrow 19 stores the nested
+        # fixed-size action_mask of a null struct as a zero-length list and the
+        # shard then fails to read. An absent observation is written as an
+        # all-empty struct and read back as {} (see _label_to_dict).
+        "public_observation": _observation(value.get("public_observation") or {}),
     }
 
 

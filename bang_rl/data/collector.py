@@ -97,7 +97,16 @@ def _event_mapping(event: Any) -> dict[str, Any]:
 def _observation(value: Any) -> dict[str, Any]:
     """Store a single-time observation projection without cumulative history."""
 
+    flat = hasattr(value, "to_observation_dict")
+    if flat:
+        # A live environment observation (PublicEnvironmentState) otherwise
+        # serializes to its nested players[] form; the tensor-cache
+        # preprocessor needs the flat observation schema instead.
+        value = value.to_observation_dict()
     result = _as_mapping(value, "observation")
+    if flat:
+        # PettingZoo api_test alias of healths; redundant in a dataset row.
+        result.pop("observation", None)
     # Event objects are stored once in CanonicalEpisode.events.  Keeping them
     # in each step would make dataset size grow quadratically with episode
     # length and would make replay depend on duplicated representations.
