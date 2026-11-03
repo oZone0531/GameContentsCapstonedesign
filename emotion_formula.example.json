@@ -31,7 +31,7 @@
       "lambda_A": 0.0,
       "lambda_F": 0.3,
       "w_hp": 0.5,
-      "theta": 0.5,
+      "theta": 0.8,
       "k": 8.0,
       "eta_hurt": 1.0,
       "eta_ally": 0.5,
@@ -53,7 +53,7 @@
       "sigma_R": 0.005,
       "kappa_S": 1.0,
       "kappa_A": 1.0,
-      "kappa_F": 1.0,
+      "kappa_F": 3.0,
       "kappa_R": 1.0,
       "lambda_E": 1.0
     },
