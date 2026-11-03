@@ -344,7 +344,7 @@ class IntentPolicyConfig(ConfigModel):
     sheriff_known_deputy_intent_score: float = -5.0
     one_on_one_pass_score: float = -5.0
 
-    # Goal-aware Intent weights.
+
     sheriff_outlaw_weight: float = 4.0
     sheriff_traitor_weight: float = 2.0
     sheriff_deputy_penalty: float = 4.0
@@ -382,12 +382,8 @@ class EmotionDefinition(ConfigModel):
     """One configurable DummyAgent emotion and its public update rules."""
 
     name: str = Field(min_length=1)
-    # Free-form, author-written natural-language description of the emotion.
-    # Optional with a default empty string so every pre-existing config (which
-    # has no ``description``) still validates under ConfigModel's extra="forbid"
-    # (that policy only rejects UNKNOWN keys, not declared fields with defaults).
-    # Shown as a tooltip on the emotion bar in spectator mode and replay. This is
-    # author content stored verbatim, not a localization key.
+
+
     description: str = ""
     initial_value: float | None = None
     change_rate: float = 0.0
@@ -425,10 +421,8 @@ class EmotionDefinition(ConfigModel):
     @field_validator("description", mode="before")
     @classmethod
     def coerce_description_to_text(cls, value: object) -> str:
-        # ``description`` is free-form author text, never validated for content.
-        # A null degrades to an empty string so a missing / cleared description
-        # renders as no tooltip, and any non-string is coerced via ``str(...)``
-        # so authors cannot break config loading with an odd value.
+
+
         if value is None:
             return ""
         if isinstance(value, str):
@@ -485,8 +479,8 @@ class EmotionFormulaConfig(ConfigModel):
             for key, item in values.items():
                 if isinstance(item, bool) or not isfinite(float(item)):
                     raise ValueError(f"formula param {key!r} must be a finite number")
-        # Imported lazily: the agents package must not be imported while the
-        # config schema module itself is being imported.
+
+
         from bang_rl.agents.dummy_agent.emotion_formula import validate_formula_block
 
         validate_formula_block(self.params, self.personality_by_role)
@@ -500,27 +494,16 @@ class EmotionConfig(ConfigModel):
     emotion_count: StrictInt = Field(default=1, ge=1)
     initial_baseline: float = Field(default=0.0, ge=0.0, le=1.0)
     emotions: tuple[EmotionDefinition, ...] = Field(default_factory=tuple)
-    # Per-opponent relation vector configuration (EmotionModule schema "1.1").
-    # ``relation_baseline`` is the neutral value every seat starts at; the
-    # relation vector is SIGNED and clamped to [-1, 1] by the module (a grudge is
-    # negative, trust is positive).  ``relation_updates`` maps a relationship
-    # kind (for example ``shot_by``, ``shot_at``, ``eliminated_by``) to a finite
-    # signed delta.  Both DEFAULT so pre-existing configs behave identically:
-    # with an empty ``relation_updates`` the relation vector never moves.
+
+
     relation_baseline: float = Field(default=0.0, ge=-1.0, le=1.0)
     relation_updates: dict[str, float] = Field(default_factory=dict)
-    # Public-HP control thresholds (EmotionModule schema "1.1").  The emotion
-    # module derives HP-context bucket keys (``target_low_hp`` / ``target_lethal``
-    # / ``self_low_hp`` / ``self_lethal``) from the PUBLIC per-event ``hp_after``.
-    # Both thresholds DEFAULT to ``None`` so no HP bucket key ever fires and
-    # behaviour is byte-for-byte identical to before this feature.  ``hp_after``
-    # at or below ``hp_lethal_threshold`` yields the ``*_lethal`` bucket; at or
-    # below ``hp_low_threshold`` yields the ``*_low_hp`` bucket.  Configure the
-    # matching keys in an emotion definition's ``event_updates`` to react.
+
+
     hp_low_threshold: int | None = Field(default=None, ge=0)
     hp_lethal_threshold: int | None = Field(default=None, ge=0)
-    # Optional emotion-formula block. DEFAULT ``None`` keeps the rule-table
-    # EmotionModule, so every existing config behaves exactly as before.
+
+
     formula: EmotionFormulaConfig | None = None
     encoder: Literal["GRU"] = "GRU"
     hidden_size: Literal[128] = 128
@@ -579,9 +562,8 @@ class EmotionConfig(ConfigModel):
     @field_validator("hp_low_threshold", "hp_lethal_threshold", mode="before")
     @classmethod
     def hp_threshold_must_be_non_negative_int_or_none(cls, value: object) -> object:
-        # ``None`` keeps the HP buckets a strict no-op (the shipped default).  When
-        # a threshold is provided it must be a genuine non-negative integer HP
-        # value; booleans are rejected so ``True``/``False`` never masquerade as 1/0.
+
+
         if value is None:
             return None
         if isinstance(value, bool) or not isinstance(value, int):
@@ -825,8 +807,7 @@ class OptimizerSnapshot(ConfigModel):
 class ArtifactConfig(ConfigModel):
     """Final inference artifact format and metadata contract."""
 
-    # ``artifact_format_version`` is retained as a compatibility field for
-    # early configuration files; the Design §15.3 name is canonical.
+
     artifact_format_version: Literal["1.0"] = "1.0"
     inference_model_artifact_format_version: Literal["1.0"] = Field(
         default="1.0",
@@ -904,7 +885,7 @@ class SystemConfig(ConfigModel):
             "inference_model_artifact_format_version": (
                 self.artifact.inference_model_artifact_format_version
             ),
-            # Retain the short key for consumers of the initial schema draft.
+
             "artifact_format_version": self.artifact.artifact_format_version,
             "model_architecture": self.model_architecture.model_dump(mode="json"),
             "optimizers": self.optimizer_snapshot.model_dump(mode="json"),
