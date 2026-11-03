@@ -1,9 +1,10 @@
 """Public-observation-only faction strength and DummyAgent intent policy.
 
 This module intentionally has no dependency on ``bang_rl.env``.  It consumes
-only the canonical observation mapping and a RoleBeliefEstimator matrix.  The
-policy is deterministic: masked actions are never considered and ties resolve
-to the lowest action index.
+only the canonical observation mapping and a RoleBeliefEstimator matrix.
+Masked actions are never considered.  In deterministic selection PASS wins
+ties against attacks, and equally scored attack targets are chosen uniformly
+at random with the caller's RNG (no bias toward low seat numbers).
 """
 
 from __future__ import annotations
@@ -450,9 +451,11 @@ class ActionSelection:
 class ActionSelector:
     """Combine intent/emotion scores and select a mask-valid action.
 
-    Deterministic mode chooses the highest valid score and breaks ties by the
-    lowest action index.  Stochastic mode samples the mask-renormalized
-    softmax distribution using only the caller's private RNG.
+    Deterministic mode chooses a highest-scoring valid action.  PASS wins ties
+    against attacks; equally scored attack targets are sampled uniformly with
+    the caller's RNG so ties are not resolved toward the lowest seat number.
+    Stochastic mode samples the mask-renormalized softmax distribution using
+    only the caller's private RNG.
     """
 
     schema_version: ClassVar[str] = ACTION_SELECTION_SCHEMA_VERSION
@@ -517,7 +520,21 @@ class ActionSelector:
             masked_probabilities /= mass
 
         if selected_mode == "deterministic":
-            action = int(np.argmax(masked))
+            # Highest combined score among legal actions.  PASS (index 0) wins
+            # a tie against attacks; a tie between attack targets is broken
+            # uniformly at random so equal targets are not biased toward the
+            # lowest seat number.
+            candidates = valid[masked[valid] == np.max(masked[valid])]
+            if 0 in candidates:
+                action = 0
+            elif candidates.size == 1:
+                action = int(candidates[0])
+            else:
+                if rng is None:
+                    rng = np.random.default_rng()
+                if not isinstance(rng, np.random.Generator):
+                    raise TypeError("rng must be a numpy.random.Generator")
+                action = int(rng.choice(candidates))
         else:
             if rng is None:
                 rng = np.random.default_rng()
