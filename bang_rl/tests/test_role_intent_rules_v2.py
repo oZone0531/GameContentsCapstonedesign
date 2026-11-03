@@ -102,7 +102,7 @@ def test_outlaw_opening_identity_reveal_cost_reduces_sheriff_attack():
     observation = obs(player_idx=1, self_role=2, healths=(5, 4, 4, 4, 4))
     beliefs = RoleBeliefEstimator(player_idx=1).initialize(observation)
     decision = IntentModule(player_idx=1).decision(observation, beliefs)
-    # Setup Sheriff score 1.0 - opening IdentityRevealCost 1.0 = 0.0.
+
     assert decision.target_scores[0] == 0.0
     assert decision.action_scores[0] == 0.0
     assert decision.goal_stage == "weaken_sheriff_team_before_finish"
@@ -118,8 +118,8 @@ def test_outlaw_crossfire_does_not_reduce_identity_reveal_cost():
     )
     beliefs = RoleBeliefEstimator(player_idx=1).initialize(observation)
     decision = IntentModule(player_idx=1).decision(observation, beliefs)
-    # Ordinary crossfire is not a signal to reveal Outlaw alignment.
-    # Setup 1.0 - opening reveal cost 1.0 = 0.0.
+
+
     assert np.isclose(decision.target_scores[0], 0.0)
     assert decision.goal_stage == "weaken_sheriff_team_before_finish"
 
@@ -133,7 +133,7 @@ def test_outlaw_reveal_cost_falls_after_someone_attacks_sheriff():
     )
     beliefs = RoleBeliefEstimator(player_idx=1).initialize(observation)
     decision = IntentModule(player_idx=1).decision(observation, beliefs)
-    # Setup 1.0 - post-Sheriff-attack cost 0.3 = 0.7.
+
     assert np.isclose(decision.target_scores[0], 0.7)
     assert decision.goal_stage == "weaken_sheriff_team_before_finish"
 
@@ -196,12 +196,11 @@ def test_deputy_sheriff_attack_is_rare_score_not_hard_banned():
     assert np.isfinite(decision.target_scores[0])
 
 
-
 def test_outlaw_pressure_uses_public_alive_outlaw_count_two_at_start():
     observation = obs(player_idx=1, self_role=2, healths=(4, 4, 4, 4, 4))
     beliefs = RoleBeliefEstimator(player_idx=1).initialize(observation)
     decision = IntentModule(player_idx=1).decision(observation, beliefs)
-    # AliveOutlawCount starts at 2, so pressure limit is 2 * 2 = 4.
+
     assert decision.goal_stage == "finish_sheriff"
     assert decision.target_scores[0] == 5.0
 
@@ -216,9 +215,9 @@ def test_outlaw_pressure_decrements_after_public_outlaw_death():
     )
     beliefs = RoleBeliefEstimator(player_idx=1).initialize(observation)
     decision = IntentModule(player_idx=1).decision(observation, beliefs)
-    # One dead Outlaw is public, so AliveOutlawCount is 1 and pressure limit is 2.
+
     assert decision.goal_stage == "weaken_sheriff_team_before_finish"
-    # No prior Bang: setup 1.0 - opening reveal cost 1.0 = 0.0.
+
     assert decision.target_scores[0] == 0.0
 
 
@@ -249,9 +248,8 @@ def test_traitor_uses_public_alive_outlaw_count_until_both_outlaws_revealed_dead
 
 
 def test_outlaw_numerical_advantage_uses_alive_team_count():
-    # One non-Outlaw (Traitor) is publicly dead while both Outlaws are alive.
-    # AliveOutlawCount = 2, AliveTeamCount = Sheriff + Deputy = 2, so the
-    # Outlaws switch to the +5 Sheriff-finishing stage even at full Sheriff HP.
+
+
     observation = obs(
         player_idx=1,
         self_role=2,

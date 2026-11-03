@@ -77,12 +77,11 @@ def test_outlaw_self_prior_eliminates_own_role_and_sheriff_at_game_start() -> No
     in the restricted sandbox; it is validated statically there via compileall.
     """
 
-    # Seat 1 is the outlaw observer (outlaw_a == role index 2); seat 0 is the
-    # public sheriff.  Seats 2, 3, 4 are the still-unknown non-sheriff seats.
+
     estimator = RoleBeliefEstimator(player_idx=1)
     beliefs = estimator.initialize(
-        # public_observation hardcodes sheriff_idx == 0, which marks seat 0 as
-        # the public sheriff; self_role 2 makes seat 1 the outlaw observer.
+
+
         public_observation(
             player_idx=1,
             self_role=2,
@@ -92,14 +91,14 @@ def test_outlaw_self_prior_eliminates_own_role_and_sheriff_at_game_start() -> No
 
     assert beliefs.shape == (5, 5)
     np.testing.assert_allclose(beliefs.sum(axis=1), 1.0)
-    # The self seat is one-hot on its own outlaw role (no self-role leak into
-    # the shared pool), and the sheriff seat is one-hot on sheriff.
+
+
     np.testing.assert_array_equal(beliefs[1], np.eye(5, dtype=np.float32)[2])
     np.testing.assert_array_equal(beliefs[0], np.eye(5, dtype=np.float32)[0])
     one_third = 1.0 / 3.0
     for seat in (2, 3, 4):
         row = beliefs[seat]
-        # 0 == sheriff, 1 == deputy, 2 == outlaw_a, 3 == outlaw_b, 4 == traitor.
+
         assert row[0] == pytest.approx(0.0)
         assert row[1] == pytest.approx(one_third)
         assert row[2] + row[3] == pytest.approx(one_third)
@@ -118,7 +117,7 @@ def test_self_sheriff_revealed_and_confirmed_roles_are_hard_constraints() -> Non
 
     for player_idx, role in ((0, 0), (1, 1), (3, 2)):
         np.testing.assert_array_equal(beliefs[player_idx], np.eye(5, dtype=np.float32)[role])
-    # The two unconfirmed slots contain exactly the two remaining roles.
+
     np.testing.assert_allclose(beliefs[2], [0, 0, 0, 0.5, 0.5])
     np.testing.assert_allclose(beliefs[4], [0, 0, 0, 0.5, 0.5])
 
@@ -253,9 +252,8 @@ def test_intent_categories_are_role_and_faction_aware() -> None:
 
     assert decision.category is IntentCategory.ATTACK_OUTLAW_SUSPECT
     assert decision.strong_faction == "outlaw"
-    # Both factions tie on survivors and health; tie_policy="outlaw" makes the
-    # Outlaws the stronger side, so the Traitor pressures the Outlaw (5*P_O)
-    # over the Deputy (1*P_D).
+
+
     assert decision.target_scores[2] > decision.target_scores[1]
 
     duel = complete_observation(
@@ -273,7 +271,7 @@ def test_intent_categories_are_role_and_faction_aware() -> None:
 def test_action_selector_and_dummy_agent_never_choose_masked_actions() -> None:
     scores = np.asarray([0.0, 9.0, 3.0, 3.0, 3.0, 3.0])
     mask = np.asarray([1, 0, 1, 1, 0, 0], dtype=np.uint8)
-    assert ActionSelector.select(scores, mask) == 2
+    assert ActionSelector.select(scores, mask, rng=np.random.default_rng(3)) in {2, 3}
 
     agent = DummyAgent(agent_id="player_4", seed=5)
     observation = complete_observation(player_idx=4, self_role=4)
@@ -302,8 +300,6 @@ def test_intent_policy_state_is_stable_and_versioned_without_private_roles() -> 
     assert "actual_roles" not in encoded
     assert "privileged" not in encoded
 
-
-# TASK-2-5 integration coverage
 
 def test_action_selector_combines_emotion_effects_and_renormalizes_mask() -> None:
     selection = ActionSelector.select_with_info(
@@ -334,6 +330,45 @@ def test_action_selector_deterministic_ties_and_stochastic_mode_are_mask_safe() 
 
     with pytest.raises(ValueError, match="action mode"):
         ActionSelector.select([0.0] * 6, mask, mode="unsupported")
+
+
+def test_action_selector_randomizes_equal_attack_scores_without_index_bias() -> None:
+    scores = [0.0, 4.0, 4.0, 4.0, -1.0, -1.0]
+    mask = np.asarray([1, 1, 1, 1, 0, 0], dtype=np.uint8)
+    rng = np.random.default_rng(17)
+    samples = [ActionSelector.select(scores, mask, rng=rng) for _ in range(300)]
+    assert set(samples) == {1, 2, 3}
+    assert all(70 <= samples.count(action) <= 130 for action in (1, 2, 3))
+
+    first = np.random.default_rng(41)
+    second = np.random.default_rng(41)
+    assert [ActionSelector.select(scores, mask, rng=first) for _ in range(30)] == [
+        ActionSelector.select(scores, mask, rng=second) for _ in range(30)
+    ]
+    assert ActionSelector.select([0.0, 5.0, 5.0, -1.0, -1.0, -1.0], [1, 0, 1, 0, 0, 0]) == 2
+
+
+def test_deputy_equal_target_scores_use_general_tie_breaker() -> None:
+    observation = complete_observation(player_idx=1, self_role=1)
+    estimator = RoleBeliefEstimator(player_idx=1)
+    beliefs = estimator.initialize(observation)
+    decision = IntentModule(player_idx=1).decision(observation, beliefs)
+    assert decision.action_scores[3] == decision.action_scores[4] == decision.action_scores[5]
+    assert decision.action_scores[3] > decision.action_scores[0]
+    assert decision.action_scores[3] > decision.action_scores[1]
+    rng = np.random.default_rng(45)
+    results = [
+        ActionSelector.select(decision.scores, [1, 1, 0, 1, 1, 1], rng=rng)
+        for _ in range(100)
+    ]
+    assert set(results) == {3, 4, 5}
+
+
+def test_action_selector_pass_still_wins_ties_against_attacks() -> None:
+    rng = np.random.default_rng(29)
+    scores = [4.0, 4.0, 4.0, 0.0, 0.0, 0.0]
+    mask = [1, 1, 1, 1, 0, 0]
+    assert all(ActionSelector.select(scores, mask, rng=rng) == 0 for _ in range(30))
 
 
 def test_dummy_agent_emotion_influences_integrated_action_and_info() -> None:
@@ -441,9 +476,6 @@ def test_dummy_agent_lifecycle_reset_and_environment_integration() -> None:
     assert environment.environment_step <= 24
 
 
-# FEAT-004 per-target relation weighting integration coverage
-
-
 def _grudge_emotion_config():
     """EmotionConfig whose ``shot_by`` relation update builds a grudge."""
 
@@ -472,8 +504,8 @@ def _shot_by_observation(*, shooter_idx: int, player_idx: int = 0):
 
 
 def test_relation_target_weight_defaults_to_zero_and_is_a_no_op() -> None:
-    # With the default weight (0.0) the combined scores and selected action are
-    # identical to a baseline agent that never sees the feature.
+
+
     observation = _shot_by_observation(shooter_idx=3, player_idx=0)
     mask = observation["action_mask"]
 
@@ -492,7 +524,7 @@ def test_relation_target_weight_defaults_to_zero_and_is_a_no_op() -> None:
         baseline.last_decision_info.combined_scores
         == feature.last_decision_info.combined_scores
     )
-    # Every emotion contribution entry is identical because the added term is 0.
+
     assert (
         baseline.last_decision_info.emotion_contribution
         == feature.last_decision_info.emotion_contribution
@@ -500,9 +532,8 @@ def test_relation_target_weight_defaults_to_zero_and_is_a_no_op() -> None:
 
 
 def test_positive_weight_and_grudge_raises_bang_score_for_resented_seat() -> None:
-    # Seat 3 shot us -> relation[3] < 0.  With a positive relation_target_weight
-    # the bang-at-seat-3 action (index 4) gains score relative to banging a
-    # non-resented seat (for example seat 1, action index 2).
+
+
     observation = _shot_by_observation(shooter_idx=3, player_idx=0)
     mask = observation["action_mask"]
 
@@ -516,17 +547,17 @@ def test_positive_weight_and_grudge_raises_bang_score_for_resented_seat() -> Non
     baseline.act(observation, mask)
     feature.act(observation, mask)
 
-    # The resented seat's bang action (index 4) is boosted versus baseline.
+
     assert (
         feature.last_decision_info.emotion_contribution[4]
         > baseline.last_decision_info.emotion_contribution[4]
     )
-    # A non-resented seat (index 2 == bang seat 1) is not boosted.
+
     assert (
         feature.last_decision_info.emotion_contribution[2]
         == baseline.last_decision_info.emotion_contribution[2]
     )
-    # Relative to banging the non-resented seat, the resented seat scores higher.
+
     contribution = feature.last_decision_info.emotion_contribution
     assert contribution[4] > contribution[2]
 
@@ -542,8 +573,8 @@ def test_relation_state_is_not_mutated_by_action_selection() -> None:
     )
     agent.act(observation, mask)
     relation_after_first = agent.emotion_module.relation.copy()
-    # A second act on the SAME event (deduped by event_id) must not change the
-    # relation vector, confirming scoring reads but never mutates relation.
+
+
     agent.act(observation, mask)
     np.testing.assert_array_equal(agent.emotion_module.relation, relation_after_first)
 
