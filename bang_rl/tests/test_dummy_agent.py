@@ -273,7 +273,7 @@ def test_intent_categories_are_role_and_faction_aware() -> None:
 def test_action_selector_and_dummy_agent_never_choose_masked_actions() -> None:
     scores = np.asarray([0.0, 9.0, 3.0, 3.0, 3.0, 3.0])
     mask = np.asarray([1, 0, 1, 1, 0, 0], dtype=np.uint8)
-    assert ActionSelector.select(scores, mask) == 2
+    assert ActionSelector.select(scores, mask, rng=np.random.default_rng(3)) in {2, 3}
 
     agent = DummyAgent(agent_id="player_4", seed=5)
     observation = complete_observation(player_idx=4, self_role=4)
@@ -334,6 +334,45 @@ def test_action_selector_deterministic_ties_and_stochastic_mode_are_mask_safe() 
 
     with pytest.raises(ValueError, match="action mode"):
         ActionSelector.select([0.0] * 6, mask, mode="unsupported")
+
+
+def test_action_selector_randomizes_equal_attack_scores_without_index_bias() -> None:
+    scores = [0.0, 4.0, 4.0, 4.0, -1.0, -1.0]
+    mask = np.asarray([1, 1, 1, 1, 0, 0], dtype=np.uint8)
+    rng = np.random.default_rng(17)
+    samples = [ActionSelector.select(scores, mask, rng=rng) for _ in range(300)]
+    assert set(samples) == {1, 2, 3}
+    assert all(70 <= samples.count(action) <= 130 for action in (1, 2, 3))
+
+    first = np.random.default_rng(41)
+    second = np.random.default_rng(41)
+    assert [ActionSelector.select(scores, mask, rng=first) for _ in range(30)] == [
+        ActionSelector.select(scores, mask, rng=second) for _ in range(30)
+    ]
+    assert ActionSelector.select([0.0, 5.0, 5.0, -1.0, -1.0, -1.0], [1, 0, 1, 0, 0, 0]) == 2
+
+
+def test_deputy_equal_target_scores_use_general_tie_breaker() -> None:
+    observation = complete_observation(player_idx=1, self_role=1)
+    estimator = RoleBeliefEstimator(player_idx=1)
+    beliefs = estimator.initialize(observation)
+    decision = IntentModule(player_idx=1).decision(observation, beliefs)
+    assert decision.action_scores[3] == decision.action_scores[4] == decision.action_scores[5]
+    assert decision.action_scores[3] > decision.action_scores[0]
+    assert decision.action_scores[3] > decision.action_scores[1]
+    rng = np.random.default_rng(45)
+    results = [
+        ActionSelector.select(decision.scores, [1, 1, 0, 1, 1, 1], rng=rng)
+        for _ in range(100)
+    ]
+    assert set(results) == {3, 4, 5}
+
+
+def test_action_selector_pass_still_wins_ties_against_attacks() -> None:
+    rng = np.random.default_rng(29)
+    scores = [4.0, 4.0, 4.0, 0.0, 0.0, 0.0]
+    mask = [1, 1, 1, 1, 0, 0]
+    assert all(ActionSelector.select(scores, mask, rng=rng) == 0 for _ in range(30))
 
 
 def test_dummy_agent_emotion_influences_integrated_action_and_info() -> None:
