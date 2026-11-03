@@ -1,9 +1,8 @@
 """Public-observation-only faction strength and DummyAgent intent policy.
 
 This module intentionally has no dependency on ``bang_rl.env``.  It consumes
-only the canonical observation mapping and a RoleBeliefEstimator matrix.  The
-policy is deterministic: masked actions are never considered and ties resolve
-to the lowest action index.
+only the canonical observation mapping and a RoleBeliefEstimator matrix.  Masked actions are never considered.  Equally scored attack targets are
+chosen uniformly at random; PASS wins ties against attacks.
 """
 
 from __future__ import annotations
@@ -11,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-import json
 from math import isfinite
 from typing import Any, ClassVar
 
@@ -26,7 +24,6 @@ from .role_belief import (
     ROLE_COUNT,
     SHERIFF_ROLE,
     TRAITOR_ROLE,
-    RoleBeliefEstimator,
 )
 
 SHERIFF_FACTION = "sheriff"
@@ -87,7 +84,7 @@ class IntentPolicyConfig:
     target_health_weight: float = 0.0
     relation_target_weight: float = 0.0
     role_target_weights: Mapping[str, float] = field(default_factory=dict)
-    # v1 role-intent rules.  These are policy settings, not game rules.
+
     pass_confidence_score: float = 0.45
     outlaw_target_threshold: float = 0.60
     deputy_target_threshold: float = 0.40
@@ -96,15 +93,13 @@ class IntentPolicyConfig:
     main_target_score: float = 1.0
     outlaw_pressure_per_survivor: float = 2.0
     role_mass_epsilon: float = 0.05
-    # Role-inconsistent actions stay legal but receive a very low finite score.
-    # In deterministic mode they normally lose unless Emotion overturns them;
-    # in stochastic mode they retain a tiny non-zero probability.
+
+
     deputy_sheriff_intent_score: float = -5.0
     sheriff_known_deputy_intent_score: float = -5.0
     one_on_one_pass_score: float = -5.0
 
-    # v5 goal-aware Intent weights.  The role goal owns these tactical scores;
-    # Emotion is applied only after this module returns them.
+
     sheriff_outlaw_weight: float = 4.0
     sheriff_traitor_weight: float = 2.0
     sheriff_deputy_penalty: float = 4.0
@@ -114,9 +109,8 @@ class IntentPolicyConfig:
     deputy_pass_score: float = -1.0
     outlaw_sheriff_finish_score: float = 5.0
     outlaw_sheriff_setup_score: float = 1.0
-    # Strategic identity-exposure cost for an Outlaw shooting the public Sheriff.
-    # Opening combat carries the highest cost; once public combat has started the
-    # cost falls, and after this Outlaw has already shot Sheriff it becomes zero.
+
+
     outlaw_identity_reveal_cost_opening: float = 1.0
     outlaw_identity_reveal_cost_after_sheriff_attacked: float = 0.3
     outlaw_deputy_weight: float = 4.0
@@ -217,12 +211,11 @@ class IntentPolicyConfig:
                 if hasattr(value, name)
             }
         values = dict(value)
-        # Accept the descriptive spelling used by some preset files.
+
         if "faction_tie_policy" in values and "tie_policy" not in values:
             values["tie_policy"] = values["faction_tie_policy"]
-        # v10 renamed the exposure-cost trigger: ordinary combat no longer
-        # lowers the cost; only a public attack on Sheriff does.  Accept the
-        # older key when loading a v9-style preset.
+
+
         if (
             "outlaw_identity_reveal_cost_after_combat" in values
             and "outlaw_identity_reveal_cost_after_sheriff_attacked" not in values
@@ -235,8 +228,8 @@ class IntentPolicyConfig:
             and "traitor_secondary_target_weight" not in values
         ):
             values["traitor_secondary_target_weight"] = values["traitor_deputy_secondary_weight"]
-        # The Pydantic IntentPolicyConfig also contains architecture fields.
-        # They are metadata for inference and not behavioral policy settings.
+
+
         accepted = set(cls.__dataclass_fields__)
         return cls(**{key: item for key, item in values.items() if key in accepted})
 
@@ -450,9 +443,9 @@ class ActionSelection:
 class ActionSelector:
     """Combine intent/emotion scores and select a mask-valid action.
 
-    Deterministic mode chooses the highest valid score and breaks ties by the
-    lowest action index.  Stochastic mode samples the mask-renormalized
-    softmax distribution using only the caller's private RNG.
+    Deterministic mode chooses a highest-scoring valid action; PASS wins ties,
+    and equally scored attack targets are sampled uniformly using the RNG.
+    Stochastic mode samples the mask-renormalized softmax distribution.
     """
 
     schema_version: ClassVar[str] = ACTION_SELECTION_SCHEMA_VERSION
@@ -509,15 +502,25 @@ class ActionSelector:
         masked_probabilities = probabilities * mask.astype(np.float64)
         mass = float(masked_probabilities.sum())
         if mass <= 0.0 or not np.isfinite(mass):
-            # Recompute only over valid actions to remain stable for extreme
-            # score gaps where an invalid action owns all unmasked mass.
+
+
             masked_probabilities[:] = 0.0
             masked_probabilities[valid] = cls._softmax(combined[valid])
         else:
             masked_probabilities /= mass
 
         if selected_mode == "deterministic":
-            action = int(np.argmax(masked))
+            candidates = valid[masked[valid] == np.max(masked[valid])]
+            if 0 in candidates:
+                action = 0
+            elif candidates.size == 1:
+                action = int(candidates[0])
+            else:
+                if rng is None:
+                    rng = np.random.default_rng()
+                if not isinstance(rng, np.random.Generator):
+                    raise TypeError("rng must be a numpy.random.Generator")
+                action = int(rng.choice(candidates))
         else:
             if rng is None:
                 rng = np.random.default_rng()
@@ -676,9 +679,8 @@ class IntentModule:
         try:
             return FactionStrengthEstimator._board(observation)
         except ValueError:
-            # Legacy unit fixtures may only test role belief updates.  In that
-            # case policy generation remains safely PASS-only until board state
-            # is present, without inventing private information.
+
+
             return None
 
     def _self_role(self, beliefs: np.ndarray) -> int | None:
@@ -837,11 +839,8 @@ class IntentModule:
         p_sheriff = matrix[:, SHERIFF_ROLE]
 
         alive_outlaw_count = self._alive_outlaw_count(observation, alive)
-        # Publicly knowable living non-Outlaw count.  In the Outlaw policy this
-        # is named AliveTeamCount by design: Sheriff + Deputy + Traitor who are
-        # still alive.  Because the game always starts with exactly two
-        # Outlaws and eliminated roles are public, this does not inspect hidden
-        # role labels.
+
+
         alive_team_count = max(0, len(living) - alive_outlaw_count)
         estimated_alive_deputies = float(sum(float(p_deputy[idx]) for idx in living))
         sheriff_hp = float(health[sheriff_idx]) if bool(alive[sheriff_idx]) else 0.0
@@ -872,21 +871,12 @@ class IntentModule:
         def best_attack_score() -> float:
             return max((float(target_scores[t]) for t in opponents), default=-np.inf)
 
-        # ------------------------------------------------------------------
-        # SHERIFF
-        # Ultimate goal: survive while eliminating both Outlaws and Traitor.
-        # The Sheriff therefore values enemy probability, avoids likely Deputy,
-        # and may wait when all targets remain too ambiguous.
-        # ------------------------------------------------------------------
+
         if self_role == SHERIFF_ROLE:
             goal_stage = "identify_and_eliminate_enemies"
             pass_score = float(self.config.sheriff_pass_score)
 
-            # If a non-terminal game has only Sheriff and one other player alive,
-            # the remaining player should normally be an enemy.  Do not let an
-            # equal PASS score stall the duel.  A nearly-certain Deputy is kept
-            # as the exception because Sheriff+Deputy should normally have
-            # already terminated as a Sheriff-team win.
+
             if len(living) == 2 and len(opponents) == 1:
                 last_target = opponents[0]
                 if float(p_deputy[last_target]) < 0.99:
@@ -906,12 +896,7 @@ class IntentModule:
             else:
                 category = IntentCategory.PASS
 
-        # ------------------------------------------------------------------
-        # DEPUTY
-        # Ultimate goal: keep Sheriff alive and remove threats to Sheriff.
-        # Sheriff is still a legal target, but receives an extremely poor
-        # role-intent score rather than a hard ban.
-        # ------------------------------------------------------------------
+
         elif self_role == DEPUTY_ROLE:
             goal_stage = "protect_sheriff_and_remove_threats"
             pass_score = float(self.config.deputy_pass_score)
@@ -930,13 +915,7 @@ class IntentModule:
                 else IntentCategory.PASS
             )
 
-        # ------------------------------------------------------------------
-        # OUTLAW
-        # Ultimate goal: eliminate Sheriff.  ``alive_outlaw_count`` starts at
-        # two and decreases only when an eliminated Outlaw is publicly revealed.
-        # This keeps the pressure rule based on public facts instead of hidden
-        # roles or belief-mass estimates.
-        # ------------------------------------------------------------------
+
         elif self_role in (OUTLAW_A_ROLE, OUTLAW_B_ROLE):
             pressure_limit = alive_outlaw_count * self.config.outlaw_pressure_per_survivor
             deputy_gone = estimated_alive_deputies <= self.config.role_mass_epsilon
@@ -965,12 +944,7 @@ class IntentModule:
                 goal_stage = "weaken_sheriff_team_before_finish"
                 pass_score = float(self.config.outlaw_pass_score)
 
-                # Shooting the public Sheriff is strategically informative: at
-                # the opening it effectively announces hostile alignment.  Keep
-                # that as an Intent cost rather than randomizing the action.
-                # Ordinary crossfire does NOT reduce the cost.  It falls only
-                # after Sheriff has actually been attacked, and disappears once
-                # this Outlaw has personally exposed itself by shooting Sheriff.
+
                 sheriff_attack_count, self_attacked_sheriff = self._outlaw_reveal_context(
                     observation,
                     player_idx=self.player_idx,
@@ -1007,14 +981,7 @@ class IntentModule:
                     else IntentCategory.ATTACK_SHERIFF_TEAM
                 )
 
-        # ------------------------------------------------------------------
-        # TRAITOR
-        # Ultimate goal: preserve Sheriff until the final duel while keeping
-        # Sheriff-team and Outlaw-team strength in balance.  If Outlaws are
-        # stronger, pressure likely Outlaws.  If Sheriff+Deputy are stronger,
-        # pressure the likely Deputy.  This avoids turning Traitor into a fixed
-        # third member of Sheriff team.
-        # ------------------------------------------------------------------
+
         else:
             pass_score = float(self.config.traitor_pass_score)
             strength_report = self.faction_estimator.estimate(observation, matrix)
@@ -1027,8 +994,8 @@ class IntentModule:
                 category = IntentCategory.ATTACK_SHERIFF_DUEL
 
             elif alive_outlaw_count == 0:
-                # No Outlaws remain publicly alive: Deputy is now the only
-                # non-Sheriff obstacle to the final duel.
+
+
                 goal_stage = "remove_deputy_preserve_sheriff"
                 for target in opponents:
                     if target == sheriff_idx:
@@ -1144,7 +1111,6 @@ class IntentModule:
     from_dict = from_state_dict
 
 
-# Descriptive alias for integrations that call this layer an IntentPolicy.
 IntentPolicy = IntentModule
 
 

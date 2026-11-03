@@ -137,8 +137,8 @@ def _event_mapping(event: Any) -> Mapping[str, Any] | None:
     if isinstance(event, Mapping):
         return event
     if hasattr(event, "to_public_dict"):
-        # The public conversion is important: a private GameEvent must not
-        # disclose its role through a raw object attribute.
+
+
         value = event.to_public_dict()
         return value if isinstance(value, Mapping) else None
     if hasattr(event, "to_dict"):
@@ -179,9 +179,8 @@ class RoleBeliefEstimator:
         values = dict(DEFAULT_EVIDENCE_MULTIPLIERS)
         if evidence_multipliers is not None:
             incoming = dict(evidence_multipliers)
-            # Intent v1 serialized this now-removed heuristic.  Ignore the
-            # legacy key so old development snapshots can still be inspected,
-            # but never apply the rule again.
+
+
             incoming.pop("attacked_twice_deputy", None)
             for key, value in incoming.items():
                 if key not in values:
@@ -381,39 +380,32 @@ class RoleBeliefEstimator:
         if self_role is None:
             return
 
-        # Common strong evidence: intentionally attacking the public Sheriff is
-        # most compatible with an Outlaw objective.
+
         if target == sheriff_idx and actor != sheriff_idx:
             self._boost(actor, (OUTLAW_A_ROLE, OUTLAW_B_ROLE), "attack_sheriff_outlaw")
 
         if self_role == SHERIFF_ROLE:
-            # Being attacked repeatedly is NOT role evidence anymore.  The
-            # Sheriff handles that public situation as an Intent preference
-            # (temporary target de-prioritisation) instead of changing the
-            # target's Deputy probability.
+
+
             pass
 
         elif self_role == DEPUTY_ROLE:
-            # From the Deputy's perspective the three hidden players are
-            # Outlaw, Outlaw, Traitor.  If one hidden player shoots another,
-            # the actor looks more Traitor-like (an Outlaw should normally
-            # pressure the public Sheriff), while the target becomes modestly
-            # more Outlaw-like.
+
+
             if actor not in {self.player_idx, sheriff_idx} and target not in {self.player_idx, sheriff_idx}:
                 self._boost(actor, (TRAITOR_ROLE,), "crossfire_traitor")
                 self._boost(target, (OUTLAW_A_ROLE, OUTLAW_B_ROLE), "crossfire_target_outlaw")
 
         elif self_role in (OUTLAW_A_ROLE, OUTLAW_B_ROLE):
-            # An unknown non-Sheriff who attacks the Outlaw observer is more
-            # compatible with Sheriff-team protection or Traitor survival play.
+
+
             if target == self.player_idx and actor != sheriff_idx:
                 self._boost(actor, (DEPUTY_ROLE,), "attack_outlaw_self_deputy")
                 self._boost(actor, (TRAITOR_ROLE,), "attack_outlaw_self_traitor")
 
         elif self_role == TRAITOR_ROLE:
-            # The user had not yet specified a Traitor-specific belief rule.
-            # As a provisional public-only rule, a player who attacks someone
-            # already observed attacking the Sheriff looks more Deputy-like.
+
+
             if target in self._sheriff_attackers and actor not in {self.player_idx, sheriff_idx}:
                 self._boost(actor, (DEPUTY_ROLE,), "protect_sheriff_deputy")
 
@@ -440,10 +432,8 @@ class RoleBeliefEstimator:
         if np.any(remaining < -1e-9) or len(unresolved) != int(round(float(remaining.sum()))):
             raise ValueError("public role constraints cannot form the five-role assignment")
         if unresolved:
-            # Start from soft public evidence, then iteratively scale rows and
-            # columns.  This keeps each player's row normalized while also
-            # respecting the exact remaining role counts (one Sheriff, one
-            # Deputy, two distinct Outlaw slots, one Traitor globally).
+
+
             matrix = np.maximum(self._evidence[unresolved, :].copy(), 1e-12)
             matrix[:, remaining <= 0.0] = 0.0
             for _ in range(128):
@@ -463,8 +453,8 @@ class RoleBeliefEstimator:
                 column_error = float(np.max(np.abs(matrix.sum(axis=0) - remaining)))
                 if column_error < 1e-10:
                     break
-            # One final row normalization protects callers from tiny floating
-            # error while preserving the column-count constraint closely.
+
+
             matrix /= matrix.sum(axis=1, keepdims=True)
             beliefs[unresolved, :] = matrix
         self._beliefs = beliefs.astype(np.float32)
