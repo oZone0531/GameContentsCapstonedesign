@@ -230,6 +230,8 @@ def _clone_agent_graph(agents: Sequence[Any] | Mapping[Any, Any] | None, *, work
         stream_seed = derive_seed(seed_manager.worker_seed(worker_id), "agent", index, agent_id)
         if hasattr(value, "seed"):
             value.seed = stream_seed
+        if hasattr(value, "worker_id"):
+            value.worker_id = worker_id
         # Built-in agents keep their action stream in this private field.  A
         # fresh generator is required even when deepcopy already detached it,
         # otherwise workers begin from identical copied RNG state.
@@ -301,7 +303,11 @@ class WorkerRuntime:
         self._active = False
         self._started_at = 0.0
         self._paused_seconds = 0.0
-
+        self.transitions: list[Any] = []
+        self.last_full_replay: dict[str, Any] | None = None
+        self._replay_states: list[Mapping[str, Any]] = []
+        self._replay_observations: list[Mapping[str, Any]] = []
+        self._replay_internals: list[Mapping[str, Any] | None] = []
     @property
     def worker_seed(self) -> int:
         return self.seed_manager.worker_seed(self.worker_id)
@@ -353,6 +359,38 @@ class WorkerRuntime:
         _reset_environment(self.environment, assignment.seed, assignment.episode_id)
         return self.environment
 
+    def _capture_full_replay_boundary(self) -> None:
+        if self.environment is None:
+            return
+        state = getattr(self.environment, "state", None)
+        if state is None or not hasattr(state, "to_dict"):
+            return
+        self._replay_states.append(deepcopy(dict(state.to_dict())))
+        observation = _public_observation(self.environment)
+        self._replay_observations.append(_mapping_observation(observation))
+        seats: dict[str, Any] = {}
+        values = self.agents.values() if isinstance(self.agents, Mapping) else self.agents or ()
+        for index, agent in enumerate(values):
+            state_dict = getattr(agent, "state_dict", None)
+            seats[str(index)] = {
+                "kind": "dummy" if state_dict is not None else type(agent).__name__.lower(),
+                "state": deepcopy(state_dict()) if callable(state_dict) else {},
+            }
+        self._replay_internals.append({"health": list(state.health), "seats": seats})
+
+    def _finish_full_replay_capture(self, assignment: EpisodeAssignment) -> None:
+        self.last_full_replay = {
+            "schema_version": "1.0",
+            "replay_format": "full",
+            "mode": "dummy_five",
+            "game_type": "dummy_five",
+            "episode_id": assignment.episode_id,
+            "seed": int(assignment.seed),
+            "states": deepcopy(self._replay_states),
+            "observations": deepcopy(self._replay_observations),
+            "internals": deepcopy(self._replay_internals),
+        }
+
     def reset(self, assignment: EpisodeAssignment | None = None, *, episode_index: int = 0, episode_id: str | None = None) -> Any:
         assignment = assignment or self.assignment(episode_index, episode_id=episode_id)
         try:
@@ -362,12 +400,18 @@ class WorkerRuntime:
             self._initial_observation = _public_observation(environment)
             self._actions = []
             self._events = []
+            self.transitions = []
+            self._replay_states = []
+            self._replay_observations = []
+            self._replay_internals = []
+            self.last_full_replay = None
             self._started_at = time.monotonic()
             self._active = True
             self.control.begin()
             if self.logger is not None:
                 self.logger.event("worker_episode_started", worker_id=self.worker_id, worker_seed=self.worker_seed, episode_seed=assignment.seed, episode_index=assignment.episode_index)
             self._notify_agents_start(assignment)
+            self._capture_full_replay_boundary()
             return deepcopy(self._initial_observation)
         except WorkerCancelled:
             raise
@@ -415,6 +459,8 @@ class WorkerRuntime:
             observation = _public_observation(self.environment)
             observed_mask = observation["action_mask"] if isinstance(observation, Mapping) or hasattr(observation, "to_observation_dict") else observation.action_mask
             mask = np.asarray(observed_mask, dtype=np.uint8).copy()
+            player_index = int(getattr(getattr(self.environment, "agent_selection", None), "index", 0))
+            selected_agent = self._agent_for(player_index)
             selected_action = self._choose_action(observation, mask) if action is None and action_provider is None else _action_from_provider(action_provider, observation, mask) if action is None else int(action)
             self.environment.step(selected_action)
             result = getattr(self.environment, "last_result", None)
@@ -429,6 +475,13 @@ class WorkerRuntime:
                 self._events.append(deepcopy(public_event))
                 if self.logger is not None:
                     self.logger.event(str(public_event.get("event_type", "game_event")), worker_id=self.worker_id, episode_id=self.current_assignment.episode_id, environment_step=int(result.environment_step), event=public_event)
+            self._capture_full_replay_boundary()
+            if selected_agent is not None and hasattr(selected_agent, "on_step"):
+                transition = selected_agent.on_step(
+                    observation, selected_action, mask, result, next_observation
+                )
+                if transition is not None:
+                    self.transitions.append(transition)
             terminated = bool(result.terminated)
             truncated = bool(result.truncated)
             if terminated or truncated:
@@ -488,6 +541,7 @@ class WorkerRuntime:
                 terminal_dict,
                 {**self.metadata.to_dict(), "inference_artifact": self._artifact_metadata(), "termination_reason": step.info.get("termination_reason")},
             )
+            self._finish_full_replay_capture(assignment)
             self._notify_agents_end(record)
             if self.logger is not None:
                 channel_event = "worker_episode_terminated" if record.terminated else "worker_episode_truncated"
@@ -583,6 +637,14 @@ class DummyVecEnv:
         ]
 
     @property
+    def full_replays(self) -> tuple[Mapping[str, Any], ...]:
+        return tuple(
+            deepcopy(worker.last_full_replay)
+            for worker in self.workers
+            if worker.last_full_replay is not None
+        )
+
+    @property
     def metadata(self) -> dict[str, Any]:
         return {
             "worker_count": self.n_envs,
@@ -623,11 +685,13 @@ class DummyVecEnv:
         infos = [dict(step.info) for step in steps]
         return observations, rewards, terminated, truncated, infos
 
-    def run_episodes(self, count: int, *, action_provider: Any = None) -> list[EpisodeRecord]:
+    def run_episodes(self, count: int, *, action_provider: Any = None, start_episode_index: int = 0) -> list[EpisodeRecord]:
         if isinstance(count, bool) or int(count) < 0:
             raise ValueError("count must be a non-negative integer")
+        if isinstance(start_episode_index, bool) or int(start_episode_index) < 0:
+            raise ValueError("start_episode_index must be a non-negative integer")
         records: list[EpisodeRecord] = []
-        for episode_index in range(int(count)):
+        for episode_index in range(int(start_episode_index), int(start_episode_index) + int(count)):
             assignment = self.assignment_for_episode(episode_index)
             try:
                 records.append(self.workers[assignment.worker_id].run_episode(assignment, action_provider=action_provider))
@@ -790,11 +854,13 @@ class SubprocVecEnv:
         infos = [dict(value.info) for value in values]
         return observations, rewards, terminated, truncated, infos
 
-    def run_episodes(self, count: int, *, action_provider: Any = None) -> list[EpisodeRecord]:
+    def run_episodes(self, count: int, *, action_provider: Any = None, start_episode_index: int = 0) -> list[EpisodeRecord]:
         if isinstance(count, bool) or int(count) < 0:
             raise ValueError("count must be a non-negative integer")
+        if isinstance(start_episode_index, bool) or int(start_episode_index) < 0:
+            raise ValueError("start_episode_index must be a non-negative integer")
         records: list[EpisodeRecord] = []
-        for episode_index in range(int(count)):
+        for episode_index in range(int(start_episode_index), int(start_episode_index) + int(count)):
             assignment = self.assignment_for_episode(episode_index)
             initial = self._request_one(
                 assignment.worker_id,

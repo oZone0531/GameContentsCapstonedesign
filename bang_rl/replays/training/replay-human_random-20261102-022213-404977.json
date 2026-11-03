@@ -1,0 +1,68 @@
+{
+  "schema_version": "1.0",
+  "replay_format": "full",
+  "game_type": "human_random",
+  "mode": "human_random",
+  "mode_label": "Human 1 vs Random AI 4",
+  "ai_versions": {
+    "1": "random",
+    "2": "random",
+    "3": "random",
+    "4": "random"
+  },
+  "winning_team": null,
+  "winners": [],
+  "human_player": 0,
+  "human_won": false,
+  "outcome": "truncated",
+  "terminated": false,
+  "truncated": true,
+  "seed": null,
+  "observations": [
+    {
+      "healths": [
+        5,
+        4,
+        4,
+        4,
+        4
+      ],
+      "alive": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "role_visibility": [
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "revealed_roles": [
+        0,
+        255,
+        255,
+        255,
+        255
+      ],
+      "current_player_idx": [
+        0
+      ],
+      "action_mask": [
+        1,
+        1,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "states": [],
+  "internals": [
+    null
+  ]
+}

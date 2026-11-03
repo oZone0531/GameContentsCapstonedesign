@@ -11,7 +11,7 @@ import torch
 from bang_rl.agents.main_agent import IntentInferenceModule, RoleFusion
 
 
-ROLE_COUNT = 5
+ROLE_COUNT = 4
 HIDDEN = 255
 
 
@@ -45,10 +45,13 @@ def test_each_public_override_source_is_hard_and_unresolved_rows_are_preserved()
 
     fused = RoleFusion().fuse({"raw_role_distribution": raw, **public})
 
-    np.testing.assert_array_equal(fused[0], [1, 0, 0, 0, 0])
-    np.testing.assert_array_equal(fused[1], [0, 1, 0, 0, 0])
-    np.testing.assert_array_equal(fused[2], [0, 0, 1, 0, 0])
-    np.testing.assert_array_equal(fused[3:], raw[3:])
+    np.testing.assert_array_equal(fused[0], [1, 0, 0, 0])
+    np.testing.assert_array_equal(fused[1], [0, 1, 0, 0])
+    np.testing.assert_array_equal(fused[2], [0, 0, 1, 0])
+    expected_unresolved = np.asarray(
+        [[row[0], row[1], row[2] + row[3], row[4]] for row in raw[3:]], dtype=np.float32
+    )
+    np.testing.assert_array_equal(fused[3:], expected_unresolved)
     np.testing.assert_allclose(fused.sum(axis=-1), 1.0, atol=1e-6)
 
 
@@ -62,12 +65,12 @@ def test_four_target_streams_map_around_viewer_and_full_slot_streams_retain_self
 
     target_fused = RoleFusion().fuse(raw_targets, **public)
     # viewer 2 is omitted: target rows map to slots 0, 1, 3, 4.
-    np.testing.assert_array_equal(target_fused[0], [1, 0, 0, 0, 0])
-    np.testing.assert_array_equal(target_fused[1:], raw_targets[1:])
+    np.testing.assert_array_equal(target_fused[0], [1, 0, 0, 0])
+    np.testing.assert_allclose(target_fused[1:], np.tile(np.asarray([[0.1, 0.2, 0.45, 0.25]], dtype=np.float32), (3, 1)))
 
     full_raw = np.tile(raw_targets[:1], (5, 1))
     full_fused = RoleFusion().fuse(full_raw, **public)
-    np.testing.assert_array_equal(full_fused[2], [0, 0, 0, 1, 0])
+    np.testing.assert_array_equal(full_fused[2], [0, 0, 1, 0])
 
 
 def test_logits_are_softmaxed_and_explicit_logit_output_keeps_unresolved_logits() -> None:
@@ -77,11 +80,12 @@ def test_logits_are_softmaxed_and_explicit_logit_output_keeps_unresolved_logits(
     )
     fusion = RoleFusion()
     probabilities = fusion.fuse(logits, input_type="logits")
-    expected = torch.softmax(torch.as_tensor(logits), dim=-1).numpy()
+    semantic_logits = torch.stack((torch.as_tensor(logits)[..., 0], torch.as_tensor(logits)[..., 1], torch.logaddexp(torch.as_tensor(logits)[..., 2], torch.as_tensor(logits)[..., 3]), torch.as_tensor(logits)[..., 4]), dim=-1)
+    expected = torch.softmax(semantic_logits, dim=-1).numpy()
     np.testing.assert_allclose(probabilities, expected, rtol=1e-6, atol=1e-6)
 
     logit_output = fusion.fuse(logits, input_type="logits", output_type="logits")
-    np.testing.assert_array_equal(logit_output, logits)
+    np.testing.assert_array_equal(logit_output, semantic_logits.numpy())
 
 
 def test_batched_streams_apply_per_observation_public_constraints() -> None:
@@ -107,11 +111,11 @@ def test_batched_streams_apply_per_observation_public_constraints() -> None:
         viewer_idx=np.asarray([0, 1], dtype=np.uint8),
     )
 
-    assert fused.shape == (2, 4, 5)
-    np.testing.assert_array_equal(fused[0, 0], [0, 1, 0, 0, 0])
-    np.testing.assert_array_equal(fused[1, 3], [0, 0, 0, 0, 1])
+    assert fused.shape == (2, 4, 4)
+    np.testing.assert_array_equal(fused[0, 0], [0, 1, 0, 0])
+    np.testing.assert_array_equal(fused[1, 3], [0, 0, 0, 1])
     np.testing.assert_allclose(fused.sum(axis=-1), 1.0, atol=1e-6)
-    np.testing.assert_array_equal(fused[0, 1:], raw[0, 1:])
+    np.testing.assert_array_equal(fused[0, 1:], np.tile(np.asarray([[0.7, 0.1, 0.15, 0.05]], dtype=np.float32), (3, 1)))
 
 
 def test_conflicts_malformed_confirmations_and_invalid_shapes_are_rejected() -> None:
@@ -142,7 +146,7 @@ def test_conflicts_malformed_confirmations_and_invalid_shapes_are_rejected() -> 
 
 def test_privileged_role_inputs_are_rejected_even_when_raw_distribution_is_public() -> None:
     fusion = RoleFusion()
-    raw = np.full((4, 5), 0.2, dtype=np.float32)
+    raw = np.full((4, 4), 0.25, dtype=np.float32)
     private = {"raw_role_distribution": raw, **_public(), "true_roles": [0, 1, 2, 3, 4]}
     with pytest.raises(ValueError, match="privileged role inputs"):
         fusion.fuse(private)
@@ -154,13 +158,13 @@ def test_privileged_role_inputs_are_rejected_even_when_raw_distribution_is_publi
 def test_role_fusion_serialization_and_intent_artifact_metadata_are_stable(tmp_path) -> None:
     fusion = RoleFusion()
     assert fusion.to_json() == RoleFusion.from_json(fusion.to_json()).to_json()
-    assert fusion.metadata()["role_count"] == 5
+    assert fusion.metadata()["role_count"] == 4
     assert fusion.metadata()["role_count_projection"] == "not_implemented"
 
     path = tmp_path / "role_fusion.json"
     fusion.save(path)
     restored = RoleFusion.load(path)
-    raw = np.full((4, 5), 0.2, dtype=np.float32)
+    raw = np.full((4, 4), 0.25, dtype=np.float32)
     np.testing.assert_array_equal(restored.fuse(raw), fusion.fuse(raw))
 
     metadata = IntentInferenceModule(seed=3).metadata()

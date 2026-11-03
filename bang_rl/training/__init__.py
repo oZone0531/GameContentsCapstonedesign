@@ -68,6 +68,8 @@ from .ppo_trainer import (
     PPOTrainer,
 )
 
+from .ppo_runtime import PPOTrainingAgent
+from .full_replay_pipeline import FullReplayPipelineResult, train_from_full_replays
 from .inference_artifact import (
     InferenceModuleArtifact,
     PHASE2_ARTIFACT_EXTENSION,
@@ -221,4 +223,7 @@ __all__ = [
     "entropy_bonus",
     "PPOUpdateMetrics",
     "PPOTrainer",
+    "PPOTrainingAgent",
+    "FullReplayPipelineResult",
+    "train_from_full_replays",
 ]

@@ -25,6 +25,7 @@ import torch
 from torch import Tensor
 
 from bang_rl.agents.main_agent import IntentInferenceModule
+from bang_rl.agents.main_agent.role_taxonomy import semantic_role_index
 from bang_rl.config.snapshot import JobSnapshot
 from bang_rl.data.tensor_cache import (
     CACHE_FORMAT_VERSION,
@@ -191,9 +192,9 @@ def build_intent_batch(
     selected_mask = np.zeros((len(row_indices), 4), dtype=np.bool_)
     for row, viewer in enumerate(viewers):
         targets = [player for player in range(5) if player != int(viewer)]
-        selected_labels[row] = role_values[row, targets]
+        selected_labels[row] = [semantic_role_index(value) for value in role_values[row, targets]]
         selected_mask[row] = role_mask[row, targets]
-    if np.any(selected_mask & ((selected_labels < 0) | (selected_labels >= 5))):
+    if np.any(selected_mask & ((selected_labels < 0) | (selected_labels >= 4))):
         raise DataError("role target contains an invalid role index")
 
     public_inputs = {

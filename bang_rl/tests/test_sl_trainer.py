@@ -101,7 +101,7 @@ def test_batch_selects_four_non_viewer_targets_and_keeps_inputs_public(tmp_path)
     assert batch.model_inputs["event_history"].shape == (1, 4, 64, 17)
     assert batch.model_inputs["event_valid_mask"].dtype == torch.bool
     # episode-2 is viewed by slot 2; target order is slots 0, 1, 3, 4.
-    torch.testing.assert_close(batch.role_labels, torch.tensor([[0, 1, 3, 4]]))
+    torch.testing.assert_close(batch.role_labels, torch.tensor([[0, 1, 2, 3]]))
     assert "role_labels" not in batch.model_inputs
     assert "true_roles" not in batch.model_inputs
 

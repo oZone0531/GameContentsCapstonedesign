@@ -303,8 +303,10 @@ def test_import_dummy_emotion_rejects_out_of_range_initial_value(tmp_path: Path)
 
 def test_monitor_wires_start_pause_resume_stop_and_displays_public_progress() -> None:
     service = FakeTrainingService(progress())
-    controller = TrainingMonitorController(service)
+    updates = []
+    controller = TrainingMonitorController(service, on_update=updates.append)
     state = controller.start(TrainingSetup(config=SystemConfig(), episodes=2, target_transitions=10))
+    assert updates[-1] is state
     assert service.requests[0].target_transitions == 10
     assert state.progress is service.progress_value
     assert state.snapshot.job_id == "job-gui"
@@ -312,6 +314,9 @@ def test_monitor_wires_start_pause_resume_stop_and_displays_public_progress() ->
     assert state.progress.report_path == "logs/report.json"
     assert state.win_rate_points == (0.75,)
     assert state.logs == ("public update",)
+    refreshed = controller.refresh()
+    assert refreshed.win_rate_points == (0.75,)
+    assert refreshed.logs == ("public update",)
 
     controller.pause(timeout=30.0)
     controller.resume()
@@ -320,7 +325,28 @@ def test_monitor_wires_start_pause_resume_stop_and_displays_public_progress() ->
     assert controller.snapshot.progress.status == "cancelled"
 
 
-def test_training_start_wires_to_service_start_orchestrator() -> None:
+def test_sl_training_metrics_create_role_and_emotion_curve_points() -> None:
+    value = TrainingProgress(
+        "job-gui",
+        "finished",
+        0,
+        0,
+        0,
+        2,
+        1,
+        0.1,
+        metrics={
+            "phase": "phase2_supervised",
+            "intent_history": ({"validation_accuracy": 0.25}, {"validation_accuracy": 0.5}),
+            "emotion_history": ({"validation_mse": 0.2}, {"validation_mse": 0.1}),
+        },
+    )
+    controller = TrainingMonitorController(FakeTrainingService(value))
+    state = controller.start(TrainingSetup(mode="full_replay_sl", episodes=1))
+    assert state.role_accuracy_points == (0.25, 0.5)
+    assert state.emotion_score_points == pytest.approx((0.8, 0.9))
+
+
     """The 'AI 학습' Start button reaches TrainingMonitorController.start -> service.start."""
 
     service = FakeTrainingService(progress())

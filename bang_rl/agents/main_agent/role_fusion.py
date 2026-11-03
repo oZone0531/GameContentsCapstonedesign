@@ -15,6 +15,8 @@ from typing import Any
 
 import numpy as np
 
+from .role_taxonomy import collapse_role_distribution, semantic_role_index
+
 try:  # Torch is a project dependency, but keeping the boundary optional helps tooling.
     import torch
     from torch import Tensor
@@ -25,7 +27,7 @@ except ImportError:  # pragma: no cover - exercised only by documentation toolin
 
 ROLE_FUSION_FORMAT_VERSION = "1.0"
 ROLE_FUSION_ARCHITECTURE_VERSION = "1.0"
-ROLE_COUNT = 5
+ROLE_COUNT = 4
 PLAYER_COUNT = 5
 TARGET_PLAYER_COUNT = 4
 HIDDEN_ROLE_SENTINEL = 255
@@ -152,7 +154,7 @@ class RoleFusion:
         if not isinstance(architecture, Mapping) or architecture.get("module_type", cls.module_type) != cls.module_type:
             raise ValueError("metadata does not describe RoleFusion")
         if architecture.get("role_count", ROLE_COUNT) != ROLE_COUNT:
-            raise ValueError("RoleFusion role_count is fixed at 5")
+            raise ValueError(f"RoleFusion role_count is fixed at {ROLE_COUNT}")
         if architecture.get("target_player_count", TARGET_PLAYER_COUNT) != TARGET_PLAYER_COUNT:
             raise ValueError("RoleFusion target_player_count is fixed at 4")
         return cls()
@@ -230,14 +232,14 @@ class RoleFusion:
         visibility = self._public_int_array(
             role_visibility, public_shape, "role_visibility", default=0
         )
-        revealed = self._public_int_array(
-            revealed_roles,
-            public_shape,
-            "revealed_roles",
-            default=HIDDEN_ROLE_SENTINEL,
+        revealed = self._collapse_public_roles(
+            revealed_roles, public_shape, "revealed_roles", default=HIDDEN_ROLE_SENTINEL
         )
+        confirmed_input = None
+        if confirmed_role_distribution is not None:
+            confirmed_input = collapse_role_distribution(confirmed_role_distribution)
         confirmed = self._public_float_array(
-            confirmed_role_distribution,
+            confirmed_input,
             batch_shape + (PLAYER_COUNT, ROLE_COUNT),
             "confirmed_role_distribution",
             default=0.0,
@@ -321,12 +323,8 @@ class RoleFusion:
                 array = np.asarray(value)
             except (TypeError, ValueError) as exc:
                 raise TypeError("raw_role_distribution must be numeric") from exc
-        if array.ndim not in {1, 2, 3} or array.shape[-1] != ROLE_COUNT:
-            raise ValueError("raw_role_distribution must have shape (5,), (N,5), or (B,N,5)")
-        if array.ndim == 3 and array.shape[-2] not in {TARGET_PLAYER_COUNT, PLAYER_COUNT}:
-            raise ValueError("raw_role_distribution stream dimension must be 4 or 5")
-        if array.ndim == 2 and array.shape[-2] not in {TARGET_PLAYER_COUNT, PLAYER_COUNT}:
-            raise ValueError("raw_role_distribution stream dimension must be 4 or 5")
+        if array.ndim not in {1, 2, 3} or array.shape[-1] not in {ROLE_COUNT, 5}:
+            raise ValueError("raw_role_distribution must end in four semantic or five environment role classes")
         if not np.issubdtype(array.dtype, np.number) or np.issubdtype(array.dtype, np.bool_):
             raise TypeError("raw_role_distribution must contain numeric values")
         array = array.astype(np.float64, copy=False)
@@ -335,12 +333,24 @@ class RoleFusion:
         if input_type == "auto":
             nonnegative = np.all(array >= 0.0, axis=-1)
             normalized = np.isclose(np.sum(array, axis=-1), 1.0, atol=1e-5)
-            if np.all(nonnegative & normalized):
-                kind = "probabilities"
-            else:
-                kind = "logits"
+            kind = "probabilities" if np.all(nonnegative & normalized) else "logits"
         else:
             kind = "probabilities" if input_type in {"probabilities", "probability", "probs"} else "logits"
+        if array.shape[-1] == 5:
+            collapsed = np.empty(array.shape[:-1] + (ROLE_COUNT,), dtype=np.float64)
+            collapsed[..., 0] = array[..., 0]
+            collapsed[..., 1] = array[..., 1]
+            collapsed[..., 2] = (
+                array[..., 2] + array[..., 3]
+                if kind == "probabilities"
+                else np.logaddexp(array[..., 2], array[..., 3])
+            )
+            collapsed[..., 3] = array[..., 4]
+            array = collapsed
+        if array.ndim == 3 and array.shape[-2] not in {TARGET_PLAYER_COUNT, PLAYER_COUNT}:
+            raise ValueError("raw_role_distribution stream dimension must be 4 or 5")
+        if array.ndim == 2 and array.shape[-2] not in {TARGET_PLAYER_COUNT, PLAYER_COUNT}:
+            raise ValueError("raw_role_distribution stream dimension must be 4 or 5")
         return array, kind, kind, was_torch
 
     @staticmethod
@@ -352,6 +362,27 @@ class RoleFusion:
                 return 1, (shape[0],)
             return shape[0], ()
         return shape[-2], shape[:-2]
+
+    @staticmethod
+    def _collapse_public_roles(
+        value: Any | None,
+        shape: tuple[int, ...],
+        name: str,
+        *,
+        default: int,
+    ) -> np.ndarray:
+        if value is None:
+            return np.full(shape, default, dtype=np.int64)
+        array = np.asarray(value)
+        if array.shape != shape:
+            raise ValueError(f"{name} must have shape {shape}, got {array.shape}")
+        if not np.issubdtype(array.dtype, np.integer) or np.issubdtype(array.dtype, np.bool_):
+            raise TypeError(f"{name} must contain integers")
+        result = array.astype(np.int64, copy=True)
+        for index in np.ndindex(result.shape):
+            if result[index] != HIDDEN_ROLE_SENTINEL:
+                result[index] = semantic_role_index(int(result[index]))
+        return result
 
     @staticmethod
     def _public_int_array(value: Any | None, shape: tuple[int, ...], name: str, *, default: int) -> np.ndarray:
@@ -427,8 +458,11 @@ class RoleFusion:
         if value is None:
             return np.full(batch_shape, -1, dtype=np.int64)
         result = RoleFusion._batch_scalar_array(value, batch_shape, name, default=-1)
+        for index in np.ndindex(result.shape):
+            if result[index] >= 0:
+                result[index] = semantic_role_index(int(result[index]))
         if np.any((result != -1) & ((result < 0) | (result >= ROLE_COUNT))):
-            raise ValueError(f"{name} must contain role indices in [0, 4]")
+            raise ValueError(f"{name} must contain environment role indices in [0, 4]")
         return result
 
     @staticmethod
@@ -513,8 +547,9 @@ class RoleFusion:
 
             confirmed_slots = [slot for slot, role in enumerate(known) if role >= 0]
             confirmed_roles = [int(known[slot]) for slot in confirmed_slots]
-            if len(set(confirmed_roles)) != len(confirmed_roles):
-                raise ValueError("conflicting confirmed roles: one role is assigned to multiple players")
+            non_outlaw_roles = [role for role in confirmed_roles if role != 2]
+            if len(set(non_outlaw_roles)) != len(non_outlaw_roles):
+                raise ValueError("conflicting confirmed roles: one non-outlaw role is assigned to multiple players")
             result[index] = known
         return result
 

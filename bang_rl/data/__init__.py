@@ -9,6 +9,7 @@ from .collector import (
     DatasetWriter,
     EpisodeCollector,
 )
+from .full_replay import full_replay_to_canonical, load_full_replay_episodes
 from .parquet_writer import (
     CANONICAL_PARQUET_SCHEMA,
     PARQUET_WRITER_SCHEMA_VERSION,
@@ -51,6 +52,8 @@ __all__ = [
     "CollectorStateError",
     "DatasetWriter",
     "EpisodeCollector",
+    "full_replay_to_canonical",
+    "load_full_replay_episodes",
     "PARQUET_WRITER_SCHEMA_VERSION",
     "ParquetCanonicalShardWriter",
     "ParquetShardWriter",

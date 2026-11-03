@@ -31,7 +31,7 @@ def _structured_inputs(batch: int | None = None) -> dict[str, np.ndarray]:
         "self_state": np.zeros(prefix + (9,), dtype=np.float32),
         "board_state": np.zeros(prefix + (5, 8), dtype=np.float32),
         "confirmed_role_features": np.zeros(prefix + (5, 5), dtype=np.float32),
-        "fused_intent": np.zeros(prefix + (4, 5), dtype=np.float32),
+        "fused_intent": np.zeros(prefix + (4, 4), dtype=np.float32),
         "emotion_features": np.zeros(prefix + (4,), dtype=np.float32),
         "action_mask": np.asarray([1, 1, 1, 0, 0, 1], dtype=np.uint8),
     }
@@ -58,15 +58,15 @@ def test_policy_and_value_shapes_mask_and_distribution() -> None:
 
 def test_structured_features_concatenate_rolefusion_output_and_support_batches() -> None:
     values = _structured_inputs(batch=3)
-    raw_intent = np.full((4, 5), 0.2, dtype=np.float32)
+    raw_intent = np.full((4, 4), 0.25, dtype=np.float32)
     fused = RoleFusion().fuse(raw_intent, viewer_idx=0)
-    values["fused_intent"] = np.broadcast_to(fused, (3, 4, 5)).copy()
+    values["fused_intent"] = np.broadcast_to(fused, (3, 4, 4)).copy()
     values["action_mask"] = np.broadcast_to(values["action_mask"], (3, 6)).copy()
     module = PPOModule(emotion_dim=4, seed=7).eval()
 
     result = module(values)
 
-    assert module.input_dim == 9 + 40 + 25 + 20 + 4
+    assert module.input_dim == 9 + 40 + 25 + 16 + 4
     assert result.logits.shape == (3, 6)
     assert result.value.shape == (3, 1)
     assert result.distribution.probs.shape == (3, 6)

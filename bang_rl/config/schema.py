@@ -782,8 +782,8 @@ class ModelArchitectureSnapshot(ConfigModel):
     intent_num_layers: Literal[1] = 1
     intent_batch_first: Literal[True] = True
     intent_dropout: Literal[0.0] = 0.0
-    intent_role_head: Literal["Linear(128,64)->ReLU->Linear(64,5)"] = (
-        "Linear(128,64)->ReLU->Linear(64,5)"
+    intent_role_head: Literal["Linear(128,64)->ReLU->Linear(64,4)"] = (
+        "Linear(128,64)->ReLU->Linear(64,4)"
     )
     emotion_encoder: Literal["GRU"] = "GRU"
     emotion_hidden_size: Literal[128] = 128

@@ -38,6 +38,14 @@ from .role_fusion import (
     ROLE_FUSION_FORMAT_VERSION,
     RoleFusion,
 )
+from .role_taxonomy import (
+    HIDDEN_ROLE_SENTINEL as INFERENCE_HIDDEN_ROLE_SENTINEL,
+    SEMANTIC_ROLE_COUNT,
+    SEMANTIC_ROLE_NAMES,
+    collapse_role_distribution,
+    semantic_role_index,
+    semantic_role_labels,
+)
 from .emotion_inference import (
     EMOTION_INFERENCE_ARCHITECTURE_VERSION,
     EMOTION_INFERENCE_FORMAT_VERSION,
@@ -100,6 +108,12 @@ __all__ = [
     "ROLE_FUSION_ARCHITECTURE_VERSION",
     "ROLE_FUSION_FORMAT_VERSION",
     "RoleFusion",
+    "SEMANTIC_ROLE_COUNT",
+    "SEMANTIC_ROLE_NAMES",
+    "INFERENCE_HIDDEN_ROLE_SENTINEL",
+    "collapse_role_distribution",
+    "semantic_role_index",
+    "semantic_role_labels",
     "SEQUENCE_ENCODER_FORMAT_VERSION",
     "SequenceEncoder",
     "SequenceEncoderFactory",

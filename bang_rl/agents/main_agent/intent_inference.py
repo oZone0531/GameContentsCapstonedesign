@@ -3,7 +3,7 @@
 The intent model is deliberately small and explicit: a replaceable
 :class:`SequenceEncoder` (GRU by default) encodes one public event stream per
 other player, and one shared role head maps the encoded representation to the
-five role logits.  This module never accepts or derives hidden true roles.
+the semantic role logits for Sheriff, Deputy, Outlaw, and Traitor.
 
 ``forward`` follows a useful train/inference boundary.  In training mode it
 returns logits for ``CrossEntropyLoss``; in evaluation mode it returns softmax
@@ -39,11 +39,12 @@ from .preprocessor import (
     ProcessedObservation,
 )
 from .role_fusion import RoleFusion
+from .role_taxonomy import SEMANTIC_ROLE_COUNT
 
 
 INTENT_INFERENCE_FORMAT_VERSION = "1.0"
 INTENT_INFERENCE_ARCHITECTURE_VERSION = "1.0"
-ROLE_COUNT = 5
+ROLE_COUNT = SEMANTIC_ROLE_COUNT
 TARGET_PLAYER_COUNT = OTHER_PLAYER_COUNT
 ROLE_HEAD_HIDDEN_SIZE = 64
 INTENT_OPTIMIZER_METADATA = {

@@ -250,8 +250,8 @@ def test_role_reveal_role_fusion_and_privileged_separation() -> None:
         self_role=observation["self_role"],
         target_player_indices=np.arange(5),
     )
-    np.testing.assert_allclose(fused[0], np.eye(5, dtype=np.float32)[int(Role.SHERIFF)])
-    np.testing.assert_allclose(fused[1], np.eye(5, dtype=np.float32)[int(Role.DEPUTY)])
+    np.testing.assert_allclose(fused[0], np.asarray([1, 0, 0, 0], dtype=np.float32))
+    np.testing.assert_allclose(fused[1], np.asarray([0, 1, 0, 0], dtype=np.float32))
     env.close()
 
 

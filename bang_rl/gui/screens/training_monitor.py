@@ -4,11 +4,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
-from bang_rl.paths import ARTIFACTS_DIR, OUTPUTS_DIR, REPORTS_DIR
+from bang_rl.paths import ARTIFACTS_DIR, OUTPUTS_DIR, REPORTS_DIR, REPLAYS_DIR
 
 from ..qt_compat import (
+    QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
@@ -25,7 +26,12 @@ from ..qt_compat import (
     require_qt,
 )
 from ..i18n import tr
-from ..training import TrainingMonitorController, TrainingMonitorSnapshot, TrainingSetup
+from ..training import (
+    TrainingMonitorController,
+    TrainingMonitorSnapshot,
+    TrainingSetup,
+    _public_value,
+)
 
 try:  # pyqtgraph is optional even when PyQt6 is available.
     if QT_AVAILABLE:
@@ -49,51 +55,97 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             require_qt()
             super().__init__(parent)
             self.config = config
-            self.mode = QLineEdit("rl", self)
+            self.mode = QComboBox(self)
+            self.mode.addItem(tr("training.mode_data_collection"), "data_collection")
+            self.mode.addItem(tr("training.mode_inference"), "inference_sl")
+            self.mode.addItem(tr("training.mode_policy"), "policy_ppo")
             self.episodes = QSpinBox(self)
             self.episodes.setRange(0, 2_147_483_647)
             self.episodes.setValue(1)
             self.target = QSpinBox(self)
             self.target.setRange(0, 2_147_483_647)
             self.target.setSpecialValueText("Use episodes")
+            self.update_mode = QComboBox(self)
+            self.update_mode.addItem(tr("training.update_online"), "online")
+            self.update_mode.addItem(tr("training.update_batch"), "batch")
+            self.update_mode.addItem(tr("training.update_semibatch"), "semibatch")
+            self.update_mode.setCurrentIndex(1)
+            self.ppo_batch_size = QSpinBox(self)
+            self.ppo_batch_size.setRange(1, 1_000_000)
+            self.ppo_batch_size.setValue(64)
+            self.ppo_batch_size.setEnabled(False)
+            self.sl_epochs = QSpinBox(self)
+            self.sl_epochs.setRange(1, 1_000)
+            self.sl_epochs.setValue(10)
+            self.sl_epochs.setEnabled(False)
+            self.update_mode.currentIndexChanged.connect(
+                lambda _index: self._update_training_fields()
+            )
+            self.mode.currentIndexChanged.connect(lambda _index: self._update_training_fields())
             self.seed = QSpinBox(self)
             self.seed.setRange(-2_147_483_648, 2_147_483_647)
             self.report = QLineEdit(str(REPORTS_DIR), self)
             self.output = QLineEdit(str(OUTPUTS_DIR), self)
             self.artifact = QLineEdit(str(ARTIFACTS_DIR), self)
             self.resume_artifact = QLineEdit(str(ARTIFACTS_DIR), self)
+            self.replay_source = QLineEdit(str(REPLAYS_DIR), self)
+            self.phase2_artifact = QLineEdit("", self)
             form = QFormLayout(self)
             form.addRow(tr("training.mode"), self.mode)
             form.addRow(tr("training.episodes"), self.episodes)
             form.addRow(tr("training.target"), self.target)
+            form.addRow(tr("training.update_mode"), self.update_mode)
+            form.addRow(tr("training.ppo_batch_size"), self.ppo_batch_size)
+            form.addRow(tr("training.sl_epochs"), self.sl_epochs)
             form.addRow(tr("training.seed"), self.seed)
             form.addRow(tr("training.report_path"), self.report)
             form.addRow(tr("training.output_path"), self.output)
             form.addRow(tr("training.artifact_path"), self.artifact)
             form.addRow(tr("training.resume_artifact_path"), self.resume_artifact)
+            form.addRow(tr("training.replay_source_path"), self.replay_source)
+            form.addRow(tr("training.phase2_artifact_path"), self.phase2_artifact)
             # Item 3: hover help on every field AND its QFormLayout label so the
             # AI-training settings menu gets mouse-over tooltips too.
             field_tooltips = (
                 (self.mode, "tooltip.training_mode"),
                 (self.episodes, "tooltip.training_episodes"),
                 (self.target, "tooltip.training_target"),
+                (self.update_mode, "tooltip.training_update_mode"),
+                (self.ppo_batch_size, "tooltip.training_ppo_batch_size"),
+                (self.sl_epochs, "tooltip.training_sl_epochs"),
                 (self.seed, "tooltip.training_seed"),
                 (self.report, "tooltip.training_report_path"),
                 (self.output, "tooltip.training_output_path"),
                 (self.artifact, "tooltip.training_artifact_path"),
                 (self.resume_artifact, "tooltip.training_resume_artifact_path"),
+                (self.replay_source, "tooltip.training_replay_source_path"),
+                (self.phase2_artifact, "tooltip.training_phase2_artifact_path"),
             )
             for field, key in field_tooltips:
                 field.setToolTip(tr(key))
                 label = form.labelForField(field)
                 if label is not None:
                     label.setToolTip(tr(key))
+            self._update_training_fields()
+
+        def _update_training_fields(self) -> None:
+            mode = self.mode.currentData()
+            policy = mode == "policy_ppo"
+            collection = mode == "data_collection"
+            inference = mode == "inference_sl"
+            self.episodes.setEnabled(collection or policy)
+            self.target.setEnabled(policy)
+            self.update_mode.setEnabled(policy)
+            self.ppo_batch_size.setEnabled(policy and self.update_mode.currentData() == "semibatch")
+            self.replay_source.setEnabled(collection or inference)
+            self.phase2_artifact.setEnabled(policy)
+            self.sl_epochs.setEnabled(inference)
 
         def setup(self) -> TrainingSetup:
             target = self.target.value() or None
             return TrainingSetup(
                 config=self.config,
-                mode=self.mode.text().strip() or "rl",
+                mode=str(self.mode.currentData() or "rl"),
                 episodes=self.episodes.value(),
                 target_transitions=target,
                 seed=self.seed.value(),
@@ -101,6 +153,11 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 output_path=self.output.text().strip() or None,
                 artifact_path=self.artifact.text().strip() or None,
                 resume_artifact_path=self.resume_artifact.text().strip() or None,
+                replay_source_path=self.replay_source.text().strip() or None,
+                phase2_artifact_path=self.phase2_artifact.text().strip() or None,
+                sl_epochs=self.sl_epochs.value(),
+                ppo_update_mode=str(self.update_mode.currentData() or "batch"),
+                ppo_batch_size=self.ppo_batch_size.value(),
             )
 
 
@@ -147,24 +204,40 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self.back_button.clicked.connect(self._go_back)
             layout = QVBoxLayout(self)
             layout.addWidget(self.back_button)
-            layout.addWidget(self.setup_panel)
-            layout.addLayout(buttons)
-            layout.addWidget(self.progress_bar)
-            layout.addWidget(self.environment_steps)
-            layout.addWidget(self.truncated)
-            layout.addWidget(self.metrics)
-            layout.addWidget(self.status)
-            layout.addWidget(self.snapshot)
-            layout.addWidget(self.paths)
+            columns = QHBoxLayout()
+            left_panel = QWidget(self)
+            left_panel.setMinimumWidth(300)
+            left_panel.setMaximumWidth(370)
+            left = QVBoxLayout(left_panel)
+            left.setContentsMargins(0, 0, 8, 0)
+            left.addWidget(self.setup_panel)
+            left.addLayout(buttons)
+            left.addWidget(self.progress_bar)
+            left.addWidget(self.environment_steps)
+            left.addWidget(self.truncated)
+            left.addWidget(self.metrics)
+            left.addWidget(self.status)
+            left.addWidget(self.snapshot)
+            left.addWidget(self.paths)
+            columns.addWidget(left_panel, 0)
+            right = QVBoxLayout()
             if PYQTGRAPH_AVAILABLE:
                 self.plot = PlotWidget(self)
+                self.plot.addLegend()
                 self.plot.setLabel("left", "Win rate")
                 self.plot.setLabel("bottom", "Monitor sample")
-                self._curve = self.plot.plot([], [])
-                layout.addWidget(self.plot)
+                self._curve = self.plot.plot(
+                    [], [], name="Win rate / Role accuracy", pen="#4C9AFF", symbol="o", symbolSize=8, symbolBrush="#4C9AFF"
+                )
+                self._emotion_curve = self.plot.plot(
+                    [], [], name="Emotion score (1-MSE)", pen="#F39C12", symbol="o", symbolSize=8, symbolBrush="#F39C12"
+                )
+                right.addWidget(self.plot)
             else:
                 self.plot = None
-                layout.addWidget(QLabel(tr("training.graph_needs_pyqtgraph"), self))
+                right.addWidget(QLabel(tr("training.graph_needs_pyqtgraph"), self))
+            columns.addLayout(right, 1)
+            layout.addLayout(columns)
             layout.addWidget(self.logs)
             layout.addWidget(self.message)
             self._timer = QTimer(self)
@@ -175,11 +248,23 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
 
         def _go_back(self) -> None:
             self._timer.stop()
+            # The central widget can be replaced while a job is still running.
+            # Do not let a later refresh call a deleted widget; a new monitor
+            # binds the controller again when the training screen is reopened.
+            self.controller.on_update = None
             if self.on_back is not None:
                 self.on_back()
 
         def _start(self) -> None:
-            self.controller.start(self.setup_panel.setup())
+            # Starting a job must also recover the polling loop when this
+            # monitor was previously hidden/reused.
+            self._timer.start()
+            state = self.controller.start(self.setup_panel.setup())
+            # The controller normally publishes through on_update. Render the
+            # returned snapshot explicitly as well so the first click is
+            # visible even when a short job completes before the first timer
+            # tick or the callback was replaced by screen navigation.
+            self._render(state)
 
         def _pause(self) -> None:
             self.controller.pause(timeout=30.0)
@@ -198,6 +283,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 self.status.setText(tr("training.no_job"))
                 self.snapshot.setText(tr("training.snapshot_not_started"))
                 self.paths.setText("Report: — · Output: — · Artifact: —")
+                self.message.setText(state.message or "")
                 return
             target = getattr(state.handle, "snapshot", None)
             target_config = getattr(target, "config_snapshot", {}) if target is not None else {}
@@ -211,7 +297,8 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             count = int(getattr(progress, "truncated_episodes", 0))
             rate = getattr(progress, "truncated_rate", None)
             self.truncated.setText(f"Truncated: {count} ({'N/A' if rate is None else f'{rate:.1%}'})")
-            self.metrics.setText(f"Metrics: {json.dumps(getattr(progress, 'metrics', {}) or {}, sort_keys=True)}")
+            metrics = _public_value(getattr(progress, "metrics", {}) or {})
+            self.metrics.setText(f"Metrics: {json.dumps(metrics, sort_keys=True)}")
             self.status.setText(f"Status: {progress.status} · PPO updates: {progress.ppo_updates}")
             if state.snapshot is not None:
                 self.snapshot.setText(
@@ -222,10 +309,42 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 f"Report: {progress.report_path or '—'} · Output: {getattr(progress, 'output_path', None) or '—'} · "
                 f"Artifact: {progress.artifact_path or '—'}"
             )
-            self.logs.setPlainText("\n".join(state.logs))
+            log_text = "\n".join(state.logs)
+            if self.logs.toPlainText() != log_text:
+                scrollbar = self.logs.verticalScrollBar()
+                at_bottom = scrollbar.value() >= scrollbar.maximum() - 2
+                previous_value = scrollbar.value()
+                self.logs.setPlainText(log_text)
+                if at_bottom:
+                    scrollbar.setValue(scrollbar.maximum())
+                else:
+                    scrollbar.setValue(min(previous_value, scrollbar.maximum()))
             self.message.setText(state.message or "")
             if self.plot is not None:
-                self._curve.setData(list(range(len(state.win_rate_points))), list(state.win_rate_points))
+                mode = state.public_metadata.get("mode") if isinstance(state.public_metadata, Mapping) else None
+                if mode == "data_collection":
+                    self.plot.setVisible(False)
+                    self._curve.setData([], [])
+                    self._emotion_curve.setData([], [])
+                else:
+                    self.plot.setVisible(True)
+                    metrics = _public_value(getattr(progress, "metrics", {}) or {})
+                    if isinstance(metrics, dict) and metrics.get("phase") == "phase2_supervised":
+                        self.plot.setLabel("left", "Validation score")
+                        self.plot.setLabel("bottom", "Epoch")
+                        self._curve.setData(
+                            list(range(1, len(state.role_accuracy_points) + 1)),
+                            list(state.role_accuracy_points),
+                        )
+                        self._emotion_curve.setData(
+                            list(range(1, len(state.emotion_score_points) + 1)),
+                            list(state.emotion_score_points),
+                        )
+                    else:
+                        self.plot.setLabel("left", "Win rate")
+                        self.plot.setLabel("bottom", "Monitor sample")
+                        self._curve.setData(list(range(len(state.win_rate_points))), list(state.win_rate_points))
+                        self._emotion_curve.setData([], [])
 
 
 else:

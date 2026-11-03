@@ -24,12 +24,15 @@ from torch import Tensor, nn
 from torch.distributions import Categorical
 
 from ...config import PPOConfig
+from ...env.types import Role
 from .preprocessor import (
     PLAYER_FEATURE_SIZE,
     STATE_VECTOR_SIZE,
 )
 from .role_fusion import ROLE_COUNT, TARGET_PLAYER_COUNT
 
+
+ENV_ROLE_COUNT = len(Role)
 
 PPO_MODULE_FORMAT_VERSION = "1.0"
 PPO_MODULE_ARCHITECTURE_VERSION = "1.0"
@@ -193,7 +196,7 @@ class PPOModule(nn.Module):
         *,
         self_state_dim: int = STATE_VECTOR_SIZE,
         board_state_dim: int = 5 * PLAYER_FEATURE_SIZE,
-        confirmed_role_dim: int = 5 * ROLE_COUNT,
+        confirmed_role_dim: int = 5 * ENV_ROLE_COUNT,
         intent_dim: int = TARGET_PLAYER_COUNT * ROLE_COUNT,
         emotion_dim: int = TARGET_PLAYER_COUNT,
         ppo_config: PPOConfig | Mapping[str, Any] | None = None,
@@ -603,7 +606,7 @@ class PPOModule(nn.Module):
             blocks = [
                 self._feature_block(self_state, "self_state", self._component_dims["self_state"], (STATE_VECTOR_SIZE,)),
                 self._feature_block(board_state, "board_state", self._component_dims["board_state"], (5, PLAYER_FEATURE_SIZE)),
-                self._feature_block(confirmed_role_features, "confirmed_role_features", self._component_dims["confirmed_role"], (5, ROLE_COUNT)),
+                self._feature_block(confirmed_role_features, "confirmed_role_features", self._component_dims["confirmed_role"], (5, ENV_ROLE_COUNT)),
                 self._feature_block(fused_intent, "fused_intent", self._component_dims["fused_intent"], (TARGET_PLAYER_COUNT, ROLE_COUNT)),
                 self._feature_block(emotion_features, "emotion_features", self._component_dims["emotion"], (TARGET_PLAYER_COUNT,)),
             ]
@@ -613,7 +616,7 @@ class PPOModule(nn.Module):
             features = torch.cat(blocks, dim=-1)
             unbatched = features.shape[0] == 1 and all(self._is_unbatched_block(item, shape) for item, shape in zip(
                 (self_state, board_state, confirmed_role_features, fused_intent, emotion_features),
-                ((STATE_VECTOR_SIZE,), (5, PLAYER_FEATURE_SIZE), (5, ROLE_COUNT), (TARGET_PLAYER_COUNT, ROLE_COUNT), (TARGET_PLAYER_COUNT,)),
+                ((STATE_VECTOR_SIZE,), (5, PLAYER_FEATURE_SIZE), (5, ENV_ROLE_COUNT), (TARGET_PLAYER_COUNT, ROLE_COUNT), (TARGET_PLAYER_COUNT,)),
             ))
             if features.shape[-1] != self.input_dim:
                 raise ValueError(
@@ -756,7 +759,7 @@ class PPOModule(nn.Module):
             input_dim=architecture.get("input_dim"),
             self_state_dim=component_dims.get("self_state", STATE_VECTOR_SIZE),
             board_state_dim=component_dims.get("board_state", 5 * PLAYER_FEATURE_SIZE),
-            confirmed_role_dim=component_dims.get("confirmed_role", 5 * ROLE_COUNT),
+            confirmed_role_dim=component_dims.get("confirmed_role", 5 * ENV_ROLE_COUNT),
             intent_dim=component_dims.get("fused_intent", TARGET_PLAYER_COUNT * ROLE_COUNT),
             emotion_dim=component_dims.get("emotion", TARGET_PLAYER_COUNT),
             ppo_config=config,

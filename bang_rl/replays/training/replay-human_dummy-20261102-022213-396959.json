@@ -1,0 +1,68 @@
+{
+  "schema_version": "1.0",
+  "replay_format": "full",
+  "game_type": "human_dummy",
+  "mode": "human_dummy",
+  "mode_label": "Human 1 vs Dummy AI 4",
+  "ai_versions": {
+    "1": "dummy",
+    "2": "dummy",
+    "3": "dummy",
+    "4": "dummy"
+  },
+  "winning_team": "sheriff_team",
+  "winners": [],
+  "human_player": 0,
+  "human_won": false,
+  "outcome": "normal",
+  "terminated": true,
+  "truncated": false,
+  "seed": null,
+  "observations": [
+    {
+      "healths": [
+        5,
+        4,
+        4,
+        4,
+        4
+      ],
+      "alive": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "role_visibility": [
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "revealed_roles": [
+        0,
+        255,
+        255,
+        255,
+        255
+      ],
+      "current_player_idx": [
+        0
+      ],
+      "action_mask": [
+        1,
+        1,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "states": [],
+  "internals": [
+    null
+  ]
+}

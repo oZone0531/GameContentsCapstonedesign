@@ -32,4 +32,9 @@ bang_rl/datasets/cache/*
 !bang_rl/datasets/cache/.gitkeep
 bang_rl/replays/*
 !bang_rl/replays/.gitkeep
+# Generated GUI replays stay local. Curated, reproducible training sets live in
+# this explicitly trackable subdirectory and can be committed normally.
+!bang_rl/replays/training/
+!bang_rl/replays/training/.gitkeep
+!bang_rl/replays/training/**/*.json
 config.json

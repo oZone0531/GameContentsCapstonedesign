@@ -34,7 +34,7 @@ def test_eval_outputs_four_role_distributions_with_probability_normalization() -
 
     probabilities = module(sequence, mask)
 
-    assert probabilities.shape == (4, 5)
+    assert probabilities.shape == (4, 4)
     assert probabilities.dtype == torch.float32
     assert torch.all(probabilities >= 0.0)
     assert torch.all(probabilities <= 1.0)
@@ -49,13 +49,13 @@ def test_train_returns_logits_and_explicit_probability_boundary() -> None:
     logits = module(sequence, mask)
     probabilities = module.predict_proba(sequence, mask)
 
-    assert logits.shape == (4, 5)
-    assert probabilities.shape == (4, 5)
+    assert logits.shape == (4, 4)
+    assert probabilities.shape == (4, 4)
     torch.testing.assert_close(probabilities, torch.softmax(logits, dim=-1))
     assert module.role_head[0].in_features == 128
     assert module.role_head[0].out_features == 64
     assert module.role_head[2].in_features == 64
-    assert module.role_head[2].out_features == 5
+    assert module.role_head[2].out_features == 4
 
 
 def test_same_seed_and_input_are_deterministic_without_global_rng_side_effect() -> None:
@@ -78,9 +78,9 @@ def test_batch_and_single_stream_shapes_are_supported() -> None:
     one = module(sequence[0], mask[0])
     independent = module(sequence[:, 0], mask[:, 0])
 
-    assert batch.shape == (3, 4, 5)
-    assert one.shape == (4, 5)
-    assert independent.shape == (3, 5)
+    assert batch.shape == (3, 4, 4)
+    assert one.shape == (4, 4)
+    assert independent.shape == (3, 4)
     torch.testing.assert_close(batch[0], one)
 
 
@@ -129,7 +129,7 @@ def test_architecture_optimizer_and_schema_metadata_are_literal_and_public_only(
     assert metadata["role_head"]["layers"] == [
         {"type": "Linear", "in_features": 128, "out_features": 64},
         {"type": "ReLU"},
-        {"type": "Linear", "in_features": 64, "out_features": 5},
+        {"type": "Linear", "in_features": 64, "out_features": 4},
     ]
     assert metadata["optimizer"] == {
         "type": "Adam",
@@ -195,7 +195,7 @@ def test_canonical_observation_uses_preprocessor_and_rejects_hidden_role() -> No
         "action_mask": np.asarray([1, 0, 1, 1, 1, 1], dtype=np.uint8),
     }
     module = IntentInferenceModule(preprocessor=ObservationPreprocessor(), seed=31).eval()
-    assert module(observation).shape == (4, 5)
+    assert module(observation).shape == (4, 4)
 
     observation["roles"] = np.asarray([0, 1, 2, 3, 4], dtype=np.uint8)
     with pytest.raises(ValueError, match="privileged"):

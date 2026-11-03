@@ -21,6 +21,7 @@ from uuid import uuid4
 import numpy as np
 
 from bang_rl.agents import DummyAgent, HumanAgent, RandomAgent
+from bang_rl.agents.main_agent import PPOModule
 from bang_rl.config import (
     ConfigLoader,
     ConfigService as SchemaConfigService,
@@ -39,6 +40,7 @@ from bang_rl.paths import (
     ARTIFACTS_DIR,
     OUTPUTS_DIR,
     REPORTS_DIR,
+    REPLAYS_DIR,
     ensure_training_directories,
     latest_artifact,
     resolve_training_file,
@@ -50,6 +52,11 @@ from bang_rl.training import (
     WorkerFault,
     load_final_inference_artifact,
     load_final_artifact_for_training,
+    load_phase2_inference_artifact,
+    save_final_inference_artifact,
+    PPOTrainer,
+    PPOTrainingAgent,
+    train_from_full_replays,
 )
 
 
@@ -224,6 +231,11 @@ class TrainingConfig:
     output_path: str | Path | None = OUTPUTS_DIR
     artifact_path: str | Path | None = ARTIFACTS_DIR
     resume_artifact_path: str | Path | None = ARTIFACTS_DIR
+    replay_source_path: str | Path | None = REPLAYS_DIR
+    phase2_artifact_path: str | Path | None = None
+    sl_epochs: int = 10
+    ppo_update_mode: str = "batch"
+    ppo_batch_size: int = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -384,10 +396,15 @@ class _TrainingRun:
     error: Mapping[str, Any] | None = None
     truncated_episodes: int = 0
     normal_episodes: int = 0
+    normal_wins: int = 0
     win_rate: float | str | None = None
     metrics: dict[str, Any] = field(default_factory=dict)
     logs: list[Mapping[str, Any]] = field(default_factory=list)
     records: list[Mapping[str, Any]] = field(default_factory=list)
+    ppo_module: Any = None
+    ppo_trainer: Any = None
+    phase2_artifact: Any = None
+    pending_ppo_transitions: list[Any] = field(default_factory=list)
     thread: Thread | None = None
 
 
@@ -1045,29 +1062,46 @@ class TrainingService:
             raise ValueError("episodes must be a non-negative integer")
         if options.target_transitions is not None and (isinstance(options.target_transitions, bool) or options.target_transitions < 1):
             raise ValueError("target_transitions must be positive when provided")
-        if options.runner is None:
-            raise TrainingError(
-                "default TrainingService execution is not wired to the declared collection/SL/PPO/artifact pipeline; "
-                "provide an explicit runner or use a pipeline orchestrator"
-            )
+        if options.ppo_update_mode not in {"online", "batch", "semibatch"}:
+            raise ValueError("ppo_update_mode must be online, batch, or semibatch")
+        if isinstance(options.ppo_batch_size, bool) or int(options.ppo_batch_size) < 1:
+            raise ValueError("ppo_batch_size must be positive")
+        if isinstance(options.sl_epochs, bool) or int(options.sl_epochs) < 1:
+            raise ValueError("sl_epochs must be positive")
         seed = config.seed if options.seed is None else int(options.seed)
         ensure_training_directories()
         job = TrainingJob.start(config, mode=options.mode, seed=seed, split_seed=options.split_seed)
-        resume_source = latest_artifact(options.resume_artifact_path)
+        full_replay_mode = options.mode in {"full_replay_sl", "inference_sl"}
+        policy_mode = options.mode in {"rl", "policy_ppo"}
+        resume_source = None if full_replay_mode else latest_artifact(options.resume_artifact_path)
         resume_artifact = None
         if resume_source is not None:
             # This is a weights-only continuation.  The loader verifies the
             # bundle and leaves PPO trainable with a fresh optimizer created by
             # the caller's PPOTrainer.
             resume_artifact = load_final_artifact_for_training(resume_source)
+        phase2_artifact = None
+        if options.phase2_artifact_path is not None:
+            phase2_artifact = load_phase2_inference_artifact(options.phase2_artifact_path)
+        elif resume_artifact is not None:
+            phase2_artifact = resume_artifact
         guard = ResourceGuard(job.snapshot)
-        agents = tuple(options.agents) if options.agents is not None else tuple(
-            DummyAgent(f"player_{index}", seed=SeedManager(seed, snapshot=job.snapshot).agent_seed(f"player_{index}"), player_idx=index, policy_config=config.preset.intent_policy, emotion_config=config.preset.emotion)
-            for index in range(5)
-        )
+        ppo_module = None
+        if options.agents is None:
+            default_agents = tuple(
+                DummyAgent(f"player_{index}", seed=SeedManager(seed, snapshot=job.snapshot).agent_seed(f"player_{index}"), player_idx=index, policy_config=config.preset.intent_policy, emotion_config=config.preset.emotion)
+                for index in range(5)
+            )
+            if options.ppo_update_mode in {"online", "batch", "semibatch"} and policy_mode:
+                ppo_module = PPOModule(seed=seed)
+                agents = (PPOTrainingAgent(ppo_module, player_idx=0, seed=seed, phase2_artifact=phase2_artifact),) + default_agents[1:]
+            else:
+                agents = default_agents
+        else:
+            agents = tuple(options.agents)
         logger = self.logger or get_component_logger("training-service", channel=LogChannel.TRAINING, job_id=job.job_id)
         vector = None
-        if options.runner is None:
+        if options.runner is None and not full_replay_mode:
             vector = DummyVecEnv(
                 num_workers=config.hardware.workers,
                 environment_factory=_safe_environment_factory(config),
@@ -1095,7 +1129,19 @@ class TrainingService:
             output_path=str(output_root),
             resume_artifact_path=None if resume_source is None else str(resume_source),
             resume_artifact=resume_artifact,
+            phase2_artifact=phase2_artifact,
         )
+        if ppo_module is not None and vector is not None:
+            run.ppo_module = ppo_module
+            run.ppo_trainer = PPOTrainer(
+                ppo_module,
+                config=config.rl_training.ppo,
+                snapshot=job.snapshot,
+                worker_count=vector.num_workers,
+                seed=seed,
+                logger=logger,
+                phase2_artifact=phase2_artifact,
+            )
         # Paths are public job metadata and should be visible before completion.
         run.report_path = str(resolve_training_file(options.report_path, root=REPORTS_DIR, filename=f"{job.job_id}.json", suffix=".json"))
         run.artifact_path = str(resolve_training_file(options.artifact_path, root=ARTIFACTS_DIR, filename=f"{job.job_id}.bangmodel", suffix=".bangmodel"))
@@ -1114,10 +1160,85 @@ class TrainingService:
             raise UnknownHandleError("training job was not found", field="job_id", current_value=key)
         return run
 
+    def _flush_ppo(self, run: _TrainingRun, *, force: bool = False) -> None:
+        trainer = run.ppo_trainer
+        if trainer is None or run.vector is None:
+            return
+        for worker in getattr(run.vector, "workers", ()):
+            transitions = getattr(worker, "transitions", None)
+            if transitions:
+                run.pending_ppo_transitions.extend(transitions)
+                transitions.clear()
+        mode = run.config.ppo_update_mode
+        if mode == "online":
+            threshold = 1
+        elif mode == "semibatch":
+            threshold = int(run.config.ppo_batch_size)
+        else:
+            threshold = int(trainer.config.rollout_transitions_per_worker) * int(trainer.worker_count)
+        while len(run.pending_ppo_transitions) >= threshold or (force and run.pending_ppo_transitions):
+            count = threshold if len(run.pending_ppo_transitions) >= threshold else len(run.pending_ppo_transitions)
+            batch = run.pending_ppo_transitions[:count]
+            del run.pending_ppo_transitions[:count]
+            trainer.collect_rollout(batch, max_transitions=len(batch))
+            update = trainer.update()
+            run.ppo_updates = trainer.ppo_updates
+            run.transitions = trainer.main_agent_transitions
+            run.metrics["last_ppo_update"] = _json_value(update.to_dict())
+            for worker in getattr(run.vector, "workers", ()):
+                for agent in getattr(worker, "agents", ()) or ():
+                    sync = getattr(agent, "sync_from", None)
+                    if callable(sync):
+                        sync(run.ppo_module)
+
     def _execute(self, run: _TrainingRun) -> None:
         started = datetime.now(timezone.utc)
         try:
-            if run.config.runner is not None:
+            if run.config.mode in {"full_replay_sl", "inference_sl"} and run.config.runner is None:
+                source = REPLAYS_DIR if run.config.replay_source_path is None else Path(run.config.replay_source_path).expanduser()
+                candidates = [source] if source.is_file() else sorted(source.glob("*.json")) if source.is_dir() else []
+                paths = []
+                for candidate in candidates:
+                    try:
+                        with candidate.open("r", encoding="utf-8") as handle:
+                            payload = json.load(handle)
+                            states = payload.get("states", ()) if isinstance(payload, Mapping) else ()
+                            observations = payload.get("observations", ()) if isinstance(payload, Mapping) else ()
+                            if payload.get("replay_format") == "full" and isinstance(states, list) and isinstance(observations, list) and len(states) == len(observations) and len(states) >= 2:
+                                paths.append(candidate)
+                    except (OSError, json.JSONDecodeError, AttributeError):
+                        continue
+                if source.is_file() and not paths:
+                    raise TrainingError(f"replay is not a valid full replay: {source}")
+                if not paths:
+                    raise TrainingError(f"no full replay JSON files found at {source}")
+                run.logs.append({"event_type": "full_replay_training_started", "message": f"Loading {len(paths)} full replay files"})
+                result = train_from_full_replays(
+                    paths,
+                    str(Path(run.output_path or OUTPUTS_DIR) / run.handle.job_id),
+                    config=run.system_config,
+                    split_seed=run.handle.snapshot.split_seed,
+                    sl_epochs=run.config.sl_epochs,
+                    sl_batch_size=run.system_config.sl_training.batch_size,
+                    job_snapshot=run.handle.snapshot,
+                )
+                run.episodes_completed = len(result.episodes)
+                run.environment_steps = sum(int(episode.environment_steps) for episode in result.episodes)
+                run.transitions = run.environment_steps
+                run.normal_episodes = sum(episode.termination_status == "normal" for episode in result.episodes)
+                run.truncated_episodes = sum(episode.termination_status == "truncated" for episode in result.episodes)
+                run.artifact_path = str(result.phase2_artifact_path)
+                run.metrics.update({
+                    "phase": "phase2_supervised",
+                    "intent_history": _json_value(result.intent.history),
+                    "emotion_history": _json_value(result.emotion.history),
+                    "source_replays": len(paths),
+                })
+                run.logs.append({
+                    "event_type": "full_replay_training_finished",
+                    "message": f"Role and emotion models saved to {result.phase2_artifact_path}",
+                })
+            elif run.config.runner is not None:
                 result = run.config.runner(run.handle, run)
                 if isinstance(result, Mapping):
                     run.records.extend(_json_value(result.get("records", ())))
@@ -1136,22 +1257,56 @@ class TrainingService:
                         raw_logs = ({"message": raw_logs},)
                     run.logs.extend(raw_logs or ())
             else:
+                run.logs.append({"event_type": "training_started", "message": "Training started"})
                 target = run.config.target_transitions
                 episode_index = 0
                 while episode_index < run.config.episodes or (target is not None and run.transitions < target):
-                    records = run.vector.run_episodes(1, action_provider=run.config.action_provider)
+                    records = run.vector.run_episodes(
+                        1,
+                        action_provider=run.config.action_provider,
+                        start_episode_index=episode_index,
+                    )
                     if not records:
                         break
                     record = records[0]
                     run.records.append(_json_value(record.to_dict()))
                     run.episodes_completed += 1
                     run.environment_steps += int(record.environment_steps)
-                    run.transitions += len(record.actions)
+                    if run.ppo_trainer is None:
+                        run.transitions += len(record.actions)
+                    else:
+                        self._flush_ppo(run)
                     if record.truncated:
                         run.truncated_episodes += 1
                     elif record.terminated:
                         run.normal_episodes += 1
+                        terminal_result = record.terminal_result
+                        if isinstance(terminal_result, Mapping) and terminal_result.get("winning_team") is not None:
+                            run.normal_wins += 1
+                        run.win_rate = run.normal_wins / run.normal_episodes
+                    run.logs.append({
+                        "event_type": "episode_completed",
+                        "message": (
+                            f"Episode {run.episodes_completed} completed: "
+                            f"{record.termination_status}, "
+                            f"{record.environment_steps} environment steps"
+                        ),
+                    })
+                    if hasattr(run.vector, "full_replays"):
+                        replay_root = Path(run.config.replay_source_path or REPLAYS_DIR).expanduser()
+                        if replay_root.suffix.lower() == ".json":
+                            replay_root = replay_root.parent
+                        replay_root.mkdir(parents=True, exist_ok=True)
+                        for replay in run.vector.full_replays:
+                            replay_path = replay_root / f"replay-training-{run.handle.job_id}-{run.episodes_completed:06d}.json"
+                            _write_json(replay_path, replay)
+                        if run.vector.full_replays:
+                            run.logs.append({
+                                "event_type": "full_replay_saved",
+                                "message": f"Saved {len(run.vector.full_replays)} full replay file(s)",
+                            })
                     episode_index += 1
+                self._flush_ppo(run, force=True)
             if run.status == "running":
                 run.status = "finished"
             elif run.status == "cancelling":
@@ -1174,6 +1329,39 @@ class TrainingService:
                     run.vector.close()
                 except Exception as exc:
                     run.logger.error("training vector close failed", error=str(exc))
+            run.logs.append({
+                "event_type": "training_finished",
+                "message": (
+                    f"Training {run.status}: {run.episodes_completed} episodes, "
+                    f"{run.transitions} transitions"
+                ),
+            })
+            if run.ppo_trainer is not None and run.status in {"finished", "cancelled"}:
+                if run.phase2_artifact is not None:
+                    try:
+                        save_final_inference_artifact(
+                            run.artifact_path,
+                            run.ppo_trainer.module,
+                            intent=run.phase2_artifact.intent,
+                            emotion=run.phase2_artifact.emotion,
+                            role_fusion=run.phase2_artifact.role_fusion,
+                            preprocessor=run.phase2_artifact.preprocessor,
+                            job_snapshot=run.handle.snapshot,
+                            config_snapshot=run.system_config,
+                            trainer=run.ppo_trainer,
+                            training_metadata={"update_mode": run.config.ppo_update_mode},
+                            logger=run.logger,
+                        )
+                        run.logs.append({"event_type": "ppo_artifact_saved", "message": f"Saved final model to {run.artifact_path}"})
+                    except Exception as exc:
+                        run.logger.error("PPO final artifact save failed", error=str(exc))
+                        run.logs.append({"event_type": "ppo_artifact_save_failed", "message": str(exc)})
+                else:
+                    checkpoint = Path(run.output_path or OUTPUTS_DIR) / f"{run.handle.job_id}.ppo.pt"
+                    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+                    run.ppo_trainer.module.save(checkpoint)
+                    run.artifact_path = str(checkpoint)
+                    run.logs.append({"event_type": "ppo_checkpoint_saved", "message": f"Saved PPO checkpoint to {checkpoint}; a Phase-2 artifact is required for a playable .bangmodel"})
             progress = self._progress(run)
             report_metadata = build_run_metadata(
                 run_id=run.handle.job_id,

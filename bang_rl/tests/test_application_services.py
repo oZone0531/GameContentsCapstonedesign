@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import time
 
 import numpy as np
@@ -17,7 +18,7 @@ from bang_rl.app import (
     TrainingService,
 )
 from bang_rl.config import SystemConfig
-from bang_rl.exceptions import ResourceLimitError, TrainingError
+from bang_rl.exceptions import ResourceLimitError
 from bang_rl.runtime.seed import SeedManager
 
 
@@ -103,9 +104,78 @@ def test_training_runner_lifecycle_pause_resume_cancel_and_report(tmp_path: Path
     assert (tmp_path / "report.json").is_file()
 
 
-def test_default_training_rejects_unwired_pipeline_without_reporting_success() -> None:
-    with pytest.raises(TrainingError, match="declared collection/SL/PPO/artifact pipeline"):
-        TrainingService().start(TrainingConfig(config=SystemConfig(), episodes=1))
+def test_default_training_starts_without_an_injected_runner(tmp_path: Path) -> None:
+    config = SystemConfig.model_validate(
+        {
+            "env": {
+                "max_episode_steps": 100,
+                "warn_turn_threshold": 20,
+                "critical_turn_threshold": 50,
+            }
+        }
+    )
+    service = TrainingService()
+    handle = service.start(
+        TrainingConfig(
+            config=config,
+            episodes=1,
+            report_path=tmp_path / "report.json",
+            output_path=tmp_path / "outputs",
+            artifact_path=tmp_path / "artifacts",
+            resume_artifact_path=None,
+            replay_source_path=tmp_path / "replays",
+        )
+    )
+    report = service.wait(handle, timeout=10)
+    assert report.status == "finished"
+    assert report.progress.episodes_completed == 1
+    assert report.progress.environment_steps > 0
+    assert report.progress.normal_episodes == 1
+    assert report.progress.win_rate == 1.0
+    assert [item["event_type"] for item in report.progress.logs] == [
+        "training_started",
+        "episode_completed",
+        "full_replay_saved",
+        "training_finished",
+        "ppo_checkpoint_saved",
+    ]
+    assert (tmp_path / "report.json").is_file()
+    replay_files = sorted((tmp_path / "replays").glob("*.json"))
+    assert len(replay_files) == 1
+    replay = json.loads(replay_files[0].read_text(encoding="utf-8"))
+    assert replay["replay_format"] == "full"
+    assert len(replay["states"]) == len(replay["observations"]) == len(replay["internals"])
+
+
+def test_default_training_episode_count_accumulates_distinct_replays(tmp_path: Path) -> None:
+    config = SystemConfig.model_validate(
+        {
+            "env": {
+                "max_episode_steps": 100,
+                "warn_turn_threshold": 20,
+                "critical_turn_threshold": 50,
+            }
+        }
+    )
+    service = TrainingService()
+    handle = service.start(
+        TrainingConfig(
+            config=config,
+            episodes=2,
+            report_path=tmp_path / "report.json",
+            output_path=tmp_path / "outputs",
+            replay_source_path=tmp_path / "replays",
+            resume_artifact_path=None,
+        )
+    )
+    report = service.wait(handle, timeout=10)
+    assert report.status == "finished"
+    assert report.progress.episodes_completed == 2
+    assert report.progress.environment_steps > 0
+    replay_files = sorted((tmp_path / "replays").glob("*.json"))
+    assert len(replay_files) == 2
+    replay_ids = [json.loads(path.read_text(encoding="utf-8"))["episode_id"] for path in replay_files]
+    assert len(set(replay_ids)) == 2
 
 
 def test_training_resource_validation_and_fault_are_structured() -> None:
