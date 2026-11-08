@@ -6,6 +6,7 @@ Usage (from the repository root, next to the bang_rl folder):
     python collect_data.py --games 1000 --out <folder> --rule-table
     python collect_data.py --games 1000 --out <folder> --config config.example.yaml
     python collect_data.py --games 1000 --out <folder> --mode stochastic --seed 5000
+    python collect_data.py --games 1000 --out <folder> --belief hint:0.7
 
 By default the dummies run the emotion formula from emotion_formula.example.json,
 so every step carries the 9-entry emotion label
@@ -47,6 +48,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=0, help="base seed; game i uses seed + i (default 0)")
     parser.add_argument("--mode", default="deterministic", choices=ACTION_MODES, help="dummy action mode")
     parser.add_argument("--config", default=None, help="optional SystemConfig file (.yaml/.json)")
+    parser.add_argument(
+        "--belief",
+        default="rule",
+        help=(
+            "dummy role beliefs: 'rule' (default), 'hint:Q[:S]' (start from a hint that is right "
+            "with probability Q, strength S=0.5), 'learned:PATH' (main agent inference from a "
+            ".phase2model) or 'oracle:ALPHA' (exact roles, reference only)"
+        ),
+    )
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
         "--emotion-file",
@@ -81,8 +91,12 @@ def main(argv: list[str] | None = None) -> int:
             base_seed=args.seed,
             action_mode=args.mode,
             progress=progress,
+            belief=args.belief,
         )
     except FileExistsError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(summary, ensure_ascii=False, indent=2))

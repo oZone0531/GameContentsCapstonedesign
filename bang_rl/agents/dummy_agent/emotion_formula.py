@@ -81,6 +81,8 @@ class EmotionParams:
     eta_ally: float = 0.5          # grudge toward whoever shot my ally
     eta_avenge: float = 0.6        # liking toward whoever shot someone I hold a grudge against
     eta_enemy: float = 0.0         # liking toward whoever shot a (likely) enemy (0 = off)
+    rho_B: float = 0.0             # per-step rate at which R follows the belief target (0 = off)
+    g_B: float = 2.0               # gain from relative ally probability to the belief target
     traitor_sheriff_ally: float = 1.0  # how much the traitor treats the sheriff as "keep alive" (until the 1v1)
     # --- personality (sensitivity p, baseline b, recovery d) ---
     p_S: float = 1.0
@@ -102,6 +104,7 @@ class EmotionParams:
     kappa_A: float = 1.0
     kappa_F: float = 1.0
     kappa_R: float = 1.0
+    kappa_AR: float = 0.0          # aggression aimed at grudges: extra bang score A * grudge(j) (0 = off)
     lambda_E: float = 1.0          # overall scale of the emotion contribution (added to intent scores)
 
     @classmethod
@@ -282,6 +285,29 @@ class EmotionState:
         self.R = np.where(self.R_active, np.clip(self.R + p.p_R * dR, -1.0, 1.0), self.R)
         self.last_debug = {"G": float(G), "Bd": float(Bd), "D": D, "g": g}
 
+    # -- step 2b: relations follow beliefs ---------------------------------
+    def _follow_beliefs(self, a: np.ndarray, dt: int, alive: Sequence[bool]) -> None:
+        """Pull R toward liking for likely allies and grudge for likely enemies.
+
+        Events alone move R only for pairs that shot each other, so most
+        relations stay neutral. This term lets R also reflect what the dummy
+        believes: the target for seat j is ``g_B * (a_j - mean a)`` over the
+        other living seats (more ally-like than average -> liking), clipped to
+        [-1, 1], approached at rate ``rho_B`` per environment step.
+        """
+
+        p = self.p
+        if p.rho_B <= 0.0 or dt <= 0:
+            return
+        active = self.R_active & np.asarray(alive, dtype=bool)
+        if active.sum() < 1:
+            return
+        centered = np.zeros(PLAYER_COUNT)
+        centered[active] = a[active] - a[active].mean()
+        target = np.clip(p.g_B * centered, -1.0, 1.0)
+        rate = min(1.0, p.rho_B * dt)
+        self.R = np.where(active, np.clip(self.R + rate * (target - self.R), -1.0, 1.0), self.R)
+
     # -- step 3: noise -----------------------------------------------------
     def _noise(self) -> None:
         p = self.p
@@ -317,6 +343,7 @@ class EmotionState:
         a = ally_prob(beliefs, self.i, self_role, alive, self.p)
         self._decay(dt)
         self._apply_events(new_events, a, healths, alive, hp_max)
+        self._follow_beliefs(a, dt, alive)
         # freeze relations to dead players (masked as 0.5 in the label)
         dead = ~np.asarray(alive, dtype=bool)
         self.R_active &= ~dead
@@ -350,6 +377,10 @@ class EmotionState:
             if j == self.i:
                 continue
             u[1 + j] = p.kappa_S * self.S + p.kappa_A * self.A - p.kappa_R * self.R[j]
+            # Anger is directed (blame on a specific other): aggression adds
+            # extra weight only toward seats this dummy holds a grudge against,
+            # while confidence stays a target-free boldness term.
+            u[1 + j] += p.kappa_AR * self.A * max(0.0, -float(self.R[j]))
         return p.lambda_E * u
 
 

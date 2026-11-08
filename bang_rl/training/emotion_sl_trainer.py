@@ -23,6 +23,7 @@ from torch import Tensor
 from bang_rl.agents.main_agent import EmotionInferenceModule
 from bang_rl.config import EmotionConfig
 from bang_rl.config.snapshot import JobSnapshot
+from bang_rl.data.emotion_slots import emotion_value_mask
 from bang_rl.data.tensor_cache import (
     CACHE_FORMAT_VERSION,
     CACHE_SCHEMA_VERSION,
@@ -51,6 +52,10 @@ class EmotionBatch:
     emotion_label_mask: Tensor
     viewer_indices: Tensor
     row_indices: tuple[int, ...]
+    # Per-entry mask (batch, 4, emotion_count): False for entries fixed at a
+    # constant (relation to the owner itself or to a dead seat). None when the
+    # emotion names are unknown; then every entry of a valid label counts.
+    emotion_value_mask: Tensor | None = None
 
     @property
     def inputs(self) -> Mapping[str, Tensor]:
@@ -107,6 +112,7 @@ def build_emotion_batch(
     indices: Sequence[int] | np.ndarray,
     *,
     device: torch.device | str = "cpu",
+    emotion_names: Sequence[str] | None = None,
 ) -> EmotionBatch:
     """Build a deterministic public-input/continuous-label batch.
 
@@ -134,10 +140,20 @@ def build_emotion_batch(
         raise DataError("emotion cache must contain at least one emotion dimension")
     selected_values = np.zeros((len(row_indices), 4, emotion_count), dtype=np.float32)
     selected_masks = np.zeros((len(row_indices), 4), dtype=np.bool_)
+    selected_owners = np.zeros((len(row_indices), 4), dtype=np.int64)
     for row, viewer in enumerate(viewers):
         targets = [player for player in range(5) if player != int(viewer)]
         selected_values[row] = values[row, targets]
         selected_masks[row] = masks[row, targets]
+        selected_owners[row] = targets
+    value_mask = None
+    if emotion_names is not None:
+        if len(emotion_names) != emotion_count:
+            raise DataError("emotion_names length does not match the cached emotion dimension")
+        # Public alive flags of the step (player_state_matrix column 1).
+        alive = np.asarray(tensors["player_state_matrix"], dtype=np.float32)[:, :, 1] > 0.5
+        owner_alive = np.repeat(alive[:, None, :], 4, axis=1)
+        value_mask = emotion_value_mask(emotion_names, selected_owners, owner_alive)
     if not np.all(np.isfinite(selected_values)) or np.any((selected_values < 0.0) | (selected_values > 1.0)):
         raise DataError("emotion targets must be finite values in [0, 1]")
 
@@ -157,6 +173,9 @@ def build_emotion_batch(
         emotion_label_mask=torch.as_tensor(selected_masks, dtype=torch.bool, device=device),
         viewer_indices=torch.as_tensor(viewers, dtype=torch.long, device=device),
         row_indices=row_indices,
+        emotion_value_mask=(
+            None if value_mask is None else torch.as_tensor(value_mask, dtype=torch.bool, device=device)
+        ),
     )
 
 
@@ -460,8 +479,17 @@ class EmotionInferenceSLTrainer:
             raise TrainingError("emotion batch contains no valid emotion labels")
         flat_predictions = predictions[valid]
         flat_targets = batch.emotion_labels[valid]
-        loss = self.model.emotion_loss(flat_predictions, flat_targets)
-        return loss, int(flat_predictions.shape[0]), int(flat_predictions.numel())
+        if batch.emotion_value_mask is None:
+            loss = self.model.emotion_loss(flat_predictions, flat_targets)
+            return loss, int(flat_predictions.shape[0]), int(flat_predictions.numel())
+        # Mean squared error over informative entries only: relations to the
+        # owner itself and to dead seats are constant 0.5 and are skipped.
+        entries = batch.emotion_value_mask[valid]
+        count = int(entries.sum().item())
+        if count == 0:
+            raise TrainingError("emotion batch contains no informative emotion entries")
+        loss = (torch.square(flat_predictions - flat_targets) * entries).sum() / count
+        return loss, int(flat_predictions.shape[0]), count
 
     def _write_metric(self, record: Mapping[str, Any]) -> None:
         safe = _json_safe(dict(record))
@@ -500,7 +528,9 @@ class EmotionInferenceSLTrainer:
         targets = values = 0
         for start in range(0, len(order), self.config.batch_size):
             indices = order[start : start + self.config.batch_size]
-            batch = build_emotion_batch(self.train_cache, indices, device=self.device)
+            batch = build_emotion_batch(
+                self.train_cache, indices, device=self.device, emotion_names=self.model.emotion_names
+            )
             self.optimizer.zero_grad(set_to_none=True)
             loss, batch_targets, batch_values = self._loss_and_metrics(batch)
             loss.backward()
@@ -543,7 +573,9 @@ class EmotionInferenceSLTrainer:
         with torch.no_grad():
             for start in range(0, len(loader), self.config.batch_size):
                 indices = np.arange(start, min(start + self.config.batch_size, len(loader)))
-                batch = build_emotion_batch(loader, indices, device=self.device)
+                batch = build_emotion_batch(
+                    loader, indices, device=self.device, emotion_names=self.model.emotion_names
+                )
                 loss, batch_targets, batch_values = self._loss_and_metrics(batch)
                 losses.append(float(loss.item()))
                 targets += batch_targets

@@ -13,6 +13,7 @@ from .emotion_formula import FormulaEmotionModule, formula_block
 
 from .emotion_module import EmotionModule
 from .intent_policy import ActionSelection, ActionSelector, IntentModule, IntentPolicyConfig
+from .belief_source import BeliefSource
 from .role_belief import DEPUTY_ROLE, SHERIFF_ROLE, RoleBeliefEstimator
 
 
@@ -149,10 +150,36 @@ class DummyAgent(BaseAgent):
         self._action_mode = action_mode
         self._rng = rng if rng is not None else np.random.default_rng(self.action_seed())
         self._last_selection: ActionSelection | None = None
+        # Optional replacement for the rule-based beliefs (see belief_source.py).
+        # None keeps the public rule-based estimator, the default everywhere.
+        self.belief_source: BeliefSource | None = None
+        self._belief_observation: Any | None = None
 
     @property
     def role_beliefs(self) -> np.ndarray:
+        """Beliefs every consumer (intent, emotion, faction strength) acts on.
+
+        The rule-based estimator's matrix, passed through the attached belief
+        source when there is one.
+        """
+
+        rule = self.role_estimator.beliefs
+        if self.belief_source is None:
+            return rule
+        return np.asarray(self.belief_source.beliefs(rule, self._belief_observation), dtype=np.float32)
+
+    @property
+    def rule_beliefs(self) -> np.ndarray:
+        """The public rule-based estimate, before any belief source."""
+
         return self.role_estimator.beliefs
+
+    def set_belief_source(self, source: BeliefSource | None) -> None:
+        """Attach (or with None, detach) a belief source before an episode starts."""
+
+        if source is not None and not isinstance(source, BeliefSource):
+            raise TypeError("belief source must implement BeliefSource")
+        self.belief_source = source
 
     @property
     def uses_emotion_formula(self) -> bool:
@@ -178,6 +205,7 @@ class DummyAgent(BaseAgent):
             return
         self._public_events(observation)  # rejects privileged fields
         self.role_estimator.update(observation)
+        self._belief_observation = observation
         self.emotion_module.observe(observation, self.role_beliefs)
 
     @property
@@ -254,6 +282,9 @@ class DummyAgent(BaseAgent):
             context_observation = context.observation
         if context_observation is not None:
             self.role_estimator.update(context_observation)
+        self._belief_observation = context_observation
+        if self.belief_source is not None:
+            self.belief_source.on_episode_start(self.role_estimator.player_idx, context_observation)
         if self.uses_emotion_formula:
             seed = self._emotion_seed(self.episode_seed) if self.episode_seed is not None else None
             self.emotion_module.on_episode_start(context, seed=seed)
@@ -412,6 +443,7 @@ class DummyAgent(BaseAgent):
         environment_step = self._environment_step(observation)
         board_healths, board_alive = self._board_state(observation)
         self.role_estimator.update(observation)
+        self._belief_observation = observation
         if self.uses_emotion_formula:
             # Formula path: the same boundary may already have been observed by
             # observe_public_boundary; processed events are skipped and decay /
