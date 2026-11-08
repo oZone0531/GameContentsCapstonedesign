@@ -1,5 +1,7 @@
 """Evaluation protocols and metrics."""
 
+from .baseline import BASELINE_NAMES, baseline_factory, run_seat_evaluation, summarize_protocol_report
+
 from .protocol import (
     CONFIDENCE_LEVEL,
     ConfidenceInterval,
@@ -18,6 +20,10 @@ from .protocol import (
 )
 
 __all__ = [
+    "BASELINE_NAMES",
+    "baseline_factory",
+    "run_seat_evaluation",
+    "summarize_protocol_report",
     "CONFIDENCE_LEVEL",
     "ConfidenceInterval",
     "EvaluationReport",

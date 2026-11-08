@@ -42,6 +42,11 @@ from typing import Any
 import numpy as np
 
 from bang_rl.agents import DummyAgent
+from bang_rl.agents.dummy_agent.belief_source import (
+    describe_belief_spec,
+    make_belief_source,
+    parse_belief_spec,
+)
 from bang_rl.agents.dummy_agent.emotion_formula import LABEL_NAMES
 from bang_rl.config import EmotionConfig, SystemConfig
 from bang_rl.data.collector import CanonicalEpisode, EpisodeCollector
@@ -62,6 +67,7 @@ __all__ = [
     "COLLECTION_FORMAT_VERSION",
     "DEFAULT_EMOTION_FILE",
     "FORMULA_LABEL_SCHEMA",
+    "belief_label",
     "build_game",
     "collect_games",
     "drive_game",
@@ -131,6 +137,25 @@ def emotion_mode(agent: Any) -> str:
     return "formula" if isinstance(agent, DummyAgent) and agent.uses_emotion_formula else "rule_table"
 
 
+def belief_label(agents: Any) -> str:
+    """Short description of the dummies' belief source, e.g. 'rule' or 'oracle:0.3'."""
+
+    labels = set()
+    for agent in agents:
+        source = getattr(agent, "belief_source", None)
+        if source is None:
+            labels.add("rule")
+        else:
+            info = dict(source.describe())
+            name = info.pop("source")
+            params = ":".join(
+                f"{float(value):g}" if isinstance(value, (int, float)) else str(value)
+                for value in info.values()
+            )
+            labels.add(f"{name}:{params}" if params else name)
+    return ",".join(sorted(labels))
+
+
 def game_seed(base_seed: int, index: int) -> int:
     return int(base_seed) + int(index)
 
@@ -176,8 +201,14 @@ def build_game(
     seed: int,
     action_mode: str = "deterministic",
     episode_id: str | None = None,
+    belief: str | None = None,
 ) -> tuple[Any, tuple[DummyAgent, ...], str]:
     """Create the environment and five dummies for one game, reproducibly.
+
+    ``belief`` selects where the dummies' role beliefs come from (see
+    ``bang_rl.agents.dummy_agent.belief_source``): ``"rule"`` / None for the
+    public rule-based estimator, ``"oracle:ALPHA"`` for the warm-start mix with
+    the true roles (data generation only).
 
     Mirrors ``GameService.create_session`` in ``dummy_five`` mode (global
     seeding, agent construction, environment, per-seat ``on_episode_start``).
@@ -207,6 +238,10 @@ def build_game(
     )
     env_seed = seeds.environment_seed(resolved_id)
     env = BangEnvironment(episode_id=resolved_id, seed=env_seed, config=config.env)
+    roles = tuple(int(role) for role in env.state.roles)  # privileged: warm-start sources only
+    for index, agent in enumerate(agents):
+        hint_seed = seeds.agent_seed(f"player_{index}:belief", episode_id=resolved_id)
+        agent.set_belief_source(make_belief_source(belief, roles, seed=hint_seed))
     for index, agent in enumerate(agents):
         agent.on_episode_start(
             {"episode_id": resolved_id, "seed": env_seed, "observation": env.observe(index)}
@@ -230,7 +265,11 @@ def drive_game(
         env,
         episode_id=episode_id,
         seed=int(seed),
-        metadata={"game_seed": int(seed), "emotion_mode": ",".join(modes)},
+        metadata={
+            "game_seed": int(seed),
+            "emotion_mode": ",".join(modes),
+            "belief_source": belief_label(agents),
+        },
     )
     guard = 0
     while not (env.state.terminated or env.state.truncated):
@@ -277,11 +316,12 @@ def play_and_collect_game(
     seed: int,
     action_mode: str = "deterministic",
     episode_id: str | None = None,
+    belief: str | None = None,
 ) -> tuple[CanonicalEpisode, Any, tuple[Any, ...]]:
     """Play one all-dummy game and record it. Returns (episode, env, agents)."""
 
     env, agents, resolved_id = build_game(
-        config, seed=seed, action_mode=action_mode, episode_id=episode_id
+        config, seed=seed, action_mode=action_mode, episode_id=episode_id, belief=belief
     )
     episode = drive_game(env, agents, config, collector, episode_id=resolved_id, seed=seed)
     return episode, env, agents
@@ -304,6 +344,7 @@ def collect_games(
     progress: Callable[[int, int], None] | None = None,
     keep_episodes: bool = False,
     shard_games: int = 20,
+    belief: str | None = None,
 ) -> dict[str, Any]:
     """Play ``games`` all-dummy games and write canonical Parquet shards.
 
@@ -322,6 +363,7 @@ def collect_games(
         raise ValueError(f"action_mode must be one of {ACTION_MODES}")
     if int(shard_games) < 1:
         raise ValueError("shard_games must be at least 1")
+    belief_kind, belief_params = parse_belief_spec(belief)  # validate before playing
     out = Path(output_dir)
     _check_output_dir(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -332,6 +374,7 @@ def collect_games(
         "collection_base_seed": int(base_seed),
         "action_mode": action_mode,
         "reward_config_version": config.reward_config.version,
+        "belief_source": describe_belief_spec(belief),
     }
     writer = ParquetCanonicalShardWriter(out, config, include_private_roles=True)
     wins: Counter = Counter()
@@ -351,7 +394,8 @@ def collect_games(
                 include_private_roles=True, reward_calculator=reward, metadata=metadata
             )
             episode, env, agents = play_and_collect_game(
-                config, collector, seed=game_seed(base_seed, index), action_mode=action_mode
+                config, collector, seed=game_seed(base_seed, index), action_mode=action_mode,
+                belief=belief,
             )
             writer.write_episode(episode)
             if (index + 1) % int(shard_games) == 0:
@@ -378,6 +422,7 @@ def collect_games(
         "base_seed": int(base_seed),
         "seeds": [game_seed(base_seed, 0), game_seed(base_seed, games - 1)],
         "action_mode": action_mode,
+        "belief_source": metadata["belief_source"],
         "emotion_mode": sorted(modes),
         "emotion_label_schema": sorted(label_schemas),
         "emotion_label_dimension": label_dim,

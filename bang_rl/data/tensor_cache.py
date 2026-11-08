@@ -39,6 +39,7 @@ from .splitter import EpisodeSplitResult, SplitPartition
 
 CACHE_FORMAT_VERSION = "1.0"
 CACHE_SCHEMA_VERSION = "1.0"
+EVENT_SEQUENCE_SOURCE = "episode-events-by-pre-event-ids"
 DEFAULT_CACHE_PREFIX = "cache"
 
 MODEL_INPUT_KEYS = (
@@ -212,6 +213,45 @@ def _normal_episodes(episodes: Sequence[CanonicalEpisode]) -> tuple[CanonicalEpi
 
 def _step_event_ids(step: CanonicalStep) -> tuple[int, ...]:
     return tuple(int(item) for item in step.event_ids)
+
+
+def _event_mapping(event: Any) -> Mapping[str, Any]:
+    if isinstance(event, Mapping):
+        return event
+    if hasattr(event, "to_public_dict"):
+        return event.to_public_dict()
+    if hasattr(event, "to_dict"):
+        return event.to_dict()
+    raise DataError("canonical episode events must be mappings")
+
+
+def _replay_observation(step: CanonicalStep, events_by_id: Mapping[int, Mapping[str, Any]]) -> Any:
+    """The step's observation with its public event sequence restored.
+
+    The collector stores each event once in ``CanonicalEpisode.events`` and
+    strips the event sequence from every stored observation (keeping it per
+    step would grow datasets quadratically). The main agent's inference reads
+    nothing but that sequence, so it is rebuilt here from ``pre_event_ids``,
+    the events the actor had seen before acting. This reproduces the live
+    observation exactly; private events are never added.
+    """
+
+    observation = step.pre_observation
+    if not isinstance(observation, Mapping):
+        return observation
+    if any(key in observation for key in ("event_sequence", "event_history")):
+        return observation  # already carries its events (e.g. hand-built steps)
+    missing = [int(item) for item in step.pre_event_ids if int(item) not in events_by_id]
+    if missing:
+        raise DataError(f"step {step.environment_step} refers to unknown events {missing[:5]}")
+    sequence = [
+        events_by_id[int(item)]
+        for item in sorted(int(item) for item in step.pre_event_ids)
+        if events_by_id[int(item)].get("public", True) is True
+    ]
+    restored = dict(observation)
+    restored["event_sequence"] = sequence
+    return restored
 
 
 def _emotion_vector(label: Any) -> np.ndarray | None:
@@ -470,6 +510,9 @@ class NPZTensorCacheWriter:
             "preprocessor_config_hash": _hash(self.preprocessor.config.to_dict()),
             "preprocessing_version": self.preprocessing_version,
             "preprocessor_config": self.preprocessor.config.to_dict(),
+            # Caches written before event replay have all-zero event_history;
+            # this marker changes the hash so they are rebuilt, never reused.
+            "event_sequence_source": EVENT_SEQUENCE_SOURCE,
             "observation_schema_version": obs_version,
             "emotion_schema_version": schema_version,
             "schema_hash": _hash({"observation_schema_version": obs_version, "emotion_schema_version": schema_version, "preprocessor_config_hash": _hash(self.preprocessor.config.to_dict())}),
@@ -515,11 +558,15 @@ class NPZTensorCacheWriter:
         for episode_index, episode in enumerate(sorted(records, key=lambda item: str(item.episode_id))):
             if str(episode.termination_status) != "normal":
                 continue
+            events_by_id: dict[int, Mapping[str, Any]] = {}
+            for event in episode.events or ():
+                mapping = _event_mapping(event)
+                events_by_id[int(mapping["event_id"])] = mapping
             for step in sorted(episode.steps, key=lambda item: int(item.environment_step)):
                 if step.pre_observation is None:
                     raise DataError(f"step in episode {episode.episode_id!r} has no pre_observation")
                 try:
-                    processed = self.preprocessor.preprocess(step.pre_observation)
+                    processed = self.preprocessor.preprocess(_replay_observation(step, events_by_id))
                 except Exception as exc:
                     raise DataError(f"cannot preprocess episode {episode.episode_id!r} step {step.environment_step}") from exc
                 if not hasattr(processed, "state_vector"):

@@ -21,6 +21,7 @@ from bang_rl.agents.dummy_agent import DummyAgent
 from bang_rl.agents.random_agent import RandomAgent
 from bang_rl.config import EvaluationConfig, EnvConfig, PresetConfig, SystemConfig
 from bang_rl.config.snapshot import JobSnapshot
+from bang_rl.data.emotion_slots import emotion_value_mask
 from bang_rl.env import BangEnvironment
 from bang_rl.env.types import Role, TerminationStatus
 from bang_rl.exceptions import ArtifactCompatibilityError
@@ -35,6 +36,66 @@ PRIMARY_GAMES_PER_SEAT = 100
 PRIMARY_SEATS = (0, 1, 2, 3, 4)
 PRIMARY_ACTION_MODE = "deterministic"
 PRIMARY_SEED_FORMULA = "base_seed + evaluation_index"
+
+# Outlaw A and Outlaw B are the same role in play, so role accuracy is scored
+# over four semantic roles. Canonical index -> semantic index.
+SEMANTIC_ROLE_NAMES = ("sheriff", "deputy", "outlaw", "traitor")
+SEMANTIC_ROLE_OF = (0, 1, 2, 2, 3)
+
+
+def semantic_role_prediction(distribution: Any) -> int:
+    """Predicted semantic role (0..3) from a 5-way or 4-way role distribution.
+
+    A 5-way distribution (canonical roles) has its two outlaw columns summed
+    before the argmax, so splitting mass between Outlaw A and B is not
+    penalised. A 4-way distribution is already semantic.
+    """
+
+    values = np.asarray(distribution, dtype=np.float64).reshape(-1)
+    if values.size == 5:
+        values = np.array([values[0], values[1], values[2] + values[3], values[4]])
+    elif values.size != 4:
+        raise ValueError("role distribution must have 4 or 5 entries")
+    return int(np.argmax(values))
+
+
+def opponent_emotion_target(agent: Any) -> tuple[np.ndarray, tuple[str, ...]] | None:
+    """An opponent's current emotion in the label layout the main agent learns.
+
+    Formula dummies report their 9-entry label (global emotions + relation per
+    seat); rule-table dummies report their value vector. Returns None for
+    agents without emotions.
+    """
+
+    module = getattr(agent, "emotion_module", None)
+    if module is None:
+        return None
+    if getattr(agent, "uses_emotion_formula", False):
+        from bang_rl.agents.dummy_agent.emotion_formula import LABEL_NAMES
+
+        return np.asarray(module.label(), dtype=np.float64), tuple(LABEL_NAMES)
+    values = getattr(agent, "emotion_state", None)
+    if values is None:
+        return None
+    names = tuple(getattr(module, "emotion_names", ()) or ())
+    return np.asarray(values, dtype=np.float64).reshape(-1), names
+
+
+def observe_boundaries(agents: Mapping[int, Any], env: Any, actor: int) -> None:
+    """Advance every living non-acting formula dummy at this step boundary.
+
+    Same order as ``GameService.step``: without it a formula dummy's emotion
+    only advances on its own turns, so evaluation games would differ from the
+    games the dummies were tuned and collected on.
+    """
+
+    alive = getattr(env.state, "alive", None)
+    for index, agent in agents.items():
+        if index == actor or not getattr(agent, "uses_emotion_formula", False):
+            continue
+        if alive is not None and not bool(alive[index]):
+            continue
+        agent.observe_public_boundary(env.observe(index))
 REPORT_FORMAT_VERSION = "1.0"
 CONFIDENCE_LEVEL = 0.95
 _WILSON_Z = 1.959963984540054
@@ -590,6 +651,7 @@ class PrimaryEvaluationProtocol:
                 selected = int(selected_attribute)
             else:
                 selected = int(str(selection).removeprefix("player_"))
+            observe_boundaries(opponents, env, selected)
             observation = env.observe(selected)
             mask = np.asarray(observation["action_mask"], dtype=np.uint8)
             if selected == seat:
@@ -609,23 +671,38 @@ class PrimaryEvaluationProtocol:
                 actual_roles = env.state.roles  # metrics-only privileged read
                 visibility = np.asarray(observation["role_visibility"]).reshape(-1)
                 for stream, target in enumerate(target_slots):
-                    predicted = int(np.argmax(fused_intent[stream]))
-                    actual = int(actual_roles[target])
+                    predicted = semantic_role_prediction(fused_intent[stream])
+                    actual = SEMANTIC_ROLE_OF[int(actual_roles[target])]
                     role_total += 1
                     role_correct += int(predicted == actual)
                     is_hidden = int(visibility[target]) == 0
                     if is_hidden:
                         hidden_total += 1
                         hidden_correct += int(predicted == actual)
+                alive_state = getattr(env.state, "alive", None)
+                alive_now = (
+                    np.ones(5, dtype=bool) if alive_state is None else np.asarray(alive_state, dtype=bool)
+                )
                 for stream, target in enumerate(target_slots):
-                    target_emotion = getattr(opponents[target], "emotion_state", None)
-                    if target_emotion is None:
+                    if not alive_now[target]:
+                        continue  # dead players carry no emotion label
+                    target_entry = opponent_emotion_target(opponents[target])
+                    if target_entry is None:
                         continue
-                    target_values = np.asarray(target_emotion, dtype=np.float64).reshape(-1)
+                    target_values, target_names = target_entry
                     predicted_values = np.asarray(estimated_emotion[stream], dtype=np.float64).reshape(-1)
-                    if target_values.shape == predicted_values.shape:
-                        emotion_squared_error += float(np.square(predicted_values - target_values).sum())
-                        emotion_dimensions += int(predicted_values.size)
+                    if target_values.shape != predicted_values.shape:
+                        continue
+                    # Skip entries fixed at a constant (relation to the owner
+                    # itself or to a dead seat), as in emotion training.
+                    entries = (
+                        emotion_value_mask(target_names, np.array(target), alive_now)
+                        if len(target_names) == target_values.size
+                        else np.ones(target_values.size, dtype=bool)
+                    )
+                    error = np.square(predicted_values - target_values)[entries]
+                    emotion_squared_error += float(error.sum())
+                    emotion_dimensions += int(entries.sum())
             else:
                 action = opponents[selected].act(observation, mask)
             if mask[action] != 1:
