@@ -231,6 +231,17 @@ class TrainingConfig:
     output_path: str | Path | None = OUTPUTS_DIR
     artifact_path: str | Path | None = ARTIFACTS_DIR
     resume_artifact_path: str | Path | None = ARTIFACTS_DIR
+    # Module training is bounded either by epoch count (default) or by time.
+    # ``train_by_time=True`` ignores the epoch count and trains until
+    # ``max_training_seconds`` elapses (None = unlimited, until the user stops),
+    # then saves. Stop is honoured mid-epoch in both modes.
+    train_by_time: bool = False
+    max_training_seconds: float | None = None
+    # Store one graph point per this many training batches (1 = every batch).
+    graph_point_interval: int = 1
+    # Continue module training from saved .phase2model files (weights only).
+    resume_intent_artifact_path: str | Path | None = None
+    resume_emotion_artifact_path: str | Path | None = None
 
 
 @dataclass(frozen=True, slots=True)

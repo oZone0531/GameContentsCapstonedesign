@@ -145,6 +145,11 @@ class TrainingSetup:
     output_path: str | Path | None = OUTPUTS_DIR
     artifact_path: str | Path | None = ARTIFACTS_DIR
     resume_artifact_path: str | Path | None = ARTIFACTS_DIR
+    train_by_time: bool = False
+    max_training_seconds: float | None = None
+    graph_point_interval: int = 1
+    resume_intent_artifact_path: str | Path | None = None
+    resume_emotion_artifact_path: str | Path | None = None
 
     def to_request(self) -> TrainingConfig:
         from bang_rl.app import TrainingConfig as ConcreteTrainingConfig
@@ -160,6 +165,11 @@ class TrainingSetup:
             output_path=self.output_path,
             artifact_path=self.artifact_path,
             resume_artifact_path=self.resume_artifact_path,
+            train_by_time=self.train_by_time,
+            max_training_seconds=self.max_training_seconds,
+            graph_point_interval=self.graph_point_interval,
+            resume_intent_artifact_path=self.resume_intent_artifact_path,
+            resume_emotion_artifact_path=self.resume_emotion_artifact_path,
         )
 
 

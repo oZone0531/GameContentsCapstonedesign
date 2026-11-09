@@ -6,6 +6,7 @@ is intentionally a named stub until its reward/rollout contract is finalized.
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -24,6 +25,11 @@ from bang_rl.paths import PROJECT_ROOT
 from bang_rl.training.emotion_sl_trainer import EmotionInferenceSLTrainer, EmotionSLConfig
 from bang_rl.training.sl_trainer import IntentInferenceSLTrainer, IntentSLConfig, ROLE_TARGET_NAMES
 from bang_rl.agents.main_agent.intent_inference import IntentInferenceModule
+from bang_rl.training.module_artifacts import (
+    artifact_total_epochs,
+    load_emotion_for_resume,
+    load_intent_for_resume,
+)
 
 TRAINING_MODE_DATA_COLLECTION = "data_collection"
 TRAINING_MODE_MODULE_TRAINING = "module_training"
@@ -230,6 +236,68 @@ def _publish_module_stage(run: Any, stage: str, message: str, **fields: Any) -> 
     )
 
 
+class _TrainingStopController:
+    """Cooperative stop signal for module training, polled once per batch.
+
+    ``should_stop()`` is True when the user pressed Stop (job status
+    ``cancelling``/``cancelled``) or when the optional time budget has elapsed.
+    While the job is paused it blocks until resumed (or cancelled) and pushes
+    the deadline back by the paused time, so Pause never counts against the
+    budget and never ends training.
+    """
+
+    _CANCEL_STATES = frozenset({"cancelling", "cancelled"})
+
+    def __init__(self, run: Any, *, budget_seconds: float | None = None) -> None:
+        self._run = run
+        self._deadline = None if budget_seconds is None else time.monotonic() + float(budget_seconds)
+
+    def _status(self) -> str:
+        lock = getattr(self._run, "lock", None)
+        if lock is None:
+            return str(getattr(self._run, "status", "running"))
+        with lock:
+            return str(getattr(self._run, "status", "running"))
+
+    def should_stop(self) -> bool:
+        paused_at: float | None = None
+        while True:
+            status = self._status()
+            if status in self._CANCEL_STATES:
+                return True
+            if status != "paused":
+                break
+            if paused_at is None:
+                paused_at = time.monotonic()
+            time.sleep(0.1)
+        if paused_at is not None and self._deadline is not None:
+            self._deadline += time.monotonic() - paused_at
+        return self._deadline is not None and time.monotonic() >= self._deadline
+
+
+def _keep_graph_point(run: Any, key: str) -> bool:
+    """Decide whether this batch becomes a graph point.
+
+    Every batch is counted, but only every ``graph_point_interval``-th one (the
+    first included) is stored, so the live metrics and the plot stay small no
+    matter how many batches a long run trains. Without a configured interval
+    (e.g. direct calls in tests) every batch is kept.
+    """
+
+    config = getattr(run, "config", None)
+    try:
+        interval = max(1, int(getattr(config, "graph_point_interval", 1)))
+    except (TypeError, ValueError):
+        interval = 1
+    counts = getattr(run, "_graph_batch_counts", None)
+    if counts is None:
+        counts = {}
+        setattr(run, "_graph_batch_counts", counts)
+    index = counts.get(key, 0)
+    counts[key] = index + 1
+    return index % interval == 0
+
+
 def _publish_module_metric(run: Any, record: Mapping[str, Any]) -> None:
     """Keep lightweight batch accuracy points available to the GUI."""
 
@@ -255,6 +323,8 @@ def _publish_module_metric(run: Any, record: Mapping[str, Any]) -> None:
     phase = str(record.get("phase", ""))
     with run.lock:
         if "intent" in phase and isinstance(record.get("accuracy"), (int, float)):
+            if not _keep_graph_point(run, "intent"):
+                return
             run.metrics.setdefault("intent_accuracy_points", []).append(
                 float(record["accuracy"])
             )
@@ -265,6 +335,8 @@ def _publish_module_metric(run: Any, record: Mapping[str, Any]) -> None:
             if isinstance(record.get("role_names"), (list, tuple)):
                 run.metrics["intent_role_names"] = list(record["role_names"])
         elif "emotion" in phase and isinstance(record.get("accuracy"), (int, float)):
+            if not _keep_graph_point(run, "emotion"):
+                return
             run.metrics.setdefault("emotion_accuracy_points", []).append(float(record["accuracy"]))
             if isinstance(record.get("accuracy_by_dimension"), (list, tuple)):
                 run.metrics.setdefault("emotion_accuracy_by_dimension_points", []).append(
@@ -358,32 +430,114 @@ def run_module_training(handle: Any, run: Any) -> Mapping[str, Any]:
     }
     sl_epochs = int(config.sl_training.epochs)
     sl_batch = int(config.sl_training.batch_size)
+
+    # Two exclusive ways to bound training:
+    #   * epoch mode (default): train exactly ``sl_epochs`` epochs.
+    #   * time mode (``train_by_time``): ignore the epoch count and keep
+    #     training until the time budget elapses (``max_training_seconds``;
+    #     None = unlimited, i.e. until the user presses Stop).
+    # In both modes Stop is honoured, even in the middle of an epoch.
+    train_by_time = bool(getattr(run.config, "train_by_time", False))
+    budget = getattr(run.config, "max_training_seconds", None) if train_by_time else None
+    try:
+        budget = float(budget) if budget is not None else None
+    except (TypeError, ValueError):
+        budget = None
+    if budget is not None and budget <= 0:
+        budget = None
+    controller = _TrainingStopController(run, budget_seconds=budget)
+    if train_by_time:
+        _publish_module_stage(
+            run,
+            "training",
+            "Training by time: "
+            + (f"{budget / 60.0:g} min" if budget is not None else "unlimited (press Stop to finish)"),
+            train_by_time=True,
+        )
+    else:
+        _publish_module_stage(run, "training", f"Training for {sl_epochs} epoch(s)", train_by_time=False)
+
+    # Optional continuation from previously saved modules (weights only; the
+    # optimizer starts fresh because .phase2model files do not store it).
+    resume_intent = getattr(run.config, "resume_intent_artifact_path", None) or None
+    resume_emotion = getattr(run.config, "resume_emotion_artifact_path", None) or None
+    intent_model = IntentInferenceModule(role_count=4, seed=_training_seed(run))
+    intent_prior = 0
+    if resume_intent is not None:
+        intent_model, intent_meta = load_intent_for_resume(resume_intent)
+        intent_prior = artifact_total_epochs(intent_meta)
+        _publish_module_stage(
+            run, "resume", f"Continuing intent module from {Path(resume_intent).name}",
+            resume_intent_artifact_path=str(resume_intent),
+        )
+    emotion_kwargs: dict[str, Any] = {"emotion_config": formula_label_emotion_config()}
+    emotion_prior = 0
+    if resume_emotion is not None:
+        emotion_model, emotion_meta = load_emotion_for_resume(resume_emotion)
+        emotion_kwargs = {"model": emotion_model}
+        emotion_prior = artifact_total_epochs(emotion_meta)
+        _publish_module_stage(
+            run, "resume", f"Continuing emotion module from {Path(resume_emotion).name}",
+            resume_emotion_artifact_path=str(resume_emotion),
+        )
+
     intent_trainer = IntentInferenceSLTrainer(
         loaders["train"],
         loaders["validation"],
         test_cache=loaders["test"],
         config=IntentSLConfig(epochs=sl_epochs, batch_size=sl_batch, seed=_training_seed(run), role_count=4),
-        model=IntentInferenceModule(role_count=4, seed=_training_seed(run)),
+        model=intent_model,
         job_snapshot=handle.snapshot,
         config_snapshot=config,
         logger=lambda record: _publish_module_metric(run, record),
     )
-    intent_result = intent_trainer.fit()
+    intent_trainer.should_stop = controller.should_stop
     emotion_trainer = EmotionInferenceSLTrainer(
         loaders["train"],
         loaders["validation"],
         test_cache=loaders["test"],
         config=EmotionSLConfig(epochs=sl_epochs, batch_size=sl_batch, seed=_training_seed(run)),
-        emotion_config=formula_label_emotion_config(),
         logger=lambda record: _publish_module_metric(run, record),
+        **emotion_kwargs,
     )
-    emotion_result = emotion_trainer.fit()
+    emotion_trainer.should_stop = controller.should_stop
+    # A resumed module starts as the best-so-far model, so further training
+    # only replaces it when validation loss actually improves.
+    if resume_intent is not None:
+        intent_trainer.resumed_from = str(resume_intent)
+        intent_trainer.prior_epochs = intent_prior
+        intent_trainer.adopt_current_weights_as_baseline()
+    if resume_emotion is not None:
+        emotion_trainer.resumed_from = str(resume_emotion)
+        emotion_trainer.prior_epochs = emotion_prior
+        emotion_trainer.adopt_current_weights_as_baseline()
 
+    if train_by_time:
+        # Alternate the two modules one epoch at a time so both keep improving
+        # no matter how long training runs (an unlimited run would otherwise
+        # never get past the first module). Stop/deadline is checked per batch.
+        while True:
+            if not intent_trainer.train_next_epoch() or controller.should_stop():
+                break
+            if not emotion_trainer.train_next_epoch() or controller.should_stop():
+                break
+        intent_result = intent_trainer.finalize()
+        emotion_result = emotion_trainer.finalize()
+    else:
+        intent_result = intent_trainer.fit()
+        emotion_result = emotion_trainer.fit()
+
+    # Only save a module that actually trained at least one epoch; an immediate
+    # Stop must not leave an untrained model that looks like a real result.
     model_root = PROJECT_ROOT / "bang_rl" / "models"
-    intent_path = model_root / "intent" / f"intent-{handle.job_id}.phase2model"
-    emotion_path = model_root / "emotion" / f"emotion-{handle.job_id}.phase2model"
-    intent_trainer.save_artifact(intent_path, test_metrics=intent_result.test_metrics)
-    emotion_trainer.save_artifact(emotion_path, test_metrics=emotion_result.test_metrics)
+    intent_path: Path | None = None
+    emotion_path: Path | None = None
+    if intent_result.history:
+        intent_path = model_root / "intent" / f"intent-{handle.job_id}.phase2model"
+        intent_trainer.save_artifact(intent_path, test_metrics=intent_result.test_metrics)
+    if emotion_result.history:
+        emotion_path = model_root / "emotion" / f"emotion-{handle.job_id}.phase2model"
+        emotion_trainer.save_artifact(emotion_path, test_metrics=emotion_result.test_metrics)
     return {
         "output_path": str(cache_root),
         "environment_steps": int(sum(len(ep.steps) for ep in episodes)),
@@ -396,8 +550,15 @@ def run_module_training(handle: Any, run: Any) -> Mapping[str, Any]:
             "cache_path": str(cache_root),
             "deduplicated_episode_count": duplicate_count,
             "dataset_selection": dataset_selection,
-            "intent_artifact_path": str(intent_path),
-            "emotion_artifact_path": str(emotion_path),
+            "intent_artifact_path": None if intent_path is None else str(intent_path),
+            "emotion_artifact_path": None if emotion_path is None else str(emotion_path),
+            "train_by_time": train_by_time,
+            "intent_epochs_completed": len(intent_result.history),
+            "emotion_epochs_completed": len(emotion_result.history),
+            "intent_total_epochs": intent_prior + len(intent_result.history),
+            "emotion_total_epochs": emotion_prior + len(emotion_result.history),
+            "resumed_intent_from": None if resume_intent is None else str(resume_intent),
+            "resumed_emotion_from": None if resume_emotion is None else str(resume_emotion),
             "intent_history": list(intent_result.history),
             "emotion_history": list(emotion_result.history),
             "role_class_count": 4,

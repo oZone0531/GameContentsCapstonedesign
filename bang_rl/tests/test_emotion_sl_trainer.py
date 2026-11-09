@@ -248,3 +248,24 @@ def test_schema_and_artifact_compatibility_reject_mismatch_and_privacy_leakage(t
             "event_valid_mask": np.ones((4, 64), dtype=np.bool_),
             "action": np.asarray([1]),
         })
+
+
+def test_train_next_epoch_and_clean_stop_before_first_batch(tmp_path: Path) -> None:
+    trainer = _trainer(tmp_path)
+    assert trainer.train_next_epoch() is True
+    assert len(trainer.history) == 1
+    assert trainer.start_epoch == 2
+
+    # A stop that lands before the first batch must not raise or record an
+    # empty epoch; the weights from the finished epoch stay intact.
+    trainer.should_stop = lambda: True
+    assert trainer.train_next_epoch() is False
+    assert len(trainer.history) == 1
+    assert len(trainer.finalize().history) == 1
+
+
+def test_fit_with_immediate_stop_returns_empty_history(tmp_path: Path) -> None:
+    trainer = _trainer(tmp_path / "stopped")
+    trainer.should_stop = lambda: True
+    result = trainer.fit()
+    assert result.history == ()

@@ -483,7 +483,9 @@ def test_module_batch_metrics_are_collected_for_gui_graphs() -> None:
     )
     _publish_module_metric(
         run,
-        {"event": "batch", "phase": "phase2_supervised_emotion", "mse": 0.2},
+        {"event": "batch", "phase": "phase2_supervised_emotion", "accuracy": 0.8, "mse": 0.2},
     )
     assert run.metrics["intent_accuracy_points"] == [0.75]
+    # Emotion accuracy is taken from the explicit per-dimension tolerance metric,
+    # never derived as 1 - mse.
     assert run.metrics["emotion_accuracy_points"] == [0.8]
