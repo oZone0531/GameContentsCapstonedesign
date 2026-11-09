@@ -155,6 +155,19 @@ def test_outputs_are_bounded_and_masked_rows_are_excluded_from_loss(tmp_path: Pa
     assert bool(torch.all((predictions >= 0.0) & (predictions <= 1.0)))
 
 
+def test_emotion_accuracy_returns_per_dimension_counts_and_mean(tmp_path: Path) -> None:
+    trainer = _trainer(tmp_path)
+    batch = build_emotion_batch(trainer.train_cache, [0, 1])
+    _loss, _targets, _values, correct, totals = trainer._loss_and_metrics(
+        batch, return_accuracy=True
+    )
+    assert correct.shape == totals.shape == (2,)
+    assert torch.all(totals > 0)
+    per_dimension = correct.to(torch.float32) / totals.to(torch.float32)
+    assert float(per_dimension.mean()) >= 0.0
+    assert float(per_dimension.mean()) <= 1.0
+
+
 def test_metrics_checkpoint_early_stopping_and_artifact_metadata(tmp_path: Path) -> None:
     checkpoint = tmp_path / "emotion.checkpoint.pt"
     metrics = tmp_path / "metrics.jsonl"
@@ -176,6 +189,11 @@ def test_metrics_checkpoint_early_stopping_and_artifact_metadata(tmp_path: Path)
     logged = [json.loads(line) for line in metrics.read_text().splitlines()]
     assert {entry["split"] for entry in logged if entry["event"] == "epoch"} >= {"validation", "test"}
     assert result.test_metrics is not None
+    assert result.history[0]["train_emotion_accuracy"] >= 0.0
+    assert len(result.history[0]["validation_emotion_accuracy_by_dimension"]) == 2
+    assert result.history[0]["validation_emotion_accuracy"] == pytest.approx(
+        np.mean(result.history[0]["validation_emotion_accuracy_by_dimension"])
+    )
     metadata = result.artifact_metadata
     assert metadata["emotion_schema"] == {
         "version": "1.0",

@@ -177,6 +177,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             self.gpu.setToolTip(tr("tooltip.gpu"))
             self.reward.setToolTip(tr("tooltip.reward_json"))
             self.reward_label.setToolTip(tr("tooltip.reward_json"))
+            self.save_button.setToolTip(tr("tooltip.settings_save"))
             self.emotion_group.setToolTip(tr("tooltip.emotion_initial_values"))
             self.dummy_ai_button.setToolTip(tr("tooltip.dummy_ai"))
             self.emotion_save_button.setToolTip(tr("tooltip.emotion_save_file"))

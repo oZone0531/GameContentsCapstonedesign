@@ -214,6 +214,50 @@ def _step_event_ids(step: CanonicalStep) -> tuple[int, ...]:
     return tuple(int(item) for item in step.event_ids)
 
 
+def _event_history_observation(
+    episode: CanonicalEpisode,
+    step: CanonicalStep,
+    event_by_id: Mapping[int, Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    """Restore public pre-action events removed from canonical observations."""
+
+    observation = dict(step.pre_observation)
+    if "event_sequence" in observation or "event_history" in observation:
+        return observation
+    event_ids = tuple(int(item) for item in step.pre_event_ids)
+    if event_ids:
+        missing = [event_id for event_id in event_ids if event_id not in event_by_id]
+        if missing:
+            raise DataError(
+                f"episode {episode.episode_id!r} step {step.environment_step} "
+                f"references missing pre-action event ids: {missing}"
+            )
+        events = [dict(event_by_id[event_id]) for event_id in event_ids]
+    else:
+        # Legacy records may not have pre_event_ids. Only include events from
+        # earlier environment steps; current-step events are future leakage.
+        events = [
+            dict(event)
+            for event in episode.events
+            if int(event.get("environment_step", -1)) < int(step.environment_step)
+        ]
+    observation["event_sequence"] = events
+    return observation
+
+
+def _episode_event_map(episode: CanonicalEpisode) -> dict[int, Mapping[str, Any]]:
+    result: dict[int, Mapping[str, Any]] = {}
+    for event in episode.events:
+        if not isinstance(event, Mapping) or "event_id" not in event:
+            raise DataError(f"episode {episode.episode_id!r} contains a malformed public event")
+        event_id = int(event["event_id"])
+        prior = result.get(event_id)
+        if prior is not None and dict(prior) != dict(event):
+            raise DataError(f"episode {episode.episode_id!r} contains conflicting event id {event_id}")
+        result[event_id] = event
+    return result
+
+
 def _emotion_vector(label: Any) -> np.ndarray | None:
     if not isinstance(label, Mapping):
         return None
@@ -259,6 +303,36 @@ def _normalization_stats(tensors: Mapping[str, np.ndarray]) -> dict[str, Any]:
             "std": np.where(std == 0.0, 1.0, std).astype(np.float32).tolist(),
         }
     return stats
+
+
+def _cache_diagnostics(tensors: Mapping[str, np.ndarray]) -> dict[str, Any]:
+    """Summarize label and event coverage without storing raw observations."""
+
+    event_mask = np.asarray(tensors["event_valid_mask"], dtype=np.bool_)
+    emotion_mask = np.asarray(tensors["emotion_label_mask"], dtype=np.bool_)
+    role_values = np.asarray(tensors["role_labels"], dtype=np.int64)
+    role_mask = np.asarray(tensors["role_label_mask"], dtype=np.bool_)
+    event_streams = int(np.prod(event_mask.shape[:-1])) if event_mask.ndim >= 2 else 0
+    valid_positions = int(event_mask.sum())
+    total_positions = int(event_mask.size)
+    raw_counts = np.bincount(role_values[role_mask], minlength=5) if np.any(role_mask) else np.zeros(5, dtype=np.int64)
+    mapped_values = np.where((role_values == 2) | (role_values == 3), 2, role_values)
+    mapped_values = np.where(mapped_values == 4, 3, mapped_values)
+    mapped_counts = np.bincount(mapped_values[role_mask], minlength=4) if np.any(role_mask) else np.zeros(4, dtype=np.int64)
+    raw_names = ("sheriff", "deputy", "outlaw_a", "outlaw_b", "traitor")
+    mapped_names = ("sheriff", "deputy", "outlaw", "traitor")
+    return {
+        "event_valid_ratio": 0.0 if total_positions == 0 else valid_positions / total_positions,
+        "event_valid_positions": valid_positions,
+        "event_position_count": total_positions,
+        "empty_event_stream_count": int(np.sum(~event_mask.any(axis=-1))) if event_mask.ndim >= 1 else 0,
+        "event_stream_count": event_streams,
+        "emotion_label_mask_ratio": float(emotion_mask.mean()) if emotion_mask.size else 0.0,
+        "emotion_label_count": int(emotion_mask.sum()),
+        "emotion_label_slot_count": int(emotion_mask.size),
+        "raw_role_distribution": {name: int(raw_counts[index]) for index, name in enumerate(raw_names)},
+        "mapped_role_distribution": {name: int(mapped_counts[index]) for index, name in enumerate(mapped_names)},
+    }
 
 
 def _npz_bytes(tensors: Mapping[str, np.ndarray]) -> bytes:
@@ -483,6 +557,7 @@ class NPZTensorCacheWriter:
             "transition_keys": list(TRANSITION_KEYS),
             "normalization": {"method": "preprocessor", "applied": False, "statistics_source": "train", "statistics": stats},
             "train_statistics": stats,
+            "diagnostics": _cache_diagnostics(tensors),
         }
         cache_hash = _hash(descriptor)
         tensor_path = self.output_dir / f"{DEFAULT_CACHE_PREFIX}-{name}.npz"
@@ -515,11 +590,13 @@ class NPZTensorCacheWriter:
         for episode_index, episode in enumerate(sorted(records, key=lambda item: str(item.episode_id))):
             if str(episode.termination_status) != "normal":
                 continue
+            event_by_id = _episode_event_map(episode)
             for step in sorted(episode.steps, key=lambda item: int(item.environment_step)):
                 if step.pre_observation is None:
                     raise DataError(f"step in episode {episode.episode_id!r} has no pre_observation")
+                observation = _event_history_observation(episode, step, event_by_id)
                 try:
-                    processed = self.preprocessor.preprocess(step.pre_observation)
+                    processed = self.preprocessor.preprocess(observation)
                 except Exception as exc:
                     raise DataError(f"cannot preprocess episode {episode.episode_id!r} step {step.environment_step}") from exc
                 if not hasattr(processed, "state_vector"):

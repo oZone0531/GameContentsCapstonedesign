@@ -19,7 +19,7 @@ import torch
 
 from bang_rl.agents.dummy_agent import DummyAgent
 from bang_rl.agents.random_agent import RandomAgent
-from bang_rl.config import EvaluationConfig, EnvConfig, PresetConfig, SystemConfig
+from bang_rl.config import EvaluationConfig, EnvConfig, PresetConfig, SystemConfig, ensure_formula_emotion
 from bang_rl.config.snapshot import JobSnapshot
 from bang_rl.env import BangEnvironment
 from bang_rl.env.types import Role, TerminationStatus
@@ -570,7 +570,7 @@ class PrimaryEvaluationProtocol:
                     player_idx=index,
                     seed=seed + index + 1,
                     policy_config=preset.intent_policy,
-                    emotion_config=preset.emotion,
+                    emotion_config=ensure_formula_emotion(preset.emotion),
                     action_mode=action_mode,
                 )
             )

@@ -26,7 +26,7 @@ from .screens.game_mode import GameModeSelect
 from .screens.game_screen import GameScreen
 from .screens.replay_screen import ReplayScreen
 from .screens.settings import SettingsScreen
-from .screens.training_monitor import TrainingMonitor
+from .screens.training_monitor import TrainingMonitor, TrainingSetupPanel
 from .settings import SettingsEditor
 from .training import TrainingMonitorController
 
@@ -211,8 +211,15 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self._set_screen(loading)
 
         def _show_training(self) -> None:
+            setup_panel = TrainingSetupPanel(
+                config=self.settings_editor.snapshot.config,
+                parent=self,
+            )
             self._training_monitor = TrainingMonitor(
-                self.training_controller, parent=self, on_back=self._show_menu
+                self.training_controller,
+                setup_panel=setup_panel,
+                parent=self,
+                on_back=self._show_menu,
             )
             self._set_screen(self._training_monitor)
 

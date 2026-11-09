@@ -106,6 +106,24 @@ def _rng_state() -> dict[str, Any]:
     }
 
 
+ROLE_TARGET_COUNT = 4
+ROLE_TARGET_NAMES = ("sheriff", "deputy", "outlaw", "traitor")
+RAW_ROLE_NAMES = ("sheriff", "deputy", "outlaw_a", "outlaw_b", "traitor")
+ROLE_TARGET_NAMES = ("sheriff", "deputy", "outlaw", "traitor")
+RAW_ROLE_NAMES = ("sheriff", "deputy", "outlaw_a", "outlaw_b", "traitor")
+
+
+def raw_role_to_target(values: np.ndarray) -> np.ndarray:
+    """Map raw environment roles to sheriff/deputy/outlaw/traitor classes."""
+
+    mapped = np.asarray(values, dtype=np.int64).copy()
+    if np.any((mapped < 0) | (mapped >= 5)):
+        raise DataError("role target contains a raw role outside [0, 4]")
+    mapped = np.where((mapped == 2) | (mapped == 3), 2, mapped)
+    mapped = np.where(mapped == 4, 3, mapped)
+    return mapped
+
+
 @dataclass(frozen=True)
 class IntentBatch:
     """One cache batch with labels kept outside the public model input mapping."""
@@ -170,6 +188,7 @@ def build_intent_batch(
     indices: Sequence[int] | np.ndarray,
     *,
     device: torch.device | str = "cpu",
+    role_count: int = 5,
 ) -> IntentBatch:
     """Build a deterministic batch from NPZ tensors.
 
@@ -187,13 +206,16 @@ def build_intent_batch(
     viewers = _viewer_indices(tensors["state_vector"])
     role_values = np.asarray(labels["role_labels"], dtype=np.int64)
     role_mask = np.asarray(labels["role_label_mask"], dtype=np.bool_)
+    if int(role_count) not in {4, 5}:
+        raise ValueError("role_count must be 4 or 5")
     selected_labels = np.zeros((len(row_indices), 4), dtype=np.int64)
     selected_mask = np.zeros((len(row_indices), 4), dtype=np.bool_)
     for row, viewer in enumerate(viewers):
         targets = [player for player in range(5) if player != int(viewer)]
-        selected_labels[row] = role_values[row, targets]
+        raw_targets = role_values[row, targets]
+        selected_labels[row] = raw_targets if int(role_count) == 5 else raw_role_to_target(raw_targets)
         selected_mask[row] = role_mask[row, targets]
-    if np.any(selected_mask & ((selected_labels < 0) | (selected_labels >= 5))):
+    if np.any(selected_mask & ((selected_labels < 0) | (selected_labels >= int(role_count)))):
         raise DataError("role target contains an invalid role index")
 
     public_inputs = {
@@ -218,6 +240,7 @@ class IntentSLConfig:
     epochs: int = 1
     batch_size: int = 64
     seed: int = 0
+    role_count: int = 5
     early_stopping_patience: int | None = None
     min_delta: float = 0.0
     checkpoint_path: str | Path | None = None
@@ -231,6 +254,8 @@ class IntentSLConfig:
             raise ValueError("epochs must be a positive integer")
         if isinstance(self.batch_size, bool) or self.batch_size < 1:
             raise ValueError("batch_size must be a positive integer")
+        if isinstance(self.role_count, bool) or self.role_count not in {4, 5}:
+            raise ValueError("role_count must be 4 or 5")
         if self.early_stopping_patience is not None and (
             isinstance(self.early_stopping_patience, bool) or self.early_stopping_patience < 1
         ):
@@ -259,6 +284,7 @@ class IntentSLConfig:
             "epochs": self.epochs,
             "batch_size": self.batch_size,
             "seed": self.seed,
+            "role_count": self.role_count,
             "early_stopping_patience": self.early_stopping_patience,
             "min_delta": self.min_delta,
             "device": self.device,
@@ -419,8 +445,11 @@ class IntentInferenceSLTrainer:
 
     @staticmethod
     def _loss_and_accuracy(
-        model: IntentInferenceModule, batch: IntentBatch
-    ) -> tuple[Tensor, int, int]:
+        model: IntentInferenceModule,
+        batch: IntentBatch,
+        *,
+        return_role_counts: bool = False,
+    ) -> tuple[Any, ...]:
         logits = model(
             batch.model_inputs["event_history"],
             batch.model_inputs["event_valid_mask"],
@@ -434,8 +463,17 @@ class IntentInferenceSLTrainer:
         flat_logits = logits[valid]
         flat_labels = batch.role_labels[valid]
         loss = model.role_loss(flat_logits, flat_labels)
-        correct = int((flat_logits.argmax(dim=-1) == flat_labels).sum().item())
-        return loss, correct, int(flat_labels.numel())
+        predicted = flat_logits.argmax(dim=-1)
+        correct = int((predicted == flat_labels).sum().item())
+        targets = int(flat_labels.numel())
+        if not return_role_counts:
+            return loss, correct, targets
+        role_count = int(logits.shape[-1])
+        correct_by_role = torch.zeros(role_count, dtype=torch.long)
+        total_by_role = torch.bincount(flat_labels, minlength=role_count).to(torch.long).cpu()
+        for role in range(role_count):
+            correct_by_role[role] = int(((predicted == flat_labels) & (flat_labels == role)).sum().item())
+        return loss, correct, targets, correct_by_role, total_by_role
 
     def _write_metric(self, record: Mapping[str, Any]) -> None:
         safe = _json_safe(dict(record))
@@ -467,11 +505,15 @@ class IntentInferenceSLTrainer:
         losses: list[float] = []
         gradients: list[float] = []
         correct = targets = 0
+        correct_by_role: torch.Tensor | None = None
+        total_by_role: torch.Tensor | None = None
         for start in range(0, len(order), self.config.batch_size):
             indices = order[start : start + self.config.batch_size]
-            batch = build_intent_batch(self.train_cache, indices, device=self.device)
+            batch = build_intent_batch(self.train_cache, indices, device=self.device, role_count=self.config.role_count)
             self.optimizer.zero_grad(set_to_none=True)
-            loss, batch_correct, batch_targets = self._loss_and_accuracy(self.model, batch)
+            loss, batch_correct, batch_targets, batch_correct_by_role, batch_total_by_role = self._loss_and_accuracy(
+                self.model, batch, return_role_counts=True
+            )
             loss.backward()
             squared = 0.0
             for parameter in self.model.parameters():
@@ -483,6 +525,28 @@ class IntentInferenceSLTrainer:
             gradients.append(gradient_norm)
             correct += batch_correct
             targets += batch_targets
+            if correct_by_role is None:
+                correct_by_role = torch.zeros_like(batch_correct_by_role)
+                total_by_role = torch.zeros_like(batch_total_by_role)
+            correct_by_role += batch_correct_by_role
+            assert total_by_role is not None
+            total_by_role += batch_total_by_role
+            batch_role_accuracy = torch.where(
+                batch_total_by_role > 0,
+                batch_correct_by_role.to(torch.float32) / batch_total_by_role.to(torch.float32),
+                torch.zeros_like(batch_total_by_role, dtype=torch.float32),
+            )
+            if correct_by_role is None:
+                correct_by_role = torch.zeros_like(batch_correct_by_role)
+                total_by_role = torch.zeros_like(batch_total_by_role)
+            correct_by_role += batch_correct_by_role
+            assert total_by_role is not None
+            total_by_role += batch_total_by_role
+            batch_role_accuracy = torch.where(
+                batch_total_by_role > 0,
+                batch_correct_by_role.to(torch.float32) / batch_total_by_role.to(torch.float32),
+                torch.zeros_like(batch_total_by_role, dtype=torch.float32),
+            )
             self._write_metric(
                 {
                     "phase": self.phase,
@@ -493,13 +557,24 @@ class IntentInferenceSLTrainer:
                     "batch_size": int(len(indices)),
                     "loss": float(loss.detach().item()),
                     "accuracy": batch_correct / batch_targets,
+                    "accuracy_by_role": [float(value) for value in batch_role_accuracy.tolist()],
+                    "role_names": list(ROLE_TARGET_NAMES if self.config.role_count == 4 else RAW_ROLE_NAMES),
                     "valid_targets": batch_targets,
                     "gradient_norm": gradient_norm,
                 }
             )
+        if correct_by_role is None or total_by_role is None:
+            raise TrainingError("intent training produced no role accuracy counts")
+        role_accuracy = torch.where(
+            total_by_role > 0,
+            correct_by_role.to(torch.float32) / total_by_role.to(torch.float32),
+            torch.zeros_like(total_by_role, dtype=torch.float32),
+        )
         return {
             "loss": float(np.average(losses, weights=None)) if losses else float("nan"),
             "accuracy": correct / targets if targets else float("nan"),
+            "accuracy_by_role": [float(value) for value in role_accuracy.tolist()],
+            "role_names": list(ROLE_TARGET_NAMES if self.config.role_count == 4 else RAW_ROLE_NAMES),
             "valid_targets": targets,
             "gradient_norm": float(np.mean(gradients)) if gradients else 0.0,
             "batches": len(losses),
@@ -509,14 +584,31 @@ class IntentInferenceSLTrainer:
         self.model.eval()
         losses: list[float] = []
         correct = targets = 0
+        correct_by_role: torch.Tensor | None = None
+        total_by_role: torch.Tensor | None = None
         with torch.no_grad():
             for start in range(0, len(loader), self.config.batch_size):
                 indices = np.arange(start, min(start + self.config.batch_size, len(loader)))
-                batch = build_intent_batch(loader, indices, device=self.device)
-                loss, batch_correct, batch_targets = self._loss_and_accuracy(self.model, batch)
+                batch = build_intent_batch(loader, indices, device=self.device, role_count=self.config.role_count)
+                loss, batch_correct, batch_targets, batch_correct_by_role, batch_total_by_role = self._loss_and_accuracy(
+                    self.model, batch, return_role_counts=True
+                )
                 losses.append(float(loss.item()))
                 correct += batch_correct
                 targets += batch_targets
+                if correct_by_role is None:
+                    correct_by_role = torch.zeros_like(batch_correct_by_role)
+                    total_by_role = torch.zeros_like(batch_total_by_role)
+                correct_by_role += batch_correct_by_role
+                assert total_by_role is not None
+                total_by_role += batch_total_by_role
+        if correct_by_role is None or total_by_role is None:
+            raise TrainingError("intent evaluation produced no role accuracy counts")
+        role_accuracy = torch.where(
+            total_by_role > 0,
+            correct_by_role.to(torch.float32) / total_by_role.to(torch.float32),
+            torch.zeros_like(total_by_role, dtype=torch.float32),
+        )
         result = {
             "phase": self.phase,
             "split": split,
@@ -524,6 +616,8 @@ class IntentInferenceSLTrainer:
             "epoch": epoch,
             "loss": float(np.mean(losses)) if losses else float("nan"),
             "accuracy": correct / targets if targets else float("nan"),
+            "accuracy_by_role": [float(value) for value in role_accuracy.tolist()],
+            "role_names": list(ROLE_TARGET_NAMES if self.config.role_count == 4 else RAW_ROLE_NAMES),
             "valid_targets": targets,
             "batches": len(losses),
         }
@@ -616,10 +710,14 @@ class IntentInferenceSLTrainer:
                 "epoch": epoch,
                 "train_loss": train_metrics["loss"],
                 "train_accuracy": train_metrics["accuracy"],
+                "train_accuracy_by_role": train_metrics["accuracy_by_role"],
+                "train_role_names": train_metrics["role_names"],
                 "train_gradient_norm": train_metrics["gradient_norm"],
                 "train_valid_targets": train_metrics["valid_targets"],
                 "validation_loss": validation["loss"],
                 "validation_accuracy": validation["accuracy"],
+                "validation_accuracy_by_role": validation["accuracy_by_role"],
+                "validation_role_names": validation["role_names"],
                 "validation_valid_targets": validation["valid_targets"],
             }
             self.history.append(record)

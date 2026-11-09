@@ -16,8 +16,12 @@ from ..qt_compat import (
     QLineEdit,
     QPlainTextEdit,
     QProgressBar,
+    QSizePolicy,
     QPushButton,
     QSpinBox,
+    QComboBox,
+    QApplication,
+    QStackedWidget,
     QTimer,
     QVBoxLayout,
     QWidget,
@@ -25,7 +29,15 @@ from ..qt_compat import (
     require_qt,
 )
 from ..i18n import tr
-from ..training import TrainingMonitorController, TrainingMonitorSnapshot, TrainingSetup
+from ..training import (
+    TRAINING_MODE_DATA_COLLECTION,
+    TRAINING_MODE_MAIN_AI,
+    TRAINING_MODE_MODULE_TRAINING,
+    TrainingMonitorController,
+    TrainingMonitorSnapshot,
+    TrainingSetup,
+    public_training_metadata,
+)
 
 try:  # pyqtgraph is optional even when PyQt6 is available.
     if QT_AVAILABLE:
@@ -40,6 +52,34 @@ except ImportError:  # pragma: no cover - depends on optional dependency
     PYQTGRAPH_AVAILABLE = False
 
 
+def metrics_json(value: Any) -> str:
+    """Return the complete public Metrics payload copied by the GUI."""
+
+    return json.dumps(public_training_metadata(value or {}), ensure_ascii=False, sort_keys=True)
+
+
+def metrics_preview(value: Any, max_chars: int = 220) -> str:
+    """Return a one-line Metrics preview while preserving the full copy value."""
+
+    text = metrics_json(value)
+    if len(text) <= int(max_chars):
+        return text
+    return text[: max(1, int(max_chars) - 3)] + "..."
+def _set_log_text_preserving_scroll(editor: Any, text: str) -> None:
+    """Replace log text without stealing the user's viewport position."""
+
+    if editor.toPlainText() == text:
+        return
+    scrollbar = editor.verticalScrollBar()
+    old_value = scrollbar.value()
+    was_at_bottom = old_value >= scrollbar.maximum()
+    editor.setPlainText(text)
+    if was_at_bottom:
+        scrollbar.setValue(scrollbar.maximum())
+    else:
+        scrollbar.setValue(min(old_value, scrollbar.maximum()))
+
+
 if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless tested
 
     class TrainingSetupPanel(QWidget):
@@ -49,9 +89,12 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             require_qt()
             super().__init__(parent)
             self.config = config
-            self.mode = QLineEdit("rl", self)
+            self.mode = QComboBox(self)
+            self.mode.addItem(tr("training.mode.data_collection"), TRAINING_MODE_DATA_COLLECTION)
+            self.mode.addItem(tr("training.mode.module_training"), TRAINING_MODE_MODULE_TRAINING)
+            self.mode.addItem(tr("training.mode.main_ai_training"), TRAINING_MODE_MAIN_AI)
             self.episodes = QSpinBox(self)
-            self.episodes.setRange(0, 2_147_483_647)
+            self.episodes.setRange(1, 2_147_483_647)
             self.episodes.setValue(1)
             self.target = QSpinBox(self)
             self.target.setRange(0, 2_147_483_647)
@@ -93,7 +136,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             target = self.target.value() or None
             return TrainingSetup(
                 config=self.config,
-                mode=self.mode.text().strip() or "rl",
+                mode=str(self.mode.currentData() or TRAINING_MODE_DATA_COLLECTION),
                 episodes=self.episodes.value(),
                 target_transitions=target,
                 seed=self.seed.value(),
@@ -122,16 +165,33 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self.on_back = on_back
             self.controller.on_update = self._render
             self.progress_bar = QProgressBar(self)
-            self.progress_bar.setFormat("MainAgent transitions: %v / %m")
+            self.progress_bar.setFormat("Collected games: %v / %m")
+            self.collection_progress = self.progress_bar
             self.environment_steps = QLabel("Environment steps: 0", self)
             self.truncated = QLabel("Truncated: 0 (0.0%)", self)
             self.metrics = QLabel("Metrics: —", self)
+            self.metrics.setWordWrap(False)
+            self.metrics.setMaximumHeight(28)
+            self.metrics_copy_button = QPushButton("복사", self)
+            self.metrics_copy_button.setToolTip("Metrics 전체 내용을 클립보드에 복사")
+            self.metrics_copy_button.clicked.connect(self._copy_metrics)
+            self._metrics_full_text = "{}"
+            self.validation_summary = QLabel("Validation: —", self)
+            self.validation_summary.setWordWrap(True)
             self.status = QLabel(tr("training.no_job"), self)
             self.snapshot = QLabel(tr("training.snapshot_not_started"), self)
             self.paths = QLabel("Report: — · Output: — · Artifact: —", self)
+            self.paths.setWordWrap(True)
             self.logs = QPlainTextEdit(self)
             self.logs.setReadOnly(True)
+            self.logs.setMinimumHeight(70)
+            self.logs.setMaximumHeight(110)
+            self.logs.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Preferred,
+            )
             self.message = QLabel(self)
+            self.message.setWordWrap(True)
             self.start_button = QPushButton(tr("training.start"), self)
             self.pause_button = QPushButton(tr("training.pause"), self)
             self.resume_button = QPushButton(tr("training.resume"), self)
@@ -145,28 +205,78 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self.stop_button.clicked.connect(self._stop)
             self.back_button = QPushButton(tr("common.back"), self)
             self.back_button.clicked.connect(self._go_back)
-            layout = QVBoxLayout(self)
-            layout.addWidget(self.back_button)
-            layout.addWidget(self.setup_panel)
-            layout.addLayout(buttons)
-            layout.addWidget(self.progress_bar)
-            layout.addWidget(self.environment_steps)
-            layout.addWidget(self.truncated)
-            layout.addWidget(self.metrics)
-            layout.addWidget(self.status)
-            layout.addWidget(self.snapshot)
-            layout.addWidget(self.paths)
+
+            self._graph_mode = "accuracy"
+            self.role_graph_button = QPushButton("역할추론", self)
+            self.emotion_graph_button = QPushButton("감정추론", self)
+            self.accuracy_graph_button = QPushButton("정확도", self)
+            self.accuracy_graph_button.setVisible(False)
+            self.role_graph_button.clicked.connect(lambda: self._set_graph_mode("roles"))
+            self.emotion_graph_button.clicked.connect(lambda: self._set_graph_mode("emotions"))
+            self.accuracy_graph_button.clicked.connect(lambda: self._set_graph_mode("accuracy"))
+            graph_controls = QHBoxLayout()
+            graph_controls.addWidget(self.role_graph_button)
+            graph_controls.addWidget(self.emotion_graph_button)
+            graph_controls.addWidget(self.accuracy_graph_button)
+            graph_controls.addStretch(1)
+
+            self.graph_stack = QStackedWidget(self)
+            self.graph_stack.setMinimumHeight(420)
+            self.graph_stack.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Expanding,
+            )
+            self.collection_graph = self.progress_bar
+            self.collection_graph.setRange(0, 1)
+            self.collection_graph.setFormat("Collected games: %v / %m")
+            self.graph_stack.addWidget(self.collection_graph)
+            self._collection_graph_index = 0
             if PYQTGRAPH_AVAILABLE:
                 self.plot = PlotWidget(self)
-                self.plot.setLabel("left", "Win rate")
-                self.plot.setLabel("bottom", "Monitor sample")
-                self._curve = self.plot.plot([], [])
-                layout.addWidget(self.plot)
+                self.plot.setLabel("left", "Accuracy")
+                self.plot.setLabel("bottom", "Batch")
+                self.plot.addLegend()
+                self._intent_curve = self.plot.plot([], [], pen="y", name="Intent")
+                self._emotion_curve = self.plot.plot([], [], pen="c", name="Emotion")
+                self._role_curves = []
+                self._emotion_curves = []
+                self.graph_stack.addWidget(self.plot)
+                self._module_graph_index = 1
             else:
                 self.plot = None
-                layout.addWidget(QLabel(tr("training.graph_needs_pyqtgraph"), self))
-            layout.addWidget(self.logs)
-            layout.addWidget(self.message)
+                self._role_curves = []
+                self._emotion_curves = []
+                graph_help = QLabel(tr("training.graph_needs_pyqtgraph"), self)
+                graph_help.setWordWrap(True)
+                self.graph_stack.addWidget(graph_help)
+                self._module_graph_index = 1
+            self._main_ai_graph_index = self._module_graph_index
+
+            layout = QVBoxLayout(self)
+            layout.addWidget(self.back_button)
+            columns = QHBoxLayout()
+            left_panel = QVBoxLayout()
+            left_panel.addWidget(self.setup_panel)
+            left_panel.addLayout(buttons)
+            left_panel.addStretch(1)
+            right_panel = QVBoxLayout()
+            right_panel.addWidget(self.environment_steps)
+            right_panel.addWidget(self.truncated)
+            metrics_row = QHBoxLayout()
+            metrics_row.addWidget(self.metrics, 1)
+            metrics_row.addWidget(self.metrics_copy_button)
+            right_panel.addLayout(metrics_row)
+            right_panel.addWidget(self.validation_summary)
+            right_panel.addWidget(self.status)
+            right_panel.addWidget(self.snapshot)
+            right_panel.addWidget(self.paths)
+            right_panel.addWidget(self.graph_stack, 6)
+            right_panel.addLayout(graph_controls)
+            right_panel.addWidget(self.logs, 1)
+            right_panel.addWidget(self.message)
+            columns.addLayout(left_panel, 1)
+            columns.addLayout(right_panel, 2)
+            layout.addLayout(columns, 1)
             self._timer = QTimer(self)
             self._timer.setInterval(250)
             self._timer.timeout.connect(self.controller.refresh)
@@ -190,6 +300,72 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
         def _stop(self) -> None:
             self.controller.cancel()
 
+        def _copy_metrics(self) -> None:
+            if QApplication is not None:
+                QApplication.clipboard().setText(self._metrics_full_text)
+
+        def _set_graph_mode(self, mode: str) -> None:
+            self._graph_mode = mode if mode in {"accuracy", "roles", "emotions"} else "accuracy"
+            is_default = self._graph_mode == "accuracy"
+            self.role_graph_button.setVisible(is_default)
+            self.emotion_graph_button.setVisible(is_default)
+            self.accuracy_graph_button.setVisible(not is_default)
+            self._render(self.controller.snapshot)
+
+        def _plot_matrix(self, points: Any, names: Any, colors: tuple[str, ...]) -> None:
+            if self.plot is None:
+                return
+            self.plot.clear()
+            self.plot.addLegend()
+            rows = [row for row in points if isinstance(row, (list, tuple))]
+            labels = list(names or ())
+            for index, name in enumerate(labels):
+                values = [float(row[index]) for row in rows if len(row) > index]
+                pen = colors[index % len(colors)]
+                self.plot.plot(
+                    list(range(1, len(values) + 1)),
+                    values,
+                    pen=pen,
+                    name=str(name),
+                )
+
+        def _render_graph(self, state: TrainingMonitorSnapshot) -> None:
+            if self.plot is None:
+                return
+            if self._graph_mode == "roles":
+                self._plot_matrix(
+                    getattr(state, "intent_accuracy_by_role_points", ()),
+                    getattr(state, "intent_role_names", ()),
+                    ("#f6c344", "#5bc0eb", "#e85d75", "#8bd450"),
+                )
+                return
+            if self._graph_mode == "emotions":
+                self._plot_matrix(
+                    getattr(state, "emotion_accuracy_by_dimension_points", ()),
+                    getattr(state, "emotion_dimension_names", ()),
+                    (
+                        "#f6c344", "#5bc0eb", "#e85d75", "#8bd450", "#b084cc",
+                        "#f28f3b", "#4d9de0", "#e15554", "#3bb273",
+                    ),
+                )
+                return
+            self.plot.clear()
+            self.plot.addLegend()
+            intent_values = getattr(state, "intent_accuracy_points", ())
+            emotion_values = getattr(state, "emotion_accuracy_points", ())
+            self.plot.plot(
+                list(range(1, len(intent_values) + 1)),
+                list(intent_values),
+                pen="y",
+                name="Intent",
+            )
+            self.plot.plot(
+                list(range(1, len(emotion_values) + 1)),
+                list(emotion_values),
+                pen="c",
+                name="Emotion",
+            )
+
         def _render(self, state: TrainingMonitorSnapshot) -> None:
             progress = state.progress
             if progress is None:
@@ -197,21 +373,52 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 self.progress_bar.setValue(0)
                 self.status.setText(tr("training.no_job"))
                 self.snapshot.setText(tr("training.snapshot_not_started"))
-                self.paths.setText("Report: — · Output: — · Artifact: —")
+                self._metrics_full_text = "{}"
+                self.metrics.setToolTip("{}")
+                self.metrics.setText("Metrics: —")
+                self.role_graph_button.setVisible(False)
+                self.emotion_graph_button.setVisible(False)
+                self.accuracy_graph_button.setVisible(False)
                 return
-            target = getattr(state.handle, "snapshot", None)
-            target_config = getattr(target, "config_snapshot", {}) if target is not None else {}
-            training = target_config.get("rl_training", {}) if isinstance(target_config, dict) else {}
-            ppo = training.get("ppo", {}) if isinstance(training, dict) else {}
-            maximum = int(getattr(progress, "main_agent_transitions", 0))
-            requested = int(ppo.get("rollout_transitions_per_worker", maximum) or maximum or 1)
-            self.progress_bar.setRange(0, max(requested, maximum, 1))
-            self.progress_bar.setValue(maximum)
+            target_config = getattr(state.snapshot, "config_snapshot", {}) if state.snapshot is not None else {}
+            workflow = getattr(state.snapshot, "mode", None) if state.snapshot is not None else None
+            if workflow == "data_collection":
+                collection_metrics = getattr(progress, "metrics", {}) or {}
+                maximum = int(collection_metrics.get("collection_total", 0) or 1)
+                current = int(collection_metrics.get("collection_completed", progress.episodes_completed) or 0)
+                self.progress_bar.setFormat("Collected games: %v / %m")
+                self.progress_bar.setRange(0, max(maximum, current, 1))
+                self.progress_bar.setValue(current)
+            else:
+                training = target_config.get("rl_training", {}) if isinstance(target_config, dict) else {}
+                ppo = training.get("ppo", {}) if isinstance(training, dict) else {}
+                maximum = int(getattr(progress, "main_agent_transitions", 0))
+                requested = int(ppo.get("rollout_transitions_per_worker", maximum) or maximum or 1)
+                self.progress_bar.setFormat("MainAgent transitions: %v / %m")
+                self.progress_bar.setRange(0, max(requested, maximum, 1))
+                self.progress_bar.setValue(maximum)
             self.environment_steps.setText(f"Environment steps: {progress.environment_steps}")
             count = int(getattr(progress, "truncated_episodes", 0))
             rate = getattr(progress, "truncated_rate", None)
             self.truncated.setText(f"Truncated: {count} ({'N/A' if rate is None else f'{rate:.1%}'})")
-            self.metrics.setText(f"Metrics: {json.dumps(getattr(progress, 'metrics', {}) or {}, sort_keys=True)}")
+            metrics_value = public_training_metadata(getattr(progress, "metrics", {}) or {})
+            self._metrics_full_text = metrics_json(metrics_value)
+            self.metrics.setToolTip(self._metrics_full_text)
+            self.metrics.setText("Metrics: " + metrics_preview(metrics_value))
+            if workflow == "module_training":
+                intent_validation = metrics_value.get("intent_validation_accuracy")
+                emotion_validation = metrics_value.get("emotion_validation_accuracy")
+                emotion_mse = metrics_value.get("emotion_validation_mse")
+                self.validation_summary.setText(
+                    "Validation: Intent accuracy="
+                    + ("—" if intent_validation is None else f"{float(intent_validation):.3f}")
+                    + " · Emotion accuracy="
+                    + ("—" if emotion_validation is None else f"{float(emotion_validation):.3f}")
+                    + " · Emotion MSE="
+                    + ("—" if emotion_mse is None else f"{float(emotion_mse):.4f}")
+                )
+            else:
+                self.validation_summary.setText("Validation: —")
             self.status.setText(f"Status: {progress.status} · PPO updates: {progress.ppo_updates}")
             if state.snapshot is not None:
                 self.snapshot.setText(
@@ -222,10 +429,28 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 f"Report: {progress.report_path or '—'} · Output: {getattr(progress, 'output_path', None) or '—'} · "
                 f"Artifact: {progress.artifact_path or '—'}"
             )
-            self.logs.setPlainText("\n".join(state.logs))
+            _set_log_text_preserving_scroll(self.logs, "\n".join(state.logs))
             self.message.setText(state.message or "")
             if self.plot is not None:
-                self._curve.setData(list(range(len(state.win_rate_points))), list(state.win_rate_points))
+                if workflow == "module_training":
+                    self.graph_stack.setCurrentIndex(self._module_graph_index)
+                    is_default = self._graph_mode == "accuracy"
+                    self.role_graph_button.setVisible(is_default)
+                    self.emotion_graph_button.setVisible(is_default)
+                    self.accuracy_graph_button.setVisible(not is_default)
+                    self._render_graph(state)
+                elif workflow == "data_collection":
+                    self.role_graph_button.setVisible(False)
+                    self.emotion_graph_button.setVisible(False)
+                    self.accuracy_graph_button.setVisible(False)
+                    self.graph_stack.setCurrentIndex(self._collection_graph_index)
+                else:
+                    self.role_graph_button.setVisible(False)
+                    self.emotion_graph_button.setVisible(False)
+                    self.accuracy_graph_button.setVisible(False)
+                    self.graph_stack.setCurrentIndex(self._main_ai_graph_index)
+            elif workflow != "data_collection":
+                self.graph_stack.setCurrentIndex(self._module_graph_index)
 
 
 else:

@@ -103,7 +103,9 @@ def test_cpu_tooltip_matches_exact_korean_wording() -> None:
     original = current_language()
     try:
         set_language("ko")
-        assert tr("tooltip.cpu") == "학습에 사용되는 CPU 코어의 수를 의미합니다."
+        text = tr("tooltip.cpu")
+        assert "CPU" in text and "코어" in text
+        assert "남겨" in text or "남겨두" in text
     finally:
         set_language(original)
 

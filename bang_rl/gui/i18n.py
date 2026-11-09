@@ -196,7 +196,7 @@ _STRINGS: dict[str, dict[str, str]] = {
     "settings.gpu_check": {"en": "Use GPU/CUDA", "ko": "GPU/CUDA 사용"},
     "settings.reward_json": {"en": "Reward Config (JSON)", "ko": "보상 설정 (JSON)"},
     "settings.save": {"en": "Validate and save", "ko": "검증 후 저장"},
-    "settings.saved": {"en": "Settings saved for the next training job.", "ko": "다음 학습 작업을 위해 설정이 저장되었습니다."},
+    "settings.saved": {"en": "Settings saved locally for the next training job.", "ko": "다음 학습 작업을 위한 로컬 설정이 저장되었습니다."},
     "settings.language_saved": {
         "en": "Language saved. Reopen a screen to see all changes.",
         "ko": "언어가 저장되었습니다. 화면을 다시 열면 모든 변경이 적용됩니다.",
@@ -296,6 +296,9 @@ _STRINGS: dict[str, dict[str, str]] = {
 
     # Training monitor
     "training.mode": {"en": "Mode", "ko": "모드"},
+    "training.mode.data_collection": {"en": "Collect training data", "ko": "학습 데이터 수집"},
+    "training.mode.module_training": {"en": "Train intent and emotion modules", "ko": "의도·감정 추론 모듈 학습"},
+    "training.mode.main_ai_training": {"en": "Train Main AI (coming soon)", "ko": "메인 AI 학습 (준비 중)"},
     "training.episodes": {"en": "Episodes", "ko": "에피소드"},
     "training.target": {"en": "Target MainAgent transitions", "ko": "목표 MainAgent 전이 수"},
     "training.seed": {"en": "Seed", "ko": "시드"},
@@ -316,128 +319,132 @@ _STRINGS: dict[str, dict[str, str]] = {
 
     # Settings field help tooltips (shown on mouse-over of each field/label)
     "tooltip.language": {
-        "en": "Language used for the whole GUI.",
-        "ko": "GUI 전체에 사용되는 언어를 의미합니다.",
+        "en": "Choose the language used by buttons, labels, menus, and help messages in this window. Changing it does not change the game rules or a running job.",
+        "ko": "이 창의 버튼, 라벨, 메뉴, 도움말에 사용할 언어를 선택합니다. 언어를 바꿔도 게임 규칙이나 진행 중인 학습 작업은 바뀌지 않습니다.",
     },
     "tooltip.ppo_clip": {
-        "en": "PPO clipping epsilon that limits how far each policy update can move.",
-        "ko": "정책 갱신 폭을 제한하는 PPO 클리핑 엡실론 값을 의미합니다.",
+        "en": "PPO clip epsilon limits how much the AI policy may change in one update. Smaller values make learning more cautious; larger values allow bigger changes but can make training unstable.",
+        "ko": "PPO 클립 엡실론은 한 번의 학습에서 AI 행동 정책을 얼마나 바꿀 수 있는지 제한합니다. 작은 값은 조심스럽게 학습하고, 큰 값은 빠르게 바뀌지만 학습이 불안정해질 수 있습니다.",
     },
     "tooltip.cpu": {
-        "en": "Number of CPU cores used for training.",
-        "ko": "학습에 사용되는 CPU 코어의 수를 의미합니다.",
+        "en": "The maximum number of CPU cores that training may use. More cores can run more work at once, but leaving some cores free helps Windows and the GUI remain responsive.",
+        "ko": "학습에 사용할 수 있는 CPU 코어의 최대 개수입니다. 코어를 많이 사용하면 작업을 동시에 처리할 수 있지만, 일부 코어를 남겨 두어야 Windows와 GUI가 원활하게 동작합니다.",
     },
     "tooltip.ram": {
-        "en": "Amount of RAM in gigabytes reserved for training.",
-        "ko": "학습에 할당되는 RAM 용량(GB)을 의미합니다.",
+        "en": "The memory budget for training, measured in gigabytes. Larger datasets and larger batches use more memory. If the value is too small, a training workflow may fail before it starts.",
+        "ko": "학습에 사용할 메모리 한도(GB)입니다. 데이터셋과 배치가 클수록 메모리를 더 사용하므로, 너무 작게 설정하면 학습이 시작되기 전에 실패할 수 있습니다.",
+    },
+    "tooltip.settings_save": {
+        "en": "Save the current settings to the local Git-ignored file artifacts/local-settings/settings.json. Pulling another version will not overwrite this machine's saved settings.",
+        "ko": "현재 설정을 Git에서 제외된 로컬 파일 artifacts/local-settings/settings.json에 저장합니다. 다른 버전을 pull해도 이 컴퓨터의 저장 설정은 덮어쓰지 않습니다.",
     },
     "tooltip.workers": {
-        "en": "Number of parallel worker processes that collect experience.",
-        "ko": "경험을 수집하는 병렬 워커 프로세스의 수를 의미합니다.",
+        "en": "The number of separate workers that run game environments. One worker is simplest. More workers can collect experience faster, but they use more CPU and memory.",
+        "ko": "게임 환경을 별도로 실행할 작업자 수입니다. 1개가 가장 단순하고 안정적입니다. 작업자를 늘리면 경험 데이터를 더 빨리 모을 수 있지만 CPU와 메모리를 더 사용합니다.",
     },
     "tooltip.batch": {
-        "en": "Number of samples used per training update.",
-        "ko": "한 번의 학습 갱신에 사용되는 샘플 수를 의미합니다.",
+        "en": "A batch is a group of examples processed together before the model is updated. Larger batches are usually steadier but need more memory; smaller batches use less memory but can make learning noisier.",
+        "ko": "배치는 모델을 한 번 갱신하기 전에 함께 처리하는 학습 예시 묶음입니다. 큰 배치는 학습이 안정적일 수 있지만 메모리를 더 사용하고, 작은 배치는 메모리는 적게 쓰지만 결과가 흔들릴 수 있습니다.",
     },
     "tooltip.buffer": {
-        "en": "Number of transitions stored in the experience buffer.",
-        "ko": "경험 버퍼에 저장되는 전이의 수를 의미합니다.",
+        "en": "The maximum number of game transitions kept for training. A transition is one action and its result. A larger buffer gives the learner more experience but consumes more memory.",
+        "ko": "학습을 위해 보관하는 게임 전이의 최대 개수입니다. 전이는 한 번의 행동과 그 결과를 뜻합니다. 버퍼가 크면 더 많은 경험을 사용할 수 있지만 메모리를 더 사용합니다.",
     },
     "tooltip.gpu": {
-        "en": "Use the GPU/CUDA for training when available.",
-        "ko": "가능한 경우 학습에 GPU/CUDA를 사용할지 여부를 의미합니다.",
+        "en": "Use a CUDA-compatible graphics card when available. A GPU can speed up neural-network training, but it is optional and may require additional drivers and memory.",
+        "ko": "가능하면 CUDA를 지원하는 그래픽카드를 학습에 사용합니다. GPU는 신경망 학습을 빠르게 할 수 있지만 선택 사항이며 별도의 드라이버와 메모리가 필요할 수 있습니다.",
     },
     "tooltip.reward_json": {
-        "en": "Reward shaping configuration in JSON format.",
-        "ko": "JSON 형식의 보상 설계 설정을 의미합니다.",
+        "en": "A JSON description of rewards. Rewards are numeric feedback: positive values encourage an action or result, and negative values discourage it. Invalid JSON prevents the settings from being saved.",
+        "ko": "보상 규칙을 JSON으로 입력합니다. 보상은 행동이나 결과에 대한 숫자 피드백입니다. 양수는 해당 행동이나 결과를 권장하고 음수는 억제합니다. JSON 형식이 잘못되면 설정을 저장할 수 없습니다.",
     },
     "tooltip.emotion_initial_values": {
-        "en": "Starting value (0-1) for each of the dummy AI's emotions.",
-        "ko": "더미 AI의 각 감정에 대한 초기값(0~1)을 의미합니다.",
+        "en": "The starting strength of this emotion, from 0 to 1. Zero means it starts inactive; one means it starts fully active. In the Formula model, the named bars are derived from confidence, aggression, and anxiety.",
+        "ko": "이 감정의 시작 세기(0~1)입니다. 0은 처음에 거의 작동하지 않음을, 1은 처음부터 강하게 작동함을 뜻합니다. Formula 모델에서는 표시되는 감정 막대가 자신감·공격성·불안 값으로 계산됩니다.",
     },
     "tooltip.emotion_initial_baseline_field": {
-        "en": "Shared baseline added to every emotion when it is initialized.",
-        "ko": "모든 감정을 초기화할 때 더해지는 공통 기준값을 의미합니다.",
+        "en": "The quiet resting level used when an emotion starts or recovers. After an event changes an emotion, the value gradually moves back toward this baseline.",
+        "ko": "감정이 시작하거나 회복할 때 기준이 되는 안정 상태의 값입니다. 사건으로 감정이 변한 뒤 시간이 지나면 이 기준값을 향해 돌아옵니다.",
     },
     "tooltip.dummy_ai": {
-        "en": "Open the dummy AI emotion configuration dialog.",
-        "ko": "더미 AI 감정 설정 창을 여는 버튼입니다.",
+        "en": "Open the Dummy AI settings. These settings describe how the non-learning rule-based players react to public events, actions, rewards, and the current Formula emotion state.",
+        "ko": "더미 AI 설정을 엽니다. 이 설정에서는 학습되지 않은 규칙 기반 플레이어가 공개 사건, 행동, 보상, 현재 Formula 감정 상태에 어떻게 반응하는지 정합니다.",
     },
 
     # AI-training settings menu (TrainingSetupPanel) field/label tooltips
     "tooltip.training_mode": {
-        "en": "Training mode identifier passed to the training service.",
-        "ko": "학습 서비스에 전달되는 학습 모드 식별자를 의미합니다.",
+        "en": "Choose what this screen should do. Collect training data plays Dummy AI games and saves examples. Module training learns the Intent and Emotion inference modules from saved data. Main AI training is a reserved placeholder for the later PPO phase.",
+        "ko": "이 화면에서 수행할 작업을 선택합니다. 학습 데이터 수집은 더미 AI 게임을 실행해 예시를 저장합니다. 추론 모듈 학습은 저장된 데이터로 의도·감정 모듈을 학습합니다. 메인 AI 학습은 나중에 PPO를 연결하기 위한 준비 모드입니다.",
     },
     "tooltip.training_episodes": {
-        "en": "Number of episodes to run in this training job.",
-        "ko": "이번 학습 작업에서 실행할 에피소드의 수를 의미합니다.",
+        "en": "How many complete games to run. One episode means one game from its initial setup until a team wins or the step limit is reached. More episodes provide more examples but take longer.",
+        "ko": "실행할 게임 수입니다. 에피소드 하나는 게임을 초기화한 뒤 승패가 결정되거나 제한 시간에 도달할 때까지 진행한 한 판을 뜻합니다. 많이 실행할수록 예시는 늘지만 시간이 더 걸립니다.",
     },
     "tooltip.training_target": {
-        "en": "Target number of MainAgent transitions; leave at the minimum to use the episode count instead.",
-        "ko": "목표 MainAgent 전이 수입니다. 최소값으로 두면 대신 에피소드 수를 사용합니다.",
+        "en": "A legacy Main AI transition target used by reinforcement-learning workflows. For data collection, use Episodes instead; this field does not determine how many Parquet games are collected.",
+        "ko": "강화학습 workflow에서 사용하는 기존 Main AI 전이 목표입니다. 학습 데이터 수집에서는 에피소드 수를 사용하며, 이 값은 수집할 Parquet 게임 수를 결정하지 않습니다.",
     },
     "tooltip.training_seed": {
-        "en": "Random seed used to make the training run reproducible.",
-        "ko": "학습을 재현 가능하게 만드는 난수 시드를 의미합니다.",
+        "en": "The starting random number seed. Using the same seed, configuration, and episode count makes the generated games repeatable. Change it to create a different dataset sample.",
+        "ko": "난수 생성의 시작값입니다. 같은 시드·설정·에피소드 수를 사용하면 생성되는 게임을 다시 재현할 수 있습니다. 다른 데이터 표본을 만들려면 시드를 바꾸세요.",
     },
     "tooltip.training_report_path": {
-        "en": "Folder where the training report is written.",
-        "ko": "학습 리포트가 기록되는 폴더를 의미합니다.",
+        "en": "Where the final JSON report is saved. The report contains the job status, counters, configuration snapshot, errors, and workflow metrics. It is written when the job finishes.",
+        "ko": "최종 JSON 리포트를 저장할 위치입니다. 리포트에는 작업 상태, 카운터, 설정 스냅샷, 오류, workflow 지표가 들어가며 작업이 끝날 때 저장됩니다.",
     },
     "tooltip.training_output_path": {
-        "en": "Folder where training output files are written.",
-        "ko": "학습 출력 파일이 기록되는 폴더를 의미합니다.",
+        "en": "A general folder for workflow output. Dataset files and model files use their dedicated dataset/model folders; this path is used for the job's general output metadata.",
+        "ko": "workflow의 일반 출력 폴더입니다. 데이터셋과 모델은 전용 데이터셋·모델 폴더를 사용하며, 이 경로에는 작업의 일반 출력 정보가 저장됩니다.",
     },
     "tooltip.training_artifact_path": {
-        "en": "Folder where the trained model artifact is saved.",
-        "ko": "학습된 모델 아티팩트가 저장되는 폴더를 의미합니다.",
+        "en": "The destination for a final Main AI artifact in workflows that create one. Data collection and Phase-2 module training do not create a final .bangmodel file.",
+        "ko": "최종 Main AI 아티팩트를 만드는 workflow에서 사용할 저장 위치입니다. 데이터 수집과 Phase-2 추론 모듈 학습에서는 최종 .bangmodel 파일을 만들지 않습니다.",
     },
     "tooltip.training_resume_artifact_path": {
-        "en": "Existing artifact folder to continue training from.",
-        "ko": "이어서 학습할 기존 아티팩트 폴더를 의미합니다.",
+        "en": "An existing final .bangmodel file or folder from which a future Main AI training run can continue. It is not used by data collection or Phase-2 module training.",
+        "ko": "향후 메인 AI 학습을 이어갈 때 사용할 기존 .bangmodel 파일 또는 폴더입니다. 데이터 수집과 Phase-2 추론 모듈 학습에서는 사용하지 않습니다.",
     },
 
     # Dummy AI emotion dialog field/label tooltips
     "tooltip.emotion_schema_version": {
-        "en": "Version of the emotion configuration schema.",
-        "ko": "감정 설정 스키마의 버전을 의미합니다.",
+        "en": "A label for the format of this emotion configuration. Keep it unchanged unless you intentionally create a new format, because saved data and trained modules use it to check compatibility.",
+        "ko": "이 감정 설정 형식의 이름표입니다. 의도적으로 새 형식을 만드는 경우가 아니라면 그대로 두세요. 저장된 데이터와 학습 모듈이 서로 호환되는지 확인할 때 사용합니다.",
     },
     "tooltip.emotion_count": {
-        "en": "How many emotions the dummy AI has.",
-        "ko": "더미 AI가 갖는 감정의 개수를 의미합니다.",
+        "en": "The number of rule-table emotion values. Each value has its own name and update rules. The production Formula model uses confidence, aggression, anxiety, and derived calm instead.",
+        "ko": "rule-table 방식에서 사용할 감정 값의 개수입니다. 각 감정에는 이름과 변화 규칙이 있습니다. 현재 production Formula 모델은 자신감·공격성·불안과 여기서 계산되는 평온함을 사용합니다.",
     },
     "tooltip.emotion_name": {
-        "en": "Name of this emotion; each emotion must have a unique name.",
-        "ko": "이 감정의 이름입니다. 각 감정은 고유한 이름을 가져야 합니다.",
+        "en": "A short unique name used to identify this emotion in saved settings and logs. Choose a name that describes a feeling or behavior clearly.",
+        "ko": "저장된 설정과 로그에서 이 감정을 구분하는 짧고 고유한 이름입니다. 감정이나 행동 성향을 쉽게 알 수 있는 이름을 사용하세요.",
     },
     "tooltip.emotion_change_rate": {
-        "en": "How quickly this emotion increases when its conditions are met.",
-        "ko": "조건이 충족될 때 이 감정이 증가하는 속도를 의미합니다.",
+        "en": "The amount added when this emotion's update condition occurs. Positive values increase it; negative values decrease it. The final value is kept between 0 and 1.",
+        "ko": "감정 변화 조건이 발생했을 때 더하거나 빼는 양입니다. 양수는 감정을 높이고 음수는 낮춥니다. 최종 값은 항상 0~1 사이로 제한됩니다.",
     },
     "tooltip.emotion_decay_rate": {
-        "en": "How quickly this emotion decays back toward its baseline over time.",
-        "ko": "시간이 지남에 따라 이 감정이 기준값으로 감소하는 속도를 의미합니다.",
+        "en": "The amount by which the emotion moves back toward its baseline during later game steps. A larger value means the emotion returns to normal faster.",
+        "ko": "게임이 진행되는 동안 감정이 기준값으로 돌아가는 변화량입니다. 값이 클수록 감정이 더 빨리 평상 상태로 회복됩니다.",
     },
     "tooltip.emotion_event_updates": {
-        "en": "JSON map of game events to how much they change this emotion. Relationship keys such as bang_at_me / bang_by_me are also supported and take precedence over the plain event key.",
-        "ko": "게임 이벤트별로 이 감정을 얼마나 변화시키는지 나타내는 JSON 맵을 의미합니다. bang_at_me / bang_by_me 같은 관계 기반 키도 지원되며, 일반 이벤트 키보다 우선 적용됩니다.",
+        "en": "A JSON map from public game events to emotion changes. For example, bang_at_me can react when this player is shot. Relationship-specific keys are checked before general event names.",
+        "ko": "공개 게임 이벤트와 감정 변화량을 연결하는 JSON 맵입니다. 예를 들어 bang_at_me는 자신이 공격당했을 때 반응하도록 만들 수 있습니다. 관계 기반 키가 일반 이벤트 이름보다 먼저 적용됩니다.",
     },
     "tooltip.emotion_action_updates": {
-        "en": "JSON map of actions to how much they change this emotion.",
-        "ko": "행동별로 이 감정을 얼마나 변화시키는지 나타내는 JSON 맵을 의미합니다.",
+        "en": "A JSON map from valid actions such as pass or bang to emotion changes. Invalid or rejected actions do not update the emotion.",
+        "ko": "pass나 bang처럼 허용된 행동과 감정 변화량을 연결하는 JSON 맵입니다. 잘못되었거나 거부된 행동은 감정을 변화시키지 않습니다.",
     },
     "tooltip.emotion_reward_updates": {
-        "en": "JSON map of reward signals to how much they change this emotion.",
-        "ko": "보상 신호별로 이 감정을 얼마나 변화시키는지 나타내는 JSON 맵을 의미합니다.",
+        "en": "A JSON map from reward feedback to emotion changes. Positive, negative, or zero reward can be handled separately. Rewards are training feedback, not private information shown in the public game view.",
+        "ko": "보상 피드백과 감정 변화량을 연결하는 JSON 맵입니다. 양의 보상, 음의 보상, 0 보상을 각각 다르게 처리할 수 있습니다. 보상은 학습용 피드백이며 공개 게임 화면에 표시되는 비공개 정보가 아닙니다.",
     },
     "tooltip.emotion_terminal_updates": {
-        "en": "JSON map of game-ending outcomes to how much they change this emotion.",
-        "ko": "게임 종료 결과별로 이 감정을 얼마나 변화시키는지 나타내는 JSON 맵을 의미합니다.",
+        "en": "A JSON map from game-ending results such as win, loss, terminated, or truncated to emotion changes. Use this for a final reaction at the end of a game.",
+        "ko": "승리, 패배, 정상 종료, 제한 시간 종료 같은 게임 종료 결과와 감정 변화량을 연결하는 JSON 맵입니다. 게임이 끝났을 때의 최종 감정 반응을 설정할 때 사용합니다.",
     },
     "tooltip.emotion_effects": {
-        "en": "JSON map describing this emotion's effects when it is high or low.",
-        "ko": "이 감정이 높거나 낮을 때의 영향을 설명하는 JSON 맵을 의미합니다.",
+        "en": "A JSON map that turns an emotion into an action preference. A positive effect can raise an action score and a negative effect can lower it; it changes preference, not the legal-action rules.",
+        "ko": "감정값을 행동 선호도로 바꾸는 JSON 맵입니다. 양의 효과는 행동 점수를 높이고 음의 효과는 낮춥니다. 감정은 행동 선호만 바꾸며, 불법 행동을 허용하지는 않습니다.",
     },
 
     # Replay viewer (reuses the graphical board + log + speed slider)

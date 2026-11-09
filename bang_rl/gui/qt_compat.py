@@ -48,6 +48,7 @@ try:  # pragma: no cover - availability depends on the host environment
         QProgressBar,
         QPushButton,
         QScrollArea,
+        QSizePolicy,
         QSlider,
         QSpinBox,
         QStackedWidget,
@@ -72,7 +73,7 @@ except ImportError as exc:  # pragma: no cover - exercised when Qt is absent
     QFormLayout = QGroupBox = QHBoxLayout = QHeaderView = QInputDialog = None
     QLabel = QLineEdit = None
     QListWidget = QListWidgetItem = QMainWindow = QMessageBox = QPlainTextEdit = None
-    QProgressBar = QPushButton = QScrollArea = QSlider = QSpinBox = None
+    QProgressBar = QPushButton = QScrollArea = QSizePolicy = QSlider = QSpinBox = None
     QStackedWidget = QTableWidget = QTableWidgetItem = QTabWidget = None
     QVBoxLayout = QWidget = None
     QToolTip = None
@@ -122,6 +123,7 @@ __all__ = [
     "QPushButton",
     "QRectF",
     "QScrollArea",
+    "QSizePolicy",
     "QSlider",
     "QSpinBox",
     "QStackedWidget",

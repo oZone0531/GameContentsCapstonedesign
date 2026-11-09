@@ -34,6 +34,7 @@ from .intent_inference import (
     TARGET_PLAYER_COUNT,
 )
 from .role_fusion import (
+    PRODUCTION_ROLE_COUNT,
     ROLE_FUSION_ARCHITECTURE_VERSION,
     ROLE_FUSION_FORMAT_VERSION,
     RoleFusion,
@@ -97,6 +98,7 @@ __all__ = [
     "PPOModule",
     "SHARED_TRUNK_HIDDEN_SIZE",
     "ROLE_COUNT",
+    "PRODUCTION_ROLE_COUNT",
     "ROLE_FUSION_ARCHITECTURE_VERSION",
     "ROLE_FUSION_FORMAT_VERSION",
     "RoleFusion",

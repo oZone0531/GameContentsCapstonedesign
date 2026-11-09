@@ -24,12 +24,34 @@ htmlcov/
 # Generated Bang RL artifacts and runtime data
 bang_rl/models/*
 !bang_rl/models/.gitkeep
+bang_rl/models/intent/*
+!bang_rl/models/intent/
+!bang_rl/models/intent/.gitkeep
+bang_rl/models/emotion/*
+!bang_rl/models/emotion/
+!bang_rl/models/emotion/.gitkeep
+bang_rl/models/main_ai/*
+!bang_rl/models/main_ai/
+!bang_rl/models/main_ai/.gitkeep
 bang_rl/logs/*
 !bang_rl/logs/.gitkeep
 bang_rl/datasets/canonical/*
 !bang_rl/datasets/canonical/.gitkeep
 bang_rl/datasets/cache/*
 !bang_rl/datasets/cache/.gitkeep
+datasets/*
+!datasets/.gitkeep
+datasets/canonical/*
+!datasets/canonical/.gitkeep
+datasets/cache/*
+!datasets/cache/.gitkeep
 bang_rl/replays/*
 !bang_rl/replays/.gitkeep
-config.json
+# Generated training reports, outputs, artifacts, and runtime data
+reports/*
+!reports/.gitkeep
+outputs/*
+!outputs/.gitkeep
+artifacts/*
+!artifacts/.gitkeep
+

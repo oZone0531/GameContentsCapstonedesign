@@ -439,3 +439,51 @@ def test_create_session_runs_episode_start_per_seat_with_own_projection() -> Non
         assert self_roles == [0, 1, 2, 3, 4]
     finally:
         game.close_session(handle)
+
+
+def test_collection_progress_update_is_visible_to_training_progress() -> None:
+    from threading import RLock
+    from types import SimpleNamespace
+
+    from bang_rl.training.pipeline_runner import _publish_collection_progress
+
+    class Logger:
+        def __init__(self) -> None:
+            self.events = []
+
+        def event(self, name, **fields):
+            self.events.append((name, fields))
+
+    logger = Logger()
+    run = SimpleNamespace(
+        lock=RLock(),
+        episodes_completed=0,
+        metrics={},
+        logs=[],
+        logger=logger,
+        handle=SimpleNamespace(job_id="collection-job"),
+    )
+    _publish_collection_progress(run, 17, 100)
+    assert run.episodes_completed == 17
+    assert run.metrics == {"collection_completed": 17, "collection_total": 100}
+    assert run.logs == [{"message": "Collected 17/100 games"}]
+    assert logger.events == [("data_collection_progress", {"completed": 17, "total": 100, "job_id": "collection-job"})]
+
+
+def test_module_batch_metrics_are_collected_for_gui_graphs() -> None:
+    from threading import RLock
+    from types import SimpleNamespace
+
+    from bang_rl.training.pipeline_runner import _publish_module_metric
+
+    run = SimpleNamespace(lock=RLock(), metrics={})
+    _publish_module_metric(
+        run,
+        {"event": "batch", "phase": "phase2_supervised_intent", "accuracy": 0.75},
+    )
+    _publish_module_metric(
+        run,
+        {"event": "batch", "phase": "phase2_supervised_emotion", "mse": 0.2},
+    )
+    assert run.metrics["intent_accuracy_points"] == [0.75]
+    assert run.metrics["emotion_accuracy_points"] == [0.8]

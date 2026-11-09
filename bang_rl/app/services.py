@@ -8,7 +8,7 @@ worker controls, or private role state.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import io
 import json
@@ -28,6 +28,7 @@ from bang_rl.config import (
     PresetConfig,
     SystemConfig,
     TrainingJob,
+    ensure_formula_emotion,
 )
 from bang_rl.env import BangEnvironment
 from bang_rl.exceptions import BangRLError, CompatibilityError, TrainingError
@@ -50,6 +51,12 @@ from bang_rl.training import (
     WorkerFault,
     load_final_inference_artifact,
     load_final_artifact_for_training,
+)
+from bang_rl.training.pipeline_runner import (
+    TRAINING_MODE_DATA_COLLECTION,
+    TRAINING_MODE_MAIN_AI,
+    TRAINING_MODE_MODULE_TRAINING,
+    run_training_workflow,
 )
 
 
@@ -388,6 +395,7 @@ class _TrainingRun:
     metrics: dict[str, Any] = field(default_factory=dict)
     logs: list[Mapping[str, Any]] = field(default_factory=list)
     records: list[Mapping[str, Any]] = field(default_factory=list)
+    report_metadata: Mapping[str, Any] = field(default_factory=dict)
     thread: Thread | None = None
 
 
@@ -419,6 +427,9 @@ class _ArtifactAgent:
             values.get("role_visibility"),
             values.get("revealed_roles"),
             values.get("confirmed_role_distribution"),
+            self_role=values.get("self_role"),
+            sheriff_idx=values.get("sheriff_idx"),
+            viewer_idx=values.get("current_player_idx", values.get("viewer_idx")),
         )
         output = self.artifact.ppo.act(
             {
@@ -571,7 +582,7 @@ class GameService:
             return DummyAgent(
                 f"player_{index}", seed=seeds.agent_seed(f"player_{index}"), player_idx=index,
                 policy_config=config.preset.intent_policy,
-                emotion_config=config.preset.emotion,
+                emotion_config=ensure_formula_emotion(config.preset.emotion),
                 action_mode=options.action_mode,
             )
 
@@ -1041,15 +1052,34 @@ class TrainingService:
         else:
             options = TrainingConfig(config=request, **kwargs)
         config = _mapping_config(options.config)
+        mode = str(options.mode).strip()
+        if mode in {TRAINING_MODE_DATA_COLLECTION, TRAINING_MODE_MODULE_TRAINING}:
+            # Capture the effective production Formula schema in the job
+            # snapshot, not only in the runner-local config copy.
+            effective_emotion = ensure_formula_emotion(config.emotion)
+            effective_preset = config.preset.model_copy(
+                update={"emotion": ensure_formula_emotion(config.preset.emotion)}
+            )
+            config = config.model_copy(
+                update={"emotion": effective_emotion, "preset": effective_preset}
+            )
         if isinstance(options.episodes, bool) or options.episodes < 0:
             raise ValueError("episodes must be a non-negative integer")
         if options.target_transitions is not None and (isinstance(options.target_transitions, bool) or options.target_transitions < 1):
             raise ValueError("target_transitions must be positive when provided")
         if options.runner is None:
-            raise TrainingError(
-                "default TrainingService execution is not wired to the declared collection/SL/PPO/artifact pipeline; "
-                "provide an explicit runner or use a pipeline orchestrator"
-            )
+            if mode not in {
+                TRAINING_MODE_DATA_COLLECTION,
+                TRAINING_MODE_MODULE_TRAINING,
+                TRAINING_MODE_MAIN_AI,
+            }:
+                raise TrainingError(
+                    "default TrainingService execution is not wired to the declared collection/SL/PPO/artifact pipeline; "
+                    "provide an explicit runner or select a supported workflow"
+                )
+            options = replace(options, mode=mode, runner=run_training_workflow)
+        elif mode != options.mode:
+            options = replace(options, mode=mode)
         seed = config.seed if options.seed is None else int(options.seed)
         ensure_training_directories()
         job = TrainingJob.start(config, mode=options.mode, seed=seed, split_seed=options.split_seed)
@@ -1062,7 +1092,7 @@ class TrainingService:
             resume_artifact = load_final_artifact_for_training(resume_source)
         guard = ResourceGuard(job.snapshot)
         agents = tuple(options.agents) if options.agents is not None else tuple(
-            DummyAgent(f"player_{index}", seed=SeedManager(seed, snapshot=job.snapshot).agent_seed(f"player_{index}"), player_idx=index, policy_config=config.preset.intent_policy, emotion_config=config.preset.emotion)
+            DummyAgent(f"player_{index}", seed=SeedManager(seed, snapshot=job.snapshot).agent_seed(f"player_{index}"), player_idx=index, policy_config=config.preset.intent_policy, emotion_config=ensure_formula_emotion(config.preset.emotion))
             for index in range(5)
         )
         logger = self.logger or get_component_logger("training-service", channel=LogChannel.TRAINING, job_id=job.job_id)
@@ -1098,7 +1128,11 @@ class TrainingService:
         )
         # Paths are public job metadata and should be visible before completion.
         run.report_path = str(resolve_training_file(options.report_path, root=REPORTS_DIR, filename=f"{job.job_id}.json", suffix=".json"))
-        run.artifact_path = str(resolve_training_file(options.artifact_path, root=ARTIFACTS_DIR, filename=f"{job.job_id}.bangmodel", suffix=".bangmodel"))
+        run.artifact_path = (
+            None
+            if mode in {TRAINING_MODE_DATA_COLLECTION, TRAINING_MODE_MODULE_TRAINING}
+            else str(resolve_training_file(options.artifact_path, root=ARTIFACTS_DIR, filename=f"{job.job_id}.bangmodel", suffix=".bangmodel"))
+        )
         with self._lock:
             self._runs[handle.job_id] = run
         run.thread = Thread(target=self._execute, args=(run,), name=f"bang-rl-{handle.job_id}", daemon=True)
@@ -1122,8 +1156,10 @@ class TrainingService:
                 if isinstance(result, Mapping):
                     run.records.extend(_json_value(result.get("records", ())))
                     run.artifact_path = _path_string(result.get("artifact_path", run.artifact_path))
+                    run.output_path = _path_string(result.get("output_path", run.output_path))
                     run.environment_steps = int(result.get("environment_steps", 0))
                     run.transitions = int(result.get("main_agent_transitions", result.get("transitions", 0)))
+                    run.ppo_updates = int(result.get("ppo_updates", run.ppo_updates))
                     run.episodes_completed = int(result.get("episodes_completed", run.episodes_completed))
                     run.truncated_episodes = int(result.get("truncated_episodes", result.get("truncated_count", 0)))
                     run.normal_episodes = int(result.get("normal_episodes", result.get("normal_count", 0)))
@@ -1190,6 +1226,34 @@ class TrainingService:
                 paused_seconds=run.paused_seconds,
                 hardware=run.system_config.hardware.model_dump(mode="json"),
             )
+            report_metadata = {
+                **dict(report_metadata),
+                "workflow": str(run.config.mode),
+                "training_contract": {
+                    "role_class_count": run.metrics.get("role_class_count"),
+                    "raw_role_count": run.metrics.get("raw_role_count", 5),
+                    "emotion_dimension": run.metrics.get("emotion_dimension"),
+                    "emotion_schema": run.metrics.get(
+                        "emotion_label_schema", run.metrics.get("emotion_schema")
+                    ),
+                },
+                "validation": {
+                    "intent_accuracy": run.metrics.get("intent_final_validation_accuracy"),
+                    "intent_accuracy_by_role": run.metrics.get("intent_final_validation_accuracy_by_role", []),
+                    "intent_role_names": run.metrics.get("intent_role_names", []),
+                    "emotion_accuracy": run.metrics.get("emotion_final_validation_accuracy"),
+                    "emotion_accuracy_by_dimension": run.metrics.get("emotion_final_validation_accuracy_by_dimension", []),
+                    "emotion_accuracy_tolerance": run.metrics.get("emotion_accuracy_tolerance"),
+                    "emotion_mse": run.metrics.get("emotion_final_validation_mse"),
+                },
+                "diagnostics": run.metrics.get("cache_diagnostics", {}),
+                "dataset_selection": run.metrics.get("dataset_selection", {}),
+                "gradient_norm_history": {
+                    "intent": run.metrics.get("intent_gradient_norm_history", []),
+                    "emotion": run.metrics.get("emotion_gradient_norm_history", []),
+                },
+            }
+            run.report_metadata = _json_value(report_metadata)
             report = TrainingReport(
                 run.handle.job_id, run.status, run.handle.snapshot, progress,
                 run.output_path, run.report_path,
@@ -1251,7 +1315,16 @@ class TrainingService:
             run.thread.join(timeout)
         if run.thread is not None and run.thread.is_alive():
             raise TimeoutError("training job did not finish before timeout")
-        return TrainingReport(run.handle.job_id, run.status, run.handle.snapshot, self._progress(run), run.output_path, run.report_path, tuple(run.records))
+        return TrainingReport(
+            run.handle.job_id,
+            run.status,
+            run.handle.snapshot,
+            self._progress(run),
+            run.output_path,
+            run.report_path,
+            tuple(run.records),
+            run.report_metadata,
+        )
 
     @staticmethod
     def _progress(run: _TrainingRun) -> TrainingProgress:

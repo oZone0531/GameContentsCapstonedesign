@@ -18,13 +18,11 @@ through ``GameService.step`` are move-for-move identical.
 
 Emotion labels
 --------------
-With the emotion formula (a ``formula`` block in the emotion config) each label
-has 9 entries, ``[calm, confidence, aggression, anxiety, relation_0..relation_4]``
-in [0, 1]. Relations use ``(R + 1) / 2`` (0.5 = neutral) and absolute seat
-numbers; self and dead seats stay at 0.5. Dead players get no label, so the
-tensor cache masks them automatically. The schema version is
-``FORMULA_LABEL_SCHEMA``; the main agent's emotion inference module must be
-built with :func:`formula_label_emotion_config` to train on these labels.
+With the emotion formula (a ``formula`` block) each label has 9 entries,
+``[calm, confidence, aggression, anxiety, relation_0..relation_4]`` in [0, 1].
+These are deterministic projections of the formula's public latent state. The
+schema version is ``FORMULA_LABEL_SCHEMA``; the module-training workflow uses
+:func:`formula_label_emotion_config`.
 
 With the rule-table EmotionModule (no ``formula`` block) the label is the
 module's own value vector and its configured schema version.
@@ -304,6 +302,7 @@ def collect_games(
     progress: Callable[[int, int], None] | None = None,
     keep_episodes: bool = False,
     shard_games: int = 20,
+    episode_id_prefix: str | None = None,
 ) -> dict[str, Any]:
     """Play ``games`` all-dummy games and write canonical Parquet shards.
 
@@ -350,8 +349,17 @@ def collect_games(
             collector = EpisodeCollector(
                 include_private_roles=True, reward_calculator=reward, metadata=metadata
             )
+            episode_id = (
+                None
+                if episode_id_prefix is None
+                else f"{episode_id_prefix}-game-{game_seed(base_seed, index):08d}"
+            )
             episode, env, agents = play_and_collect_game(
-                config, collector, seed=game_seed(base_seed, index), action_mode=action_mode
+                config,
+                collector,
+                seed=game_seed(base_seed, index),
+                action_mode=action_mode,
+                episode_id=episode_id,
             )
             writer.write_episode(episode)
             if (index + 1) % int(shard_games) == 0:
@@ -381,7 +389,9 @@ def collect_games(
         "emotion_mode": sorted(modes),
         "emotion_label_schema": sorted(label_schemas),
         "emotion_label_dimension": label_dim,
-        "emotion_label_names": list(LABEL_NAMES) if FORMULA_LABEL_SCHEMA in label_schemas else None,
+        "emotion_label_names": (
+            list(LABEL_NAMES) if FORMULA_LABEL_SCHEMA in label_schemas else None
+        ),
         "termination_status": dict(sorted(status.items())),
         "win_rate": {key: round(value / games, 4) for key, value in sorted(wins.items())},
         "mean_steps": round(float(np.mean(lengths)), 2),
