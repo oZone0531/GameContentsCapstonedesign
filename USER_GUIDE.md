@@ -183,7 +183,7 @@ python -m pip install -e ".[gui]"
 
 ## 설정(Settings) 화면
 
-입력값은 **검증을 거쳐 다음 학습 작업에 적용**됩니다(진행 중인 학습에는 영향 없음). **"검증 후 저장"** 을 눌러야 실제로 저장됩니다. 자원 설정은 벤치마크/자동 튜닝/메모리 초과 탐색을 하지 않고 **입력값 그대로** 사용합니다.
+입력값은 **검증을 거쳐 다음 학습 작업에 적용**됩니다(진행 중인 학습에는 영향 없음). **"검증 후 저장"** 을 누르면 일반 설정과 하드웨어 설정이 프로젝트의 Git 무시 경로인 `artifacts/local-settings/settings.json`에 저장됩니다. 이 파일은 컴퓨터별 로컬 설정이므로 Git에 커밋되지 않고, 다른 컴퓨터나 다른 버전을 `pull`해도 덮어쓰이지 않습니다. 저장 파일이 없으면 기본 설정을 사용하고, 새 버전에서 일부 설정 항목이 추가되면 새 기본값과 기존 로컬 값을 병합합니다. 특히 CPU 코어, RAM, GPU, 워커, 배치, 버퍼 설정은 이 파일에서 유지됩니다. 자원 설정은 벤치마크/자동 튜닝/메모리 초과 탐색을 하지 않고 **입력값 그대로** 사용합니다.
 
 | 항목 | 의미 | 범위 / 기본 |
 |---|---|---|
@@ -285,7 +285,10 @@ emotions:
 
 | 항목 | 의미 | 기본 |
 |---|---|---|
-| **모드 (Mode)** | 학습 방식 문자열 (예: `rl`) | `rl` |
+| **모드 (Mode)** | 학습 workflow를 선택하는 콤보박스 | 학습 데이터 수집 |
+| **학습 데이터 수집** | all-Dummy 게임을 실행하고 formula 감정 라벨이 포함된 canonical Parquet 학습 데이터를 생성 | — |
+| **의도·감정 추론 모듈 학습** | 기존 canonical 데이터셋을 분할·NPZ cache로 변환한 뒤 Intent/Emotion Phase-2 모듈을 학습하고 각각 `.phase2model`로 저장 | — |
+| **메인 AI 학습 (준비 중)** | Phase-3 PPO/reward orchestration을 연결할 자리. 현재는 준비 중 메시지로 종료 | — |
 | **에피소드 (Episodes)** | 실행할 게임 에피소드 수 | 1 |
 | **목표 MainAgent 전이 수 (Target MainAgent transitions)** | 메인 AI 학습 전이(transition) 목표치. 0이면 에피소드 수 기준으로 진행(*Use episodes* 표시) | 0 |
 | **시드 (Seed)** | 재현 가능한 학습을 위한 난수 시드 | — |
@@ -294,7 +297,8 @@ emotions:
 | **아티팩트 출력 경로 (Artifact output path)** | 학습된 모델 아티팩트 저장 위치. 기본값은 프로젝트 루트의 `artifacts/`이며 작업별 `.bangmodel` 파일로 저장 | `artifacts/` |
 | **이어 학습할 아티팩트 (Continue from artifact)** | 기존 `.bangmodel`을 이어 학습의 시작 가중치로 사용. 파일을 직접 지정하거나 `artifacts/` 폴더를 지정하면 가장 최근 모델을 자동 선택 | `artifacts/` |
 
-### ② 제어 버튼
+학습 데이터는 프로젝트의 `bang_rl/datasets/canonical/<작업 ID>/`에 저장되고, Phase-2 cache는 `bang_rl/datasets/cache/<작업 ID>/`에 저장됩니다. 두 경로의 생성물은 Git에서 제외됩니다. Phase-2 모듈은 `bang_rl/models/intent/`와 `bang_rl/models/emotion/`에 저장되며, 메인 AI 학습은 현재 틀만 연결되어 있습니다.
+
 
 | 버튼 | 동작 |
 |---|---|

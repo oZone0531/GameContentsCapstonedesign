@@ -9,6 +9,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 REPORTS_DIR = PROJECT_ROOT / "reports"
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
+LOCAL_SETTINGS_DIR = ARTIFACTS_DIR / "local-settings"
+LOCAL_SETTINGS_PATH = LOCAL_SETTINGS_DIR / "settings.json"
 # In-project replay storage. Mirrors the models/logs/datasets convention
 # (bang_rl/replays/* gitignored except a .gitkeep placeholder). Every
 # human-played GUI game is auto-saved here so it can be browsed and replayed.
@@ -79,6 +81,8 @@ def latest_artifact(value: str | Path | None) -> Path | None:
 
 __all__ = [
     "ARTIFACTS_DIR",
+    "LOCAL_SETTINGS_DIR",
+    "LOCAL_SETTINGS_PATH",
     "OUTPUTS_DIR",
     "PROJECT_ROOT",
     "REPLAYS_DIR",

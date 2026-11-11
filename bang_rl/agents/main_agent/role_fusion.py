@@ -26,6 +26,10 @@ except ImportError:  # pragma: no cover - exercised only by documentation toolin
 ROLE_FUSION_FORMAT_VERSION = "1.0"
 ROLE_FUSION_ARCHITECTURE_VERSION = "1.0"
 ROLE_COUNT = 5
+# Phase-2 Intent training merges outlaw_a/outlaw_b into one supervised class.
+# RoleFusion still emits the canonical five-slot public role space so confirmed
+# outlaw_a/outlaw_b evidence remains representable at the Main-AI boundary.
+PRODUCTION_ROLE_COUNT = 4
 PLAYER_COUNT = 5
 TARGET_PLAYER_COUNT = 4
 HIDDEN_ROLE_SENTINEL = 255
@@ -98,6 +102,8 @@ class RoleFusion:
             "architecture_version": self.architecture_version,
             "role_fusion_format_version": self.format_version,
             "role_count": ROLE_COUNT,
+            "production_role_count": PRODUCTION_ROLE_COUNT,
+            "accepted_input_role_counts": [PRODUCTION_ROLE_COUNT, ROLE_COUNT],
             "player_count": PLAYER_COUNT,
             "target_player_count": TARGET_PLAYER_COUNT,
             "input_contract": {
@@ -121,6 +127,9 @@ class RoleFusion:
             "output_contract": {
                 "canonical_shape": [TARGET_PLAYER_COUNT, ROLE_COUNT],
                 "batched_shape": ["B", TARGET_PLAYER_COUNT, ROLE_COUNT],
+                "accepted_input_role_counts": [PRODUCTION_ROLE_COUNT, ROLE_COUNT],
+                "production_input": "four classes: sheriff, deputy, outlaw, traitor",
+                "production_to_canonical": "outlaw probability is split equally across outlaw_a/outlaw_b until a public confirmation overrides it",
                 "unresolved": "raw distribution, normalized only",
                 "confirmed": "role one-hot",
             },
@@ -153,6 +162,11 @@ class RoleFusion:
             raise ValueError("metadata does not describe RoleFusion")
         if architecture.get("role_count", ROLE_COUNT) != ROLE_COUNT:
             raise ValueError("RoleFusion role_count is fixed at 5")
+        if architecture.get("production_role_count", PRODUCTION_ROLE_COUNT) != PRODUCTION_ROLE_COUNT:
+            raise ValueError("RoleFusion production_role_count is fixed at 4")
+        accepted = architecture.get("accepted_input_role_counts", [PRODUCTION_ROLE_COUNT, ROLE_COUNT])
+        if list(accepted) != [PRODUCTION_ROLE_COUNT, ROLE_COUNT]:
+            raise ValueError("RoleFusion accepted_input_role_counts must be [4, 5]")
         if architecture.get("target_player_count", TARGET_PLAYER_COUNT) != TARGET_PLAYER_COUNT:
             raise ValueError("RoleFusion target_player_count is fixed at 4")
         return cls()
@@ -224,7 +238,11 @@ class RoleFusion:
         if viewer_idx is None and values is not None:
             viewer_idx = values.get("current_player_idx")
 
-        raw, raw_kind, original_kind, was_torch = self._raw_array(raw_role_distribution, input_type)
+        raw, raw_kind, original_kind, was_torch, input_role_count = self._raw_array(
+            raw_role_distribution, input_type
+        )
+        if input_role_count == PRODUCTION_ROLE_COUNT:
+            raw = self._expand_production_roles(raw, raw_kind)
         stream_count, batch_shape = self._stream_layout(raw.shape)
         public_shape = batch_shape + (PLAYER_COUNT,)
         visibility = self._public_int_array(
@@ -310,7 +328,7 @@ class RoleFusion:
             )
 
     @staticmethod
-    def _raw_array(value: Any, input_type: str) -> tuple[np.ndarray, str, str, bool]:
+    def _raw_array(value: Any, input_type: str) -> tuple[np.ndarray, str, str, bool, int]:
         if input_type not in {"auto", "probabilities", "probability", "probs", "logits"}:
             raise ValueError("input_type must be 'auto', 'probabilities', or 'logits'")
         was_torch = torch is not None and isinstance(value, Tensor)
@@ -321,8 +339,12 @@ class RoleFusion:
                 array = np.asarray(value)
             except (TypeError, ValueError) as exc:
                 raise TypeError("raw_role_distribution must be numeric") from exc
-        if array.ndim not in {1, 2, 3} or array.shape[-1] != ROLE_COUNT:
-            raise ValueError("raw_role_distribution must have shape (5,), (N,5), or (B,N,5)")
+        if array.ndim not in {1, 2, 3} or array.shape[-1] not in {PRODUCTION_ROLE_COUNT, ROLE_COUNT}:
+            raise ValueError(
+                "raw_role_distribution must have shape (4,), (5,), (N,4), (N,5), "
+                "(B,N,4), or (B,N,5)"
+            )
+        input_role_count = int(array.shape[-1])
         if array.ndim == 3 and array.shape[-2] not in {TARGET_PLAYER_COUNT, PLAYER_COUNT}:
             raise ValueError("raw_role_distribution stream dimension must be 4 or 5")
         if array.ndim == 2 and array.shape[-2] not in {TARGET_PLAYER_COUNT, PLAYER_COUNT}:
@@ -341,7 +363,22 @@ class RoleFusion:
                 kind = "logits"
         else:
             kind = "probabilities" if input_type in {"probabilities", "probability", "probs"} else "logits"
-        return array, kind, kind, was_torch
+        return array, kind, kind, was_torch, input_role_count
+
+    @staticmethod
+    def _expand_production_roles(raw: np.ndarray, kind: str) -> np.ndarray:
+        """Expand four supervised classes into the canonical five role slots."""
+
+        if raw.shape[-1] != PRODUCTION_ROLE_COUNT:
+            raise ValueError("production role input must have four classes")
+        if kind == "probabilities":
+            outlaw_a = raw[..., 2:3] * 0.5
+            outlaw_b = raw[..., 2:3] * 0.5
+            return np.concatenate((raw[..., :2], outlaw_a, outlaw_b, raw[..., 3:4]), axis=-1)
+        # Subtracting log(2) from each outlaw slot makes their combined
+        # softmax mass equal the original four-class outlaw mass.
+        outlaw = raw[..., 2:3] - np.log(2.0)
+        return np.concatenate((raw[..., :2], outlaw, outlaw, raw[..., 3:4]), axis=-1)
 
     @staticmethod
     def _stream_layout(shape: tuple[int, ...]) -> tuple[int, tuple[int, ...]]:
@@ -566,6 +603,7 @@ class RoleFusion:
 __all__ = [
     "HIDDEN_ROLE_SENTINEL",
     "PLAYER_COUNT",
+    "PRODUCTION_ROLE_COUNT",
     "ROLE_COUNT",
     "ROLE_FUSION_ARCHITECTURE_VERSION",
     "ROLE_FUSION_FORMAT_VERSION",

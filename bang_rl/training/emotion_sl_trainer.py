@@ -188,6 +188,7 @@ class EmotionSLConfig:
     seed: int = 0
     early_stopping_patience: int | None = None
     min_delta: float = 0.0
+    accuracy_tolerance: float = 0.05
     checkpoint_path: str | Path | None = None
     metrics_path: str | Path | None = None
     device: str = "cpu"
@@ -207,6 +208,8 @@ class EmotionSLConfig:
             raise ValueError("early_stopping_patience must be positive or None")
         if self.min_delta < 0.0:
             raise ValueError("min_delta must be non-negative")
+        if not 0.0 <= self.accuracy_tolerance <= 1.0:
+            raise ValueError("accuracy_tolerance must be in [0, 1]")
         if self.device.startswith("cuda") and not torch.cuda.is_available():
             raise ValueError("CUDA device requested but CUDA is unavailable")
 
@@ -231,6 +234,7 @@ class EmotionSLConfig:
             "seed": self.seed,
             "early_stopping_patience": self.early_stopping_patience,
             "min_delta": self.min_delta,
+            "accuracy_tolerance": self.accuracy_tolerance,
             "device": self.device,
             "deterministic": self.deterministic,
         }
@@ -338,9 +342,29 @@ class EmotionInferenceSLTrainer:
         self._bad_epochs = 0
         self._stopped_early = False
         self._resume_path: Path | None = None
+        # Optional cooperative stop hook, polled per batch (mid-epoch) and at
+        # each epoch boundary; see IntentInferenceSLTrainer for details.
+        # ``max_epochs`` (None = config.epochs) allows open-ended, time-bounded
+        # training past config.epochs.
+        self.should_stop: Callable[[], bool] | None = None
+        self.max_epochs: int | None = None
+        # Lineage when continuing from a saved module (recorded in artifacts).
+        self.resumed_from: str | None = None
+        self.prior_epochs = 0
         resume_from = resume_from or self.config.resume_from
         if resume_from is not None:
             self.load_checkpoint(resume_from)
+
+    def _stop_requested(self) -> bool:
+        callback = self.should_stop
+        return bool(callback()) if callback is not None else False
+
+    def _epoch_budget(self) -> int:
+        """Highest epoch number the fit loop may run (inclusive)."""
+
+        if self.max_epochs is None:
+            return int(self.config.epochs)
+        return max(int(self.config.epochs), int(self.max_epochs))
 
     @staticmethod
     def _seed_everything(seed: int, *, deterministic: bool) -> None:
@@ -462,7 +486,9 @@ class EmotionInferenceSLTrainer:
     def _epoch_indices(self, count: int, epoch: int) -> np.ndarray:
         return np.random.default_rng(self.config.seed + int(epoch)).permutation(count)
 
-    def _loss_and_metrics(self, batch: EmotionBatch) -> tuple[Tensor, int, int]:
+    def _loss_and_metrics(
+        self, batch: EmotionBatch, *, return_accuracy: bool = False
+    ) -> tuple[Any, ...]:
         predictions = self.model(
             batch.model_inputs["event_history"],
             batch.model_inputs["event_valid_mask"],
@@ -481,15 +507,29 @@ class EmotionInferenceSLTrainer:
         flat_targets = batch.emotion_labels[valid]
         if batch.emotion_value_mask is None:
             loss = self.model.emotion_loss(flat_predictions, flat_targets)
-            return loss, int(flat_predictions.shape[0]), int(flat_predictions.numel())
-        # Mean squared error over informative entries only: relations to the
-        # owner itself and to dead seats are constant 0.5 and are skipped.
-        entries = batch.emotion_value_mask[valid]
-        count = int(entries.sum().item())
-        if count == 0:
-            raise TrainingError("emotion batch contains no informative emotion entries")
-        loss = (torch.square(flat_predictions - flat_targets) * entries).sum() / count
-        return loss, int(flat_predictions.shape[0]), count
+            targets = int(flat_predictions.shape[0])
+            values = int(flat_predictions.numel())
+        else:
+            # Mean squared error over informative entries only: relations to the
+            # owner itself and to dead seats are constant 0.5 and are skipped.
+            entries = batch.emotion_value_mask[valid]
+            count = int(entries.sum().item())
+            if count == 0:
+                raise TrainingError("emotion batch contains no informative emotion entries")
+            loss = (torch.square(flat_predictions - flat_targets) * entries).sum() / count
+            targets = int(flat_predictions.shape[0])
+            values = count
+        if not return_accuracy:
+            return loss, targets, values
+        valid_values = valid.unsqueeze(-1).expand_as(predictions)
+        if batch.emotion_value_mask is not None:
+            valid_values = valid_values & batch.emotion_value_mask.bool()
+        correct = (
+            (torch.abs(predictions - batch.emotion_labels) <= self.config.accuracy_tolerance)
+            & valid_values
+        ).sum(dim=(0, 1)).detach().cpu().to(torch.long)
+        totals = valid_values.sum(dim=(0, 1)).detach().cpu().to(torch.long)
+        return loss, targets, values, correct, totals
 
     def _write_metric(self, record: Mapping[str, Any]) -> None:
         safe = _json_safe(dict(record))
@@ -520,19 +560,26 @@ class EmotionInferenceSLTrainer:
                 import json
                 handle.write(json.dumps(safe, sort_keys=True, separators=(",", ":")) + "\n")
 
-    def _train_epoch(self, epoch: int) -> dict[str, Any]:
+    def _train_epoch(self, epoch: int) -> dict[str, Any] | None:
         self.model.train()
         order = self._epoch_indices(len(self.train_cache), epoch)
         losses: list[float] = []
         gradients: list[float] = []
         targets = values = 0
+        correct_by_dimension: torch.Tensor | None = None
+        total_by_dimension: torch.Tensor | None = None
         for start in range(0, len(order), self.config.batch_size):
+            if self._stop_requested():
+                # Cooperative mid-epoch stop (time limit reached or user stop).
+                break
             indices = order[start : start + self.config.batch_size]
             batch = build_emotion_batch(
                 self.train_cache, indices, device=self.device, emotion_names=self.model.emotion_names
             )
             self.optimizer.zero_grad(set_to_none=True)
-            loss, batch_targets, batch_values = self._loss_and_metrics(batch)
+            loss, batch_targets, batch_values, batch_correct, batch_totals = self._loss_and_metrics(
+                batch, return_accuracy=True
+            )
             loss.backward()
             squared = 0.0
             for parameter in self.model.parameters():
@@ -544,6 +591,17 @@ class EmotionInferenceSLTrainer:
             gradients.append(gradient_norm)
             targets += batch_targets
             values += batch_values
+            if correct_by_dimension is None:
+                correct_by_dimension = torch.zeros_like(batch_correct)
+                total_by_dimension = torch.zeros_like(batch_totals)
+            correct_by_dimension += batch_correct
+            assert total_by_dimension is not None
+            total_by_dimension += batch_totals
+            batch_accuracy = torch.where(
+                batch_totals > 0,
+                batch_correct.to(torch.float32) / batch_totals.to(torch.float32),
+                torch.zeros_like(batch_totals, dtype=torch.float32),
+            )
             self._write_metric({
                 "phase": self.phase,
                 "split": "train",
@@ -553,13 +611,28 @@ class EmotionInferenceSLTrainer:
                 "batch_size": int(len(indices)),
                 "loss": float(loss.detach().item()),
                 "mse": float(loss.detach().item()),
+                "accuracy": float(batch_accuracy.mean().item()),
+                "accuracy_by_dimension": [float(value) for value in batch_accuracy.tolist()],
+                "accuracy_tolerance": self.config.accuracy_tolerance,
                 "valid_targets": batch_targets,
                 "valid_values": batch_values,
                 "gradient_norm": gradient_norm,
             })
+        if correct_by_dimension is None or total_by_dimension is None:
+            if self._stop_requested():
+                # Stopped before the first batch of this epoch: nothing trained.
+                return None
+            raise TrainingError("emotion training produced no accuracy counts")
+        aggregate_accuracy = torch.where(
+            total_by_dimension > 0,
+            correct_by_dimension.to(torch.float32) / total_by_dimension.to(torch.float32),
+            torch.zeros_like(total_by_dimension, dtype=torch.float32),
+        )
         return {
             "loss": float(np.mean(losses)) if losses else float("nan"),
             "mse": float(np.mean(losses)) if losses else float("nan"),
+            "accuracy": float(aggregate_accuracy.mean().item()),
+            "accuracy_by_dimension": [float(value) for value in aggregate_accuracy.tolist()],
             "valid_targets": targets,
             "valid_values": values,
             "gradient_norm": float(np.mean(gradients)) if gradients else 0.0,
@@ -570,16 +643,33 @@ class EmotionInferenceSLTrainer:
         self.model.eval()
         losses: list[float] = []
         targets = values = 0
+        correct_by_dimension: torch.Tensor | None = None
+        total_by_dimension: torch.Tensor | None = None
         with torch.no_grad():
             for start in range(0, len(loader), self.config.batch_size):
                 indices = np.arange(start, min(start + self.config.batch_size, len(loader)))
                 batch = build_emotion_batch(
                     loader, indices, device=self.device, emotion_names=self.model.emotion_names
                 )
-                loss, batch_targets, batch_values = self._loss_and_metrics(batch)
+                loss, batch_targets, batch_values, batch_correct, batch_totals = self._loss_and_metrics(
+                    batch, return_accuracy=True
+                )
                 losses.append(float(loss.item()))
                 targets += batch_targets
                 values += batch_values
+                if correct_by_dimension is None:
+                    correct_by_dimension = torch.zeros_like(batch_correct)
+                    total_by_dimension = torch.zeros_like(batch_totals)
+                correct_by_dimension += batch_correct
+                assert total_by_dimension is not None
+                total_by_dimension += batch_totals
+        if correct_by_dimension is None or total_by_dimension is None:
+            raise TrainingError("emotion evaluation produced no accuracy counts")
+        aggregate_accuracy = torch.where(
+            total_by_dimension > 0,
+            correct_by_dimension.to(torch.float32) / total_by_dimension.to(torch.float32),
+            torch.zeros_like(total_by_dimension, dtype=torch.float32),
+        )
         result = {
             "phase": self.phase,
             "split": split,
@@ -587,6 +677,8 @@ class EmotionInferenceSLTrainer:
             "epoch": epoch,
             "loss": float(np.mean(losses)) if losses else float("nan"),
             "mse": float(np.mean(losses)) if losses else float("nan"),
+            "accuracy": float(aggregate_accuracy.mean().item()),
+            "accuracy_by_dimension": [float(value) for value in aggregate_accuracy.tolist()],
             "valid_targets": targets,
             "valid_values": values,
             "batches": len(losses),
@@ -673,41 +765,18 @@ class EmotionInferenceSLTrainer:
     def fit(self, *, stop_after_epoch: int | None = None) -> EmotionTrainingResult:
         if stop_after_epoch is not None and (isinstance(stop_after_epoch, bool) or stop_after_epoch < 1):
             raise ValueError("stop_after_epoch must be positive or None")
-        if self.start_epoch > self.config.epochs:
+        epoch_budget = self._epoch_budget()
+        if self.start_epoch > epoch_budget:
             self._restore_best()
             return self._result()
-        for epoch in range(self.start_epoch, self.config.epochs + 1):
-            train_metrics = self._train_epoch(epoch)
-            validation = self._evaluate(self.validation_cache, "validation", epoch)
-            record = {
-                "phase": self.phase,
-                "split": "train",
-                "event": "epoch",
-                "epoch": epoch,
-                "train_loss": train_metrics["loss"],
-                "train_mse": train_metrics["mse"],
-                "train_valid_targets": train_metrics["valid_targets"],
-                "train_valid_values": train_metrics["valid_values"],
-                "train_gradient_norm": train_metrics["gradient_norm"],
-                "validation_loss": validation["loss"],
-                "validation_mse": validation["mse"],
-                "validation_valid_targets": validation["valid_targets"],
-                "validation_valid_values": validation["valid_values"],
-            }
-            self.history.append(record)
-            self._write_metric(record)
-            current_loss = float(validation["loss"])
-            if current_loss < self.best_validation_loss - self.config.min_delta:
-                self.best_validation_loss = current_loss
-                self.best_epoch = epoch
-                self.best_state = _clone_state_dict(self.model)
-                self._bad_epochs = 0
-            else:
-                self._bad_epochs += 1
-            self.start_epoch = epoch + 1
-            if self.config.checkpoint_path is not None:
-                self.save_checkpoint()
+        for epoch in range(self.start_epoch, epoch_budget + 1):
+            if self._stop_requested():
+                break
+            if not self._run_epoch(epoch):
+                break
             if stop_after_epoch is not None and epoch >= stop_after_epoch:
+                break
+            if self._stop_requested():
                 break
             if (
                 self.config.early_stopping_patience is not None
@@ -715,8 +784,78 @@ class EmotionInferenceSLTrainer:
             ):
                 self._stopped_early = True
                 break
+        return self.finalize()
+
+    def adopt_current_weights_as_baseline(self) -> dict[str, Any]:
+        """Use the current (e.g. resumed) weights as the best-so-far model.
+
+        Evaluates them on the validation split so continued training only
+        replaces them when it actually improves validation loss.
+        """
+
+        validation = self._evaluate(self.validation_cache, "validation", 0)
+        self.best_validation_loss = float(validation["loss"])
+        self.best_state = _clone_state_dict(self.model)
+        self.best_epoch = 0
+        return validation
+
+    def train_next_epoch(self) -> bool:
+        """Train exactly one more epoch without finalizing.
+
+        Used by time-limited training, which alternates modules epoch by epoch.
+        Unlike ``fit`` it neither restores the best weights nor evaluates the
+        test split, so the live weights keep training. Returns False when a
+        stop request ended the epoch before any batch ran.
+        """
+
+        return self._run_epoch(self.start_epoch)
+
+    def finalize(self) -> EmotionTrainingResult:
+        """Restore the best validation weights and build the final result."""
+
         self._restore_best()
         return self._result()
+
+    def _run_epoch(self, epoch: int) -> bool:
+        train_metrics = self._train_epoch(epoch)
+        if train_metrics is None:
+            return False
+        validation = self._evaluate(self.validation_cache, "validation", epoch)
+        record = {
+            "phase": self.phase,
+            "split": "train",
+            "event": "epoch",
+            "epoch": epoch,
+            "train_loss": train_metrics["loss"],
+            "train_mse": train_metrics["mse"],
+            "train_emotion_accuracy": train_metrics["accuracy"],
+            "train_emotion_accuracy_by_dimension": train_metrics["accuracy_by_dimension"],
+            "train_valid_targets": train_metrics["valid_targets"],
+            "train_valid_values": train_metrics["valid_values"],
+            "train_gradient_norm": train_metrics["gradient_norm"],
+            "validation_loss": validation["loss"],
+            "validation_mse": validation["mse"],
+            "validation_emotion_accuracy": validation["accuracy"],
+            "validation_emotion_accuracy_by_dimension": validation["accuracy_by_dimension"],
+            "emotion_accuracy_tolerance": self.config.accuracy_tolerance,
+            "emotion_dimension_names": list(self.model.emotion_names),
+            "validation_valid_targets": validation["valid_targets"],
+            "validation_valid_values": validation["valid_values"],
+        }
+        self.history.append(record)
+        self._write_metric(record)
+        current_loss = float(validation["loss"])
+        if current_loss < self.best_validation_loss - self.config.min_delta:
+            self.best_validation_loss = current_loss
+            self.best_epoch = epoch
+            self.best_state = _clone_state_dict(self.model)
+            self._bad_epochs = 0
+        else:
+            self._bad_epochs += 1
+        self.start_epoch = epoch + 1
+        if self.config.checkpoint_path is not None:
+            self.save_checkpoint()
+        return True
 
     def _restore_best(self) -> None:
         if self.best_state:
@@ -794,11 +933,16 @@ class EmotionInferenceSLTrainer:
                 "phase": self.phase,
                 "epochs_configured": self.config.epochs,
                 "epochs_completed": len(self.history),
+                "prior_epochs": self.prior_epochs,
+                "total_epochs": self.prior_epochs + len(self.history),
+                "resumed_from": self.resumed_from,
                 "best_epoch": self.best_epoch,
                 "best_validation_loss": self.best_validation_loss,
                 "early_stopped": self._stopped_early,
                 "seed": self.config.seed,
                 "batch_size": self.config.batch_size,
+                "accuracy_tolerance": self.config.accuracy_tolerance,
+                "emotion_dimension_names": list(self.model.emotion_names),
                 "metrics": list(self.history),
                 "test_metrics": test_metrics,
                 "label_alignment": "pre-action emotion state; current/future events excluded",

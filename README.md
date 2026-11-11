@@ -57,6 +57,9 @@ config = load_config("config.example.yaml")
 
 Important defaults are schema-owned: `max_episode_steps=2000`, long-game thresholds `200/500`, unlimited public event history (`event_history.max_events: null`), PPO rollout/gamma/GAE/epoch/minibatch values `256/0.99/0.95/4/64`, PPO `clip_epsilon=0.2`, and EmotionInference `initial_baseline=0.0`. Reward numbers are example configuration values, not implementation constants.
 
+`config.example.yaml` is a documentation/example file and is not loaded implicitly by runtime services. Runtime DummyAgent entry points ensure that `EmotionConfig.formula` is present and use `FormulaEmotionModule`; a direct low-level `EmotionConfig()` can still construct the legacy rule-table module for compatibility tests and explicit experiments.
+
+
 The schema accepts YAML or JSON. Environment and dataset paths are interpreted relative to the process working directory. The example uses the repository’s checked-in runtime-data locations:
 
 - Canonical Parquet shards: `bang_rl/datasets/canonical/`
@@ -81,7 +84,7 @@ from bang_rl.app import (
 ```
 
 - `GameService` creates sessions, exposes read-only `PublicGameState`, and submits actions.
-- `TrainingService` starts a job, reports progress, pauses/resumes in the current process, and cancels a job. Pause/resume is memory-only.
+- `TrainingService` exposes three workflows: `data_collection` writes formula-labelled canonical Parquet games, `module_training` builds caches and trains the Intent/Emotion Phase-2 modules, and `main_ai_training` is the reserved Phase-3 PPO workflow placeholder. It reports progress and supports in-process pause/resume/cancel where a workflow can honor them.
 - `EvaluationService` runs the primary or custom protocol and reports normal/truncated denominators separately.
 - `DatasetService` exposes canonical and cache paths and Parquet collection boundaries.
 - `ConfigService` loads, validates, saves, and snapshots `SystemConfig`.
@@ -121,4 +124,4 @@ The primary evaluation protocol is `deterministic_v1`: 500 games, 100 games per 
 
 ## Deliberate limitations
 
-This implementation does not provide Hardware Benchmark runners, automatic Worker/Batch/Buffer tuning, OOM-based batch search, Role Count Projection/Bayesian assignment, intermediate training checkpoints, or training resume after process termination. GUI Pause/Resume only coordinates the in-memory current job; it does not create a disk checkpoint.
+This implementation does not provide the final Phase-3 PPO/reward orchestration behind `main_ai_training`, Hardware Benchmark runners, automatic Worker/Batch/Buffer tuning, OOM-based batch search, Role Count Projection/Bayesian assignment, intermediate training checkpoints, or training resume after process termination. GUI Pause/Resume only coordinates the in-memory current job; it does not create a disk checkpoint. Replays, canonical datasets, caches, reports, outputs, and generated model artifacts are Git-ignored; only directory `.gitkeep` markers are retained.

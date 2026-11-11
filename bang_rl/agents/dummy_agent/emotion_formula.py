@@ -45,9 +45,9 @@ PERSONALITY_KEYS = ("sheriff", "deputy", "outlaw", "traitor")
 # Only these events move global / relation emotions.
 HARM_EVENTS = ("bang", "player_eliminated")
 
-# Global emotions shown as bars in the GUI (values are in [0, 1]).
+# The formula schema exposes four global values plus one relation value per
+# seat, for a nine-entry public label.
 EMOTION_NAMES = ("calm", "confidence", "aggression", "anxiety")
-# 9-entry training label: 4 global + 5 relations mapped to [0, 1].
 LABEL_NAMES = EMOTION_NAMES + tuple(f"relation_{seat}" for seat in range(PLAYER_COUNT))
 
 DEFAULT_DESCRIPTIONS = {
@@ -361,12 +361,20 @@ class EmotionState:
     def relation_01(self) -> np.ndarray:
         return np.where(self.R_active, (self.R + 1.0) / 2.0, 0.5)
 
-    def label(self) -> np.ndarray:
-        """[calm, confidence, aggression, anxiety, relation_0..4]. Relations mapped to [0,1] via (R+1)/2; self/dead = 0.5."""
-        return np.concatenate([[self.P, self.S, self.A, self.F], self.relation_01()]).astype(np.float32)
+    def global_values(self, names: Sequence[str] = EMOTION_NAMES) -> np.ndarray:
+        """Return the four public global emotion values in [0, 1]."""
 
-    def label_mask(self) -> np.ndarray:
-        return np.concatenate([np.ones(4, dtype=bool), self.R_active])
+        return np.asarray([self.P, self.S, self.A, self.F], dtype=np.float32)
+
+    def label(self, names: Sequence[str] = EMOTION_NAMES) -> np.ndarray:
+        """Return the four global emotion values plus one relation per seat."""
+
+        values = self.global_values(names)
+        return np.concatenate([values, self.relation_01()]).astype(np.float32)
+
+    def label_mask(self, names: Sequence[str] = EMOTION_NAMES) -> np.ndarray:
+        values = np.ones(len(tuple(names)), dtype=bool)
+        return np.concatenate([values, self.R_active])
 
     def action_contribution(self) -> np.ndarray:
         """6-entry vector to pass as ActionSelector.select_with_info(emotion_contribution=...)."""
@@ -455,6 +463,7 @@ class FormulaEmotionModule:
         self.player_idx = int(player_idx)
         self._config_dump = self._dump_config(config)
         block = formula_block(config) or {}
+        self._emotion_names = self._resolve_emotion_names(self._config_dump)
         self.formula_schema_version = str(block.get("schema_version", FORMULA_STATE_SCHEMA))
         self.base_params: dict[str, float] = {k: float(v) for k, v in dict(block.get("params", {}) or {}).items()}
         self.personality_by_role: dict[str, dict[str, float]] = {
@@ -476,6 +485,10 @@ class FormulaEmotionModule:
 
     # -- config ------------------------------------------------------------
     @staticmethod
+    def _resolve_emotion_names(config: Mapping[str, Any]) -> tuple[str, ...]:
+        return EMOTION_NAMES
+
+    @staticmethod
     def _dump_config(config: Any) -> dict[str, Any]:
         if config is None:
             return {}
@@ -488,7 +501,7 @@ class FormulaEmotionModule:
         for item in self._config_dump.get("emotions", []) or []:
             if isinstance(item, Mapping) and item.get("name"):
                 given[str(item["name"])] = str(item.get("description") or "")
-        return [{"name": n, "description": given.get(n) or DEFAULT_DESCRIPTIONS[n]} for n in EMOTION_NAMES]
+        return [{"name": n, "description": given.get(n) or DEFAULT_DESCRIPTIONS[n]} for n in self._emotion_names]
 
     @property
     def params(self) -> EmotionParams:
@@ -497,16 +510,15 @@ class FormulaEmotionModule:
     # -- read-only views ---------------------------------------------------
     @property
     def emotion_names(self) -> tuple[str, ...]:
-        return EMOTION_NAMES
+        return self._emotion_names
 
     @property
     def emotion_count(self) -> int:
-        return len(EMOTION_NAMES)
+        return len(self._emotion_names)
 
     @property
     def values(self) -> np.ndarray:
-        st = self._state
-        return np.asarray([st.P, st.S, st.A, st.F], dtype=np.float32)
+        return self._state.global_values(self._emotion_names)
 
     @property
     def relation(self) -> np.ndarray:
@@ -522,10 +534,10 @@ class FormulaEmotionModule:
         return self._state.last_step
 
     def label(self) -> np.ndarray:
-        return self._state.label()
+        return self._state.label(self._emotion_names)
 
     def label_mask(self) -> np.ndarray:
-        return self._state.label_mask()
+        return self._state.label_mask(self._emotion_names)
 
     def action_contribution(self) -> np.ndarray:
         return np.asarray(self._state.action_contribution(), dtype=np.float64)
@@ -612,7 +624,7 @@ class FormulaEmotionModule:
             "self_role": self.self_role,
             "config": config,
             # GUI emotion bars read these three keys.
-            "emotion_names": list(EMOTION_NAMES),
+            "emotion_names": list(self._emotion_names),
             "values": [float(v) for v in self.values],
             # Relations: signed [-1, 1] and the [0, 1] label form.
             "relation": [float(v) for v in st.R],

@@ -9,6 +9,7 @@ the schema defaults are used.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import json
 from pathlib import Path
 from typing import Any, TypeVar
@@ -21,7 +22,8 @@ from ..exceptions import (
     ConfigFileError,
     ConfigValidationError,
 )
-from .schema import SystemConfig
+from ..paths import LOCAL_SETTINGS_PATH
+from .schema import HardwareConfig, SystemConfig
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -76,6 +78,16 @@ def _validate_document(
         raise ConfigValidationError(path, exc.errors()) from exc
 
 
+def _deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
+    result = dict(base)
+    for key, value in override.items():
+        if isinstance(value, Mapping) and isinstance(result.get(key), Mapping):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
 class ConfigLoader:
     """Load and validate YAML/JSON config documents.
 
@@ -104,6 +116,56 @@ class ConfigLoader:
         if not resolved.is_file():
             raise ConfigFileError(f"Configuration file does not exist: {resolved}")
         return _validate_document(_read_document(resolved), schema, resolved)
+
+    def load_local(
+        self,
+        path: str | Path | None = None,
+        *,
+        base: ModelT | None = None,
+        schema: type[ModelT] = SystemConfig,
+    ) -> ModelT:
+        """Load an ignored per-machine overlay over the supplied base config.
+
+        Missing local state returns the base/schema defaults. For SystemConfig,
+        an older local file that no longer validates is reduced to its valid
+        hardware block so machine resource settings survive schema evolution.
+        """
+
+        resolved = Path(path) if path is not None else LOCAL_SETTINGS_PATH
+        baseline = base or schema.model_validate({})
+        if not resolved.is_file():
+            return baseline
+        try:
+            document = _read_document(resolved)
+            if not isinstance(document, dict):
+                raise ConfigFileError(f"Local settings document {resolved} must contain a mapping at its root")
+            merged = _deep_merge(baseline.model_dump(mode="python"), document)
+            return _validate_document(merged, schema, resolved)
+        except ConfigValidationError:
+            if schema is not SystemConfig:
+                raise
+            document = _read_document(resolved)
+            if isinstance(document, Mapping) and isinstance(document.get("hardware"), Mapping):
+                try:
+                    hardware_values = _deep_merge(
+                        baseline.hardware.model_dump(mode="python"),
+                        document["hardware"],
+                    )
+                    hardware = HardwareConfig.model_validate(hardware_values)
+                    return baseline.model_copy(update={"hardware": hardware})
+                except Exception:
+                    pass
+            raise
+
+    def save_local(
+        self,
+        value: BaseModel | dict[str, Any],
+        path: str | Path | None = None,
+        schema: type[ModelT] = SystemConfig,
+    ) -> Path:
+        """Persist per-machine settings under the Git-ignored local path."""
+
+        return self.save(path or LOCAL_SETTINGS_PATH, value, schema)
 
     def validate(self, value: Any, schema: type[ModelT] = SystemConfig) -> ModelT:
         """Validate an in-memory mapping using the same errors as file loading."""
@@ -152,8 +214,22 @@ class ConfigService:
     def load(self, path: str | Path | None, schema: type[ModelT] = SystemConfig) -> ModelT:
         return self.loader.load(path, schema)
 
-    def validate(self, value: Any, schema: type[ModelT] = SystemConfig) -> ModelT:
-        return self.loader.validate(value, schema)
+    def load_local(
+        self,
+        path: str | Path | None = None,
+        *,
+        base: ModelT | None = None,
+        schema: type[ModelT] = SystemConfig,
+    ) -> ModelT:
+        return self.loader.load_local(path, base=base, schema=schema)
+
+    def save_local(
+        self,
+        value: BaseModel | dict[str, Any],
+        path: str | Path | None = None,
+        schema: type[ModelT] = SystemConfig,
+    ) -> Path:
+        return self.loader.save_local(value, path, schema)
 
     def save(
         self,

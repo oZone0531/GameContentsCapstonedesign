@@ -8,6 +8,7 @@ reward constants in implementation code.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import Enum
 from hashlib import sha256
 from math import isfinite
@@ -658,6 +659,30 @@ class PPOConfig(ConfigModel):
         if value.learning_rate != 0.0003:
             raise ValueError("PPOModule optimizer learning_rate is fixed at 3e-4")
         return value
+
+
+def ensure_formula_emotion(value: EmotionConfig | Mapping[str, object] | None) -> EmotionConfig:
+    """Return the nine-emotion Formula configuration.
+
+    The formula label is ``[calm, confidence, aggression, anxiety,
+    relation_0..relation_4]`` (four global values plus one relation per seat).
+    A config that already carries a ``formula`` block is returned unchanged.
+    """
+
+    resolved = EmotionConfig.model_validate(value or {})
+    if resolved.formula is not None:
+        return resolved
+    formula_names = (
+        {"name": "calm"}, {"name": "confidence"},
+        {"name": "aggression"}, {"name": "anxiety"},
+        {"name": "relation_0"}, {"name": "relation_1"}, {"name": "relation_2"},
+        {"name": "relation_3"}, {"name": "relation_4"},
+    )
+    return EmotionConfig(
+        schema_version="formula-1.0+label9",
+        emotions=formula_names,
+        formula=EmotionFormulaConfig(),
+    )
 
 
 class PresetConfig(ConfigModel):

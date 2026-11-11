@@ -39,10 +39,10 @@ def test_trace_is_saved_next_to_full_replay_with_formula(tmp_path, monkeypatch):
     assert "intent alone" in text and "Game over" in text
 
 
-def test_trace_also_works_for_the_default_module(tmp_path, monkeypatch):
+def test_trace_also_works_for_the_default_formula_module(tmp_path, monkeypatch):
     _, traces = _play_spectator_game(tmp_path, monkeypatch, None)
     assert len(traces) == 1
-    assert "rule_table" in traces[0].read_text(encoding="utf-8")
+    assert "emotion_formula" in traces[0].read_text(encoding="utf-8")
 
 
 def test_public_record_has_no_trace_and_cli_regenerates(tmp_path, monkeypatch):

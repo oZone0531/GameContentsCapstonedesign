@@ -16,6 +16,7 @@ from bang_rl.training import (
     build_intent_batch,
     load_intent_artifact,
 )
+from bang_rl.training.sl_trainer import raw_role_to_target
 
 
 def _observation(*, viewer: int = 0, step: int = 0) -> dict:
@@ -91,6 +92,13 @@ def _caches(tmp_path):
     )
     test = writer.write("test", test_records, train_episodes=train_records, split_seed=19)
     return train, validation, test
+
+
+def test_raw_role_to_production_target_merges_only_outlaws() -> None:
+    np.testing.assert_array_equal(
+        raw_role_to_target(np.asarray([0, 1, 2, 3, 4], dtype=np.int64)),
+        np.asarray([0, 1, 2, 2, 3], dtype=np.int64),
+    )
 
 
 def test_batch_selects_four_non_viewer_targets_and_keeps_inputs_public(tmp_path) -> None:

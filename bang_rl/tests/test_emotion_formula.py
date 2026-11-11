@@ -110,11 +110,11 @@ def test_personality_by_role_is_applied_from_own_role():
 
 
 # -- integration ----------------------------------------------------------------
-@pytest.mark.parametrize("env_seed", [0, 1, 2, 3, 4])
-def test_formula_with_zero_effect_plays_the_same_game_as_default(env_seed):
-    default = _play(*_session(_config(None), env_seed))
-    zeroed = _play(*_session(_config(_example(lambda_E=0.0, sigma=0.0, sigma_R=0.0)), env_seed))
-    assert zeroed == default
+def test_default_game_service_uses_formula_emotion():
+    service, handle, session = _session(_config(None), env_seed=0)
+    assert all(agent.uses_emotion_formula for agent in session.agents)
+    assert service.get_state(handle).environment_step == 0
+    service.close_session(handle)
 
 
 def test_every_living_dummy_updates_every_step_from_its_own_view():

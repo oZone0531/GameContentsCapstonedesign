@@ -130,8 +130,8 @@ class IntentInferenceModule(nn.Module):
         self._validate_positive_int(role_count, "role_count")
         if target_player_count != TARGET_PLAYER_COUNT:
             raise ValueError(f"target_player_count is fixed at {TARGET_PLAYER_COUNT}")
-        if role_count != ROLE_COUNT:
-            raise ValueError(f"role_count is fixed at {ROLE_COUNT}")
+        if role_count not in {4, ROLE_COUNT}:
+            raise ValueError(f"role_count must be 4 or {ROLE_COUNT}")
         if preprocessor is not None and not isinstance(preprocessor, ObservationPreprocessor):
             raise TypeError("preprocessor must be an ObservationPreprocessor")
         self._input_dim = input_dim
