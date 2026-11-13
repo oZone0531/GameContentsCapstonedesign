@@ -1,0 +1,27 @@
+........................................................................ [  9%]
+........................................................................ [ 18%]
+........................................................................ [ 27%]
+........................................................................ [ 36%]
+........................................................................ [ 45%]
+........................................................................ [ 54%]
+........................................................................ [ 63%]
+........................................................................ [ 72%]
+........................................................................ [ 81%]
+........................................................................ [ 90%]
+........................................................................ [100%]
+============================== warnings summary ===============================
+bang_rl/tests/test_environment_aec.py::test_pettingzoo_aec_api_and_space_contract
+  C:\Users\ozone\Desktop\GameContentsCapstone\GameContentsCapstonedesign\.venv\Lib\site-packages\pettingzoo\test\api_test.py:139: UserWarning: Observation is not a NumPy array
+    warnings.warn("Observation is not a NumPy array")
+
+bang_rl/tests/test_environment_aec.py::test_pettingzoo_aec_api_and_space_contract
+  C:\Users\ozone\Desktop\GameContentsCapstone\GameContentsCapstonedesign\.venv\Lib\site-packages\pettingzoo\test\api_test.py:241: UserWarning: Observation space for each agent probably should be gymnasium.spaces.box or gymnasium.spaces.discrete
+    warnings.warn(
+
+bang_rl/tests/test_evaluation_baselines.py::test_main_agent_and_baselines_play_the_same_deals
+  C:\Users\ozone\Desktop\GameContentsCapstone\GameContentsCapstonedesign\bang_rl\agents\main_agent\intent_inference.py:430: UserWarning: The given NumPy array is not writable, and PyTorch does not support non-writable tensors. This means writing to this tensor will result in undefined behavior. You may want to copy the array to protect its data or make it writable before converting it to a tensor. This type of warning will be suppressed for the rest of this program. (Triggered internally at C:\actions-runner\_work\pytorch\pytorch\pytorch\torch\csrc\utils\tensor_numpy.cpp:209.)
+    values = sequence if isinstance(sequence, Tensor) else torch.as_tensor(sequence)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+- generated xml file: C:\Users\ozone\Desktop\GameContentsCapstone\GameContentsCapstonedesign\_tmp_j.xml -
+792 passed, 3 warnings in 171.66s (0:02:51)

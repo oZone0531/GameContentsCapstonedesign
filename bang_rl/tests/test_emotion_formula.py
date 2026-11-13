@@ -156,3 +156,48 @@ def test_gui_bars_and_label_fields_are_exported():
     rel, rel01 = np.asarray(state["relation"]), np.asarray(state["relation_01"])
     active = np.asarray(state["label_mask"][4:])
     np.testing.assert_allclose(rel01[active], (rel[active] + 1.0) / 2.0)
+
+
+# --- ensure_formula_emotion uses the tuned JSON formula -------------------
+
+
+def test_ensure_formula_emotion_uses_tuned_json_when_no_formula_configured() -> None:
+    from bang_rl.config import ensure_formula_emotion
+
+    tuned = json.loads(EXAMPLE.read_text(encoding="utf-8"))["formula"]
+    for value in (None, {}, EmotionConfig()):
+        resolved = ensure_formula_emotion(value)
+        assert resolved.formula is not None
+        assert resolved.formula.params == tuned["params"]
+        assert resolved.schema_version == "formula-1.0+label9"
+        assert len(resolved.emotions) == 9
+    # The tuned values, not the code defaults, reach the formula parameters.
+    params = EmotionParams.from_mapping(ensure_formula_emotion(None).formula.params)
+    assert params.theta == pytest.approx(0.8) != EmotionParams().theta
+    assert params.kappa_F == pytest.approx(3.0) != EmotionParams().kappa_F
+
+
+def test_ensure_formula_emotion_keeps_an_explicit_formula() -> None:
+    from bang_rl.config import ensure_formula_emotion
+
+    explicit = EmotionConfig.model_validate(_example(theta=0.3))
+    resolved = ensure_formula_emotion(explicit)
+    assert resolved.formula.params["theta"] == pytest.approx(0.3)
+
+
+def test_default_formula_falls_back_to_code_defaults_without_a_file(tmp_path) -> None:
+    from bang_rl.config import default_emotion_formula
+
+    assert default_emotion_formula(tmp_path / "missing.json").params == {}
+    broken = tmp_path / "broken.json"
+    broken.write_text("{not json", encoding="utf-8")
+    with pytest.warns(RuntimeWarning):
+        assert default_emotion_formula(broken).params == {}
+
+
+def test_default_formula_returns_independent_copies() -> None:
+    from bang_rl.config import default_emotion_formula
+
+    first = default_emotion_formula()
+    first.params["theta"] = 0.123
+    assert default_emotion_formula().params["theta"] == pytest.approx(0.8)
