@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 
 import numpy as np
@@ -121,6 +122,29 @@ def test_fixed_tensors_shapes_dtypes_and_normal_only_filter(tmp_path) -> None:
     assert labels["role_labels"].dtype == np.uint8
     assert labels["emotion_labels"].shape == (1, 5, 2)
     assert labels["emotion_labels"].dtype == np.float32
+
+
+
+
+def test_materialize_reconstructs_public_pre_action_events_from_episode_storage(tmp_path) -> None:
+    source = episode(1)
+    public_event = event(1)
+    pre_observation = observation(step=1)
+    pre_observation.pop("event_sequence", None)
+    step = replace(
+        source.steps[0],
+        environment_step=2,
+        pre_event_ids=(1,),
+        pre_observation=pre_observation,
+    )
+    source = replace(source, steps=(step,), events=(public_event,))
+
+    artifact = NPZTensorCacheWriter(tmp_path).write("train", [source])
+    loader = NPZTensorCacheLoader(artifact.tensor_path)
+    inputs = loader.model_inputs()
+
+    assert int(inputs["event_valid_mask"].sum()) > 0
+    assert int(np.count_nonzero(inputs["event_history"])) > 0
 
 
 def test_preprocessor_padding_and_valid_mask_are_saved_exactly(tmp_path) -> None:

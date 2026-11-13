@@ -8,11 +8,15 @@ reward constants in implementation code.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import Enum
+from functools import lru_cache
 from hashlib import sha256
 from math import isfinite
+from pathlib import Path
 import json
 from typing import Annotated, Literal, Union
+import warnings
 
 from pydantic import (
     AliasChoices,
@@ -658,6 +662,73 @@ class PPOConfig(ConfigModel):
         if value.learning_rate != 0.0003:
             raise ValueError("PPOModule optimizer learning_rate is fixed at 3e-4")
         return value
+
+
+# Tuned emotion formula shipped at the repository root. It is the same file the
+# CLI collectors use (``bang_rl.data.game_collection.DEFAULT_EMOTION_FILE``).
+DEFAULT_EMOTION_FORMULA_FILE = Path(__file__).resolve().parents[2] / "emotion_formula.example.json"
+
+
+@lru_cache(maxsize=8)
+def _formula_from_file(path: str, mtime_ns: int) -> EmotionFormulaConfig | None:
+    """Parse the ``formula`` block of an emotion JSON file (cached per mtime)."""
+
+    del mtime_ns  # cache key only: an edited file is re-read
+    try:
+        block = json.loads(Path(path).read_text(encoding="utf-8"))
+        formula = block.get("formula") if isinstance(block, Mapping) else None
+        if formula is None:
+            return None
+        return EmotionFormulaConfig.model_validate(formula)
+    except (OSError, ValueError) as error:
+        warnings.warn(
+            f"could not read emotion formula from {path}: {error}; using code defaults",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        return None
+
+
+def default_emotion_formula(path: str | Path | None = None) -> EmotionFormulaConfig:
+    """The tuned formula from ``emotion_formula.example.json``.
+
+    Falls back to the code defaults (empty params) when the file is missing or
+    invalid, e.g. in an installed package without the repository files.
+    """
+
+    file = Path(path) if path is not None else DEFAULT_EMOTION_FORMULA_FILE
+    try:
+        mtime = file.stat().st_mtime_ns
+    except OSError:
+        return EmotionFormulaConfig()
+    cached = _formula_from_file(str(file), mtime)
+    # Config models are mutable; never hand out the cached instance.
+    return cached.model_copy(deep=True) if cached is not None else EmotionFormulaConfig()
+
+
+def ensure_formula_emotion(value: EmotionConfig | Mapping[str, object] | None) -> EmotionConfig:
+    """Return the nine-emotion Formula configuration.
+
+    The formula label is ``[calm, confidence, aggression, anxiety,
+    relation_0..relation_4]`` (four global values plus one relation per seat).
+    A config that already carries a ``formula`` block is returned unchanged;
+    otherwise the tuned formula from ``emotion_formula.example.json`` is used.
+    """
+
+    resolved = EmotionConfig.model_validate(value or {})
+    if resolved.formula is not None:
+        return resolved
+    formula_names = (
+        {"name": "calm"}, {"name": "confidence"},
+        {"name": "aggression"}, {"name": "anxiety"},
+        {"name": "relation_0"}, {"name": "relation_1"}, {"name": "relation_2"},
+        {"name": "relation_3"}, {"name": "relation_4"},
+    )
+    return EmotionConfig(
+        schema_version="formula-1.0+label9",
+        emotions=formula_names,
+        formula=default_emotion_formula(),
+    )
 
 
 class PresetConfig(ConfigModel):

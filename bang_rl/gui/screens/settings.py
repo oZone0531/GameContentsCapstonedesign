@@ -8,7 +8,6 @@ from typing import Any
 from ..dialogs import DummyAISettingsDialog
 from ..i18n import LANGUAGE_LABELS, LANGUAGES, current_language, set_language, tr
 from ..qt_compat import (
-    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -18,7 +17,6 @@ from ..qt_compat import (
     QLabel,
     QPlainTextEdit,
     QPushButton,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
     QT_AVAILABLE,
@@ -43,9 +41,6 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             super().__init__(parent)
             self.editor = editor or SettingsEditor()
             self.on_back = on_back
-            # ``snapshot.hardware`` is a plain, JSON-safe dict; the underlying
-            # ``config.hardware`` is a Pydantic model and is not subscriptable.
-            hardware = self.editor.snapshot.hardware
 
             self.language = QComboBox(self)
             for code in LANGUAGES:
@@ -55,10 +50,6 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
                 self.language.setCurrentIndex(current_index)
             self.language.currentIndexChanged.connect(self._change_language)
 
-            self.clip = QDoubleSpinBox(self)
-            self.clip.setRange(0.000001, 0.999999)
-            self.clip.setDecimals(6)
-            self.clip.setValue(self.editor.snapshot.ppo_clip_epsilon)
             # Per-emotion initial-value editor for the dummy AI. One spinbox is
             # built per emotion currently in ``config.preset.emotion`` (works
             # for any emotion_count, not a hard-coded 6).
@@ -76,23 +67,6 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             self.emotion_save_button.clicked.connect(self._save_emotion_file)
             self.emotion_load_button = QPushButton(tr("settings.emotion_load_file"), self)
             self.emotion_load_button.clicked.connect(self._load_emotion_file)
-            self.cpu = QSpinBox(self)
-            self.cpu.setRange(1, 4096)
-            self.cpu.setValue(hardware["cpu_cores"])
-            self.ram = QDoubleSpinBox(self)
-            self.ram.setRange(0.001, 1_048_576.0)
-            self.ram.setValue(hardware["ram_gb"])
-            self.workers = QSpinBox(self)
-            self.workers.setRange(1, 4096)
-            self.workers.setValue(hardware["workers"])
-            self.batch = QSpinBox(self)
-            self.batch.setRange(1, 1_000_000)
-            self.batch.setValue(hardware["batch_size"])
-            self.buffer = QSpinBox(self)
-            self.buffer.setRange(1, 1_000_000_000)
-            self.buffer.setValue(hardware["buffer_size"])
-            self.gpu = QCheckBox(tr("settings.gpu_check"), self)
-            self.gpu.setChecked(bool(hardware["use_gpu"]))
             self.reward = QPlainTextEdit(self)
             self.reward.setPlainText(json.dumps(self.editor.snapshot.reward_config, indent=2))
             self.error = QLabel(self)
@@ -108,13 +82,6 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
 
             form = QFormLayout()
             form.addRow(tr("settings.language"), self.language)
-            form.addRow(tr("settings.ppo_clip"), self.clip)
-            form.addRow(tr("settings.cpu"), self.cpu)
-            form.addRow(tr("settings.ram"), self.ram)
-            form.addRow(tr("settings.workers"), self.workers)
-            form.addRow(tr("settings.batch"), self.batch)
-            form.addRow(tr("settings.buffer"), self.buffer)
-            form.addRow(tr("settings.gpu"), self.gpu)
             # Keep the form so _apply_tooltips() (also called on language change)
             # can attach tooltips to the menu LABELS, not just the fields.
             self.form = form
@@ -168,15 +135,9 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             """
 
             self.language.setToolTip(tr("tooltip.language"))
-            self.clip.setToolTip(tr("tooltip.ppo_clip"))
-            self.cpu.setToolTip(tr("tooltip.cpu"))
-            self.ram.setToolTip(tr("tooltip.ram"))
-            self.workers.setToolTip(tr("tooltip.workers"))
-            self.batch.setToolTip(tr("tooltip.batch"))
-            self.buffer.setToolTip(tr("tooltip.buffer"))
-            self.gpu.setToolTip(tr("tooltip.gpu"))
             self.reward.setToolTip(tr("tooltip.reward_json"))
             self.reward_label.setToolTip(tr("tooltip.reward_json"))
+            self.save_button.setToolTip(tr("tooltip.settings_save"))
             self.emotion_group.setToolTip(tr("tooltip.emotion_initial_values"))
             self.dummy_ai_button.setToolTip(tr("tooltip.dummy_ai"))
             self.emotion_save_button.setToolTip(tr("tooltip.emotion_save_file"))
@@ -200,13 +161,6 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
                 return
             label_tooltips = (
                 (self.language, "tooltip.language"),
-                (self.clip, "tooltip.ppo_clip"),
-                (self.cpu, "tooltip.cpu"),
-                (self.ram, "tooltip.ram"),
-                (self.workers, "tooltip.workers"),
-                (self.batch, "tooltip.batch"),
-                (self.buffer, "tooltip.buffer"),
-                (self.gpu, "tooltip.gpu"),
             )
             for field, key in label_tooltips:
                 label = form.labelForField(field)
@@ -264,7 +218,6 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
         def _retranslate(self) -> None:
             """Update this screen's visible strings after a language change."""
 
-            self.gpu.setText(tr("settings.gpu_check"))
             self.help.setText(tr("settings.resource_help"))
             self.save_button.setText(tr("settings.save"))
             self.back_button.setText(tr("common.back"))
@@ -287,15 +240,6 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             except json.JSONDecodeError as exc:
                 raise SettingsValidationError(({"loc": ("reward_config",), "msg": str(exc)},)) from exc
             return {
-                "ppo_clip_epsilon": self.clip.value(),
-                "hardware": {
-                    "cpu_cores": self.cpu.value(),
-                    "ram_gb": self.ram.value(),
-                    "use_gpu": self.gpu.isChecked(),
-                    "workers": self.workers.value(),
-                    "batch_size": self.batch.value(),
-                    "buffer_size": self.buffer.value(),
-                },
                 "reward_config": reward,
             }
 

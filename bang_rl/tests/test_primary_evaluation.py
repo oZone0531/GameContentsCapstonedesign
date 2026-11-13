@@ -66,7 +66,9 @@ def _artifact(environment_version: str = "1.0"):
     }
     return SimpleNamespace(
         intent=_InferenceModule(np.zeros((4, 5), dtype=np.float32)),
-        emotion=_InferenceModule(np.zeros((4, 1), dtype=np.float32)),
+        # Dummy opponents expose the 9-entry formula label, so the fake
+        # estimate must have the same width to be scored.
+        emotion=_InferenceModule(np.zeros((4, 9), dtype=np.float32)),
         ppo=_Policy(),
         role_fusion=RoleFusion(),
         preprocessor=ObservationPreprocessor(),
@@ -336,7 +338,11 @@ def test_primary_metrics_and_wilson_ci_are_reported_with_exact_denominators() ->
     assert report.role_specific_results["SHERIFF"]["normal_games"] == 100
     assert report.metric_samples["role_classification"] == 400
     assert report.metric_samples["hidden_role_classification"] == 400
-    assert report.estimated_emotion_mse == pytest.approx(0.0)
+    # Formula labels are not all zero, so an all-zero estimate has a real,
+    # bounded error; what matters is that every opponent label was scored.
+    assert report.metric_samples["estimated_emotion"] > 0
+    assert isinstance(report.estimated_emotion_mse, float)
+    assert 0.0 < report.estimated_emotion_mse <= 1.0
 
 
 def test_artifact_config_compatibility_mismatch_is_rejected() -> None:

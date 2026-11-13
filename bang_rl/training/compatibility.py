@@ -409,6 +409,18 @@ class ArtifactCompatibilityValidator:
         )
         for field, required in checks:
             _expect_field(metadata, field, required, self.source)
+        intent_role_count = _path_value(metadata, "modules.intent.metadata.architecture.role_count")
+        if intent_role_count not in {4, 5}:
+            _mismatch("modules.intent.metadata.architecture.role_count", intent_role_count, "4 or 5", self.source)
+        _expect_field(metadata, "role_fusion.schema_version", "1.0", self.source)
+        _expect_field(metadata, "role_fusion.architecture.role_count", 5, self.source)
+        _expect_field(metadata, "role_fusion.architecture.production_role_count", 4, self.source)
+        _expect_field(
+            metadata,
+            "role_fusion.architecture.accepted_input_role_counts",
+            [4, 5],
+            self.source,
+        )
         for name in _REQUIRED_MODULES:
             actual_optimizer = _path_value(metadata, f"modules.{name}.metadata.architecture.optimizer")
             expected_optimizer = fixed_optimizer["ppo" if name == "ppo" else name]

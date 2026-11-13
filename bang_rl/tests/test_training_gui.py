@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +13,11 @@ from bang_rl.gui.training import (
     TrainingMonitorController,
     TrainingSetup,
     public_training_metadata,
+)
+from bang_rl.gui.screens.training_monitor import (
+    _set_log_text_preserving_scroll,
+    metrics_json,
+    metrics_preview,
 )
 
 
@@ -359,3 +364,93 @@ def test_monitor_does_not_create_resume_or_checkpoint_controls() -> None:
     source = (Path(__file__).parents[1] / "gui" / "training.py").read_text(encoding="utf-8").lower()
     assert "checkpoint" not in source
     assert "benchmark" not in source
+
+
+def test_public_metrics_can_be_rendered_when_progress_uses_mapping_proxy() -> None:
+    import json
+    from types import MappingProxyType
+
+    from bang_rl.gui.training import public_training_metadata
+
+    metrics = MappingProxyType(
+        {
+            "collection_completed": 17,
+            "collection_total": 100,
+            "nested": MappingProxyType({"episodes": 17}),
+        }
+    )
+    rendered = json.dumps(public_training_metadata(metrics), sort_keys=True)
+    assert "collection_completed" in rendered
+    assert "episodes" in rendered
+
+
+def test_log_text_preserves_bottom_or_manual_scroll_position() -> None:
+    class Scrollbar:
+        def __init__(self, value: int, maximum: int) -> None:
+            self._value = value
+            self._maximum = maximum
+
+        def value(self) -> int:
+            return self._value
+
+        def maximum(self) -> int:
+            return self._maximum
+
+        def setValue(self, value: int) -> None:
+            self._value = value
+
+    class Editor:
+        def __init__(self, value: str, scrollbar: Scrollbar) -> None:
+            self.value = value
+            self.scrollbar = scrollbar
+
+        def toPlainText(self) -> str:
+            return self.value
+
+        def verticalScrollBar(self) -> Scrollbar:
+            return self.scrollbar
+
+        def setPlainText(self, value: str) -> None:
+            self.value = value
+            self.scrollbar._maximum = max(0, len(value.splitlines()) - 1)
+
+    bottom = Editor("one\ntwo", Scrollbar(1, 1))
+    _set_log_text_preserving_scroll(bottom, "one\ntwo\nthree")
+    assert bottom.scrollbar.value() == bottom.scrollbar.maximum() == 2
+
+    manual = Editor("one\ntwo\nthree", Scrollbar(1, 2))
+    _set_log_text_preserving_scroll(manual, "one\ntwo\nthree\nfour")
+    assert manual.scrollbar.value() == 1
+
+
+def test_metrics_preview_ellipsizes_without_changing_copy_payload() -> None:
+    metrics = {"large": "x" * 500, "accuracy": 0.75}
+    full = metrics_json(metrics)
+    preview = metrics_preview(metrics, max_chars=80)
+    assert len(preview) == 80
+    assert preview.endswith("...")
+    assert full.startswith("{") and len(full) > len(preview)
+
+
+def test_monitor_snapshot_retains_role_and_emotion_dimension_series() -> None:
+    service = FakeTrainingService(
+        replace(
+            progress(),
+            metrics={
+                "intent_accuracy_points": [0.4],
+                "emotion_accuracy_points": [0.5],
+                "intent_accuracy_by_role_points": [[0.8, 0.4, 0.6, 0.2]],
+                "emotion_accuracy_by_dimension_points": [[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]],
+                "intent_role_names": ["sheriff", "deputy", "outlaw", "traitor"],
+                "emotion_dimension_names": [
+                    "calm", "confidence", "aggression", "anxiety",
+                    "relation_0", "relation_1", "relation_2", "relation_3", "relation_4",
+                ],
+            },
+        )
+    )
+    state = TrainingMonitorController(service).start(TrainingSetup(config=SystemConfig()))
+    assert state.intent_accuracy_by_role_points == ((0.8, 0.4, 0.6, 0.2),)
+    assert state.emotion_accuracy_by_dimension_points == ((0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9),)
+    assert state.intent_role_names == ("sheriff", "deputy", "outlaw", "traitor")
+    assert state.emotion_dimension_names[-1] == "relation_4"

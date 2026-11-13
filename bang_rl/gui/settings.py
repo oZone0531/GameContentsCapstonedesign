@@ -14,6 +14,7 @@ from typing import Any, Callable
 from pydantic import ValidationError
 
 from bang_rl.config import ConfigFileError, ConfigService, ConfigValidationError, EmotionConfig, SystemConfig
+from bang_rl.paths import LOCAL_SETTINGS_PATH
 
 
 RESOURCE_HELP = (
@@ -92,8 +93,17 @@ class SettingsEditor:
     ) -> None:
         self.config_service = config_service or ConfigService()
         self.on_update = on_update
-        self._config = self._validate_config(config or SystemConfig())
         self._source_path: str | None = None
+        if config is None:
+            try:
+                config = self.config_service.load_local()
+                if LOCAL_SETTINGS_PATH.is_file():
+                    self._source_path = str(LOCAL_SETTINGS_PATH)
+            except (ConfigFileError, ConfigValidationError, ValidationError):
+                # Corrupt/obsolete local state must not prevent the GUI from
+                # starting. The next Save replaces it with current schema data.
+                config = SystemConfig()
+        self._config = self._validate_config(config or SystemConfig())
         self._dirty = False
 
     @property
@@ -190,7 +200,7 @@ class SettingsEditor:
         return self.apply_dummy_emotion(loaded.model_dump(mode="json"))
 
     def save(self, path: str | Path | None = None) -> SettingsSnapshot:
-        destination = Path(path or self._source_path or "config.json")
+        destination = Path(path) if path is not None else Path(self._source_path or LOCAL_SETTINGS_PATH)
         try:
             self.config_service.save(destination, self._config, SystemConfig)
         except ValidationError as exc:

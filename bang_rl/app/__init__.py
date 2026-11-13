@@ -27,6 +27,9 @@ from .services import (
     TrainingProgress,
     TrainingReport,
     TrainingService,
+    TRAINING_MODE_DATA_COLLECTION,
+    TRAINING_MODE_MAIN_AI,
+    TRAINING_MODE_MODULE_TRAINING,
     UnknownHandleError,
 )
 
@@ -54,5 +57,8 @@ __all__ = [
     "TrainingProgress",
     "TrainingReport",
     "TrainingService",
+    "TRAINING_MODE_DATA_COLLECTION",
+    "TRAINING_MODE_MAIN_AI",
+    "TRAINING_MODE_MODULE_TRAINING",
     "UnknownHandleError",
 ]

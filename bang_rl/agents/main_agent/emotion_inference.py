@@ -355,7 +355,8 @@ class EmotionInferenceModule(nn.Module):
         nonempty = mask.any(dim=-1)
         baseline = self._initial_baseline.to(device=predictions.device, dtype=predictions.dtype)
         baseline = baseline.expand_as(predictions)
-        predictions = torch.where(nonempty.unsqueeze(-1), predictions, baseline)
+        if not self.training:
+            predictions = torch.where(nonempty.unsqueeze(-1), predictions, baseline)
         # Sigmoid guarantees this mathematically; clamp only protects callers
         # using unusual floating-point dtypes at the public boundary.
         return predictions.clamp(0.0, 1.0)

@@ -25,6 +25,16 @@ else:
     SystemConfig = Any
 
 
+TRAINING_MODE_DATA_COLLECTION = "data_collection"
+TRAINING_MODE_MODULE_TRAINING = "module_training"
+TRAINING_MODE_MAIN_AI = "main_ai_training"
+TRAINING_MODE_OPTIONS = (
+    TRAINING_MODE_DATA_COLLECTION,
+    TRAINING_MODE_MODULE_TRAINING,
+    TRAINING_MODE_MAIN_AI,
+)
+
+
 _PRIVATE_KEYS = frozenset(
     {
         "roles",
@@ -97,6 +107,12 @@ class TrainingMonitorSnapshot:
     progress: TrainingProgress | None
     snapshot: JobSnapshot | None
     win_rate_points: tuple[float, ...] = ()
+    intent_accuracy_points: tuple[float, ...] = ()
+    emotion_accuracy_points: tuple[float, ...] = ()
+    intent_accuracy_by_role_points: tuple[tuple[float, ...], ...] = ()
+    emotion_accuracy_by_dimension_points: tuple[tuple[float, ...], ...] = ()
+    intent_role_names: tuple[str, ...] = ()
+    emotion_dimension_names: tuple[str, ...] = ()
     logs: tuple[str, ...] = ()
     message: str | None = None
     public_metadata: Mapping[str, Any] = field(default_factory=dict)
@@ -120,7 +136,7 @@ class TrainingSetup:
     """Validated inputs for starting one training job."""
 
     config: SystemConfig | Mapping[str, Any] | None = None
-    mode: str = "rl"
+    mode: str = TRAINING_MODE_DATA_COLLECTION
     episodes: int = 1
     target_transitions: int | None = None
     seed: int | None = None
@@ -129,6 +145,11 @@ class TrainingSetup:
     output_path: str | Path | None = OUTPUTS_DIR
     artifact_path: str | Path | None = ARTIFACTS_DIR
     resume_artifact_path: str | Path | None = ARTIFACTS_DIR
+    train_by_time: bool = False
+    max_training_seconds: float | None = None
+    graph_point_interval: int = 1
+    resume_intent_artifact_path: str | Path | None = None
+    resume_emotion_artifact_path: str | Path | None = None
 
     def to_request(self) -> TrainingConfig:
         from bang_rl.app import TrainingConfig as ConcreteTrainingConfig
@@ -144,6 +165,11 @@ class TrainingSetup:
             output_path=self.output_path,
             artifact_path=self.artifact_path,
             resume_artifact_path=self.resume_artifact_path,
+            train_by_time=self.train_by_time,
+            max_training_seconds=self.max_training_seconds,
+            graph_point_interval=self.graph_point_interval,
+            resume_intent_artifact_path=self.resume_intent_artifact_path,
+            resume_emotion_artifact_path=self.resume_emotion_artifact_path,
         )
 
 
@@ -161,7 +187,14 @@ class TrainingMonitorController:
         self.handle: TrainingHandle | None = None
         self._snapshot = TrainingMonitorSnapshot(None, None, None)
         self._win_rates: list[float] = []
+        self._intent_accuracy: list[float] = []
+        self._emotion_accuracy: list[float] = []
+        self._intent_accuracy_by_role: list[tuple[float, ...]] = []
+        self._emotion_accuracy_by_dimension: list[tuple[float, ...]] = []
+        self._intent_role_names: tuple[str, ...] = ()
+        self._emotion_dimension_names: tuple[str, ...] = ()
         self._logs: list[str] = []
+        self._log_cursor = 0
 
     @property
     def snapshot(self) -> TrainingMonitorSnapshot:
@@ -179,13 +212,49 @@ class TrainingMonitorController:
             rate = getattr(progress, "win_rate", None)
             if isinstance(rate, (int, float)) and not isinstance(rate, bool):
                 self._win_rates.append(float(rate))
-            for item in getattr(progress, "logs", ()) or ():
+            raw_metrics = public_training_metadata(getattr(progress, "metrics", {}) or {})
+            intent_points = raw_metrics.get("intent_accuracy_points", ())
+            emotion_points = raw_metrics.get("emotion_accuracy_points", ())
+            if isinstance(intent_points, (list, tuple)):
+                self._intent_accuracy = [
+                    float(value) for value in intent_points
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                ]
+            if isinstance(emotion_points, (list, tuple)):
+                self._emotion_accuracy = [
+                    float(value) for value in emotion_points
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                ]
+            role_points = raw_metrics.get("intent_accuracy_by_role_points", ())
+            emotion_dimension_points = raw_metrics.get("emotion_accuracy_by_dimension_points", ())
+            if isinstance(role_points, (list, tuple)):
+                self._intent_accuracy_by_role = [
+                    tuple(float(value) for value in row)
+                    for row in role_points
+                    if isinstance(row, (list, tuple))
+                ]
+            if isinstance(emotion_dimension_points, (list, tuple)):
+                self._emotion_accuracy_by_dimension = [
+                    tuple(float(value) for value in row)
+                    for row in emotion_dimension_points
+                    if isinstance(row, (list, tuple))
+                ]
+            if isinstance(raw_metrics.get("intent_role_names"), (list, tuple)):
+                self._intent_role_names = tuple(str(value) for value in raw_metrics["intent_role_names"])
+            if isinstance(raw_metrics.get("emotion_dimension_names"), (list, tuple)):
+                self._emotion_dimension_names = tuple(str(value) for value in raw_metrics["emotion_dimension_names"])
+            raw_logs = tuple(getattr(progress, "logs", ()) or ())
+            if self._log_cursor > len(raw_logs):
+                self._log_cursor = 0
+                self._logs.clear()
+            for item in raw_logs[self._log_cursor:]:
                 cleaned = _public_value(item)
                 if isinstance(cleaned, Mapping) and not cleaned:
                     continue
                 text = str(cleaned.get("message", cleaned) if isinstance(cleaned, Mapping) else cleaned)
-                if text and (not self._logs or self._logs[-1] != text):
+                if text:
                     self._logs.append(text)
+            self._log_cursor = len(raw_logs)
             if message is None and getattr(progress, "error", None):
                 error = progress.error
                 if isinstance(error, Mapping):
@@ -207,13 +276,19 @@ class TrainingMonitorController:
                 }
             )
         self._snapshot = TrainingMonitorSnapshot(
-            handle,
-            progress,
-            snapshot,
-            tuple(self._win_rates),
-            tuple(self._logs),
-            message,
-            metadata,
+            handle=handle,
+            progress=progress,
+            snapshot=snapshot,
+            win_rate_points=tuple(self._win_rates),
+            intent_accuracy_points=tuple(self._intent_accuracy),
+            emotion_accuracy_points=tuple(self._emotion_accuracy),
+            intent_accuracy_by_role_points=tuple(self._intent_accuracy_by_role),
+            emotion_accuracy_by_dimension_points=tuple(self._emotion_accuracy_by_dimension),
+            intent_role_names=self._intent_role_names,
+            emotion_dimension_names=self._emotion_dimension_names,
+            logs=tuple(self._logs),
+            message=message,
+            public_metadata=metadata,
         )
         if self.on_update is not None:
             self.on_update(self._snapshot)
@@ -235,7 +310,14 @@ class TrainingMonitorController:
         try:
             self.handle = self.service.start(request)
             self._win_rates.clear()
+            self._intent_accuracy.clear()
+            self._emotion_accuracy.clear()
+            self._intent_accuracy_by_role.clear()
+            self._emotion_accuracy_by_dimension.clear()
+            self._intent_role_names = ()
+            self._emotion_dimension_names = ()
             self._logs.clear()
+            self._log_cursor = 0
             return self._publish(message=None)
         except Exception as exc:
             self.handle = None
@@ -279,6 +361,10 @@ class TrainingMonitorController:
 
 
 __all__ = [
+    "TRAINING_MODE_DATA_COLLECTION",
+    "TRAINING_MODE_MODULE_TRAINING",
+    "TRAINING_MODE_MAIN_AI",
+    "TRAINING_MODE_OPTIONS",
     "TrainingMonitorController",
     "TrainingMonitorSnapshot",
     "TrainingServicePort",

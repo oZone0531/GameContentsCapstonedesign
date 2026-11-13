@@ -106,6 +106,24 @@ def _rng_state() -> dict[str, Any]:
     }
 
 
+ROLE_TARGET_COUNT = 4
+ROLE_TARGET_NAMES = ("sheriff", "deputy", "outlaw", "traitor")
+RAW_ROLE_NAMES = ("sheriff", "deputy", "outlaw_a", "outlaw_b", "traitor")
+ROLE_TARGET_NAMES = ("sheriff", "deputy", "outlaw", "traitor")
+RAW_ROLE_NAMES = ("sheriff", "deputy", "outlaw_a", "outlaw_b", "traitor")
+
+
+def raw_role_to_target(values: np.ndarray) -> np.ndarray:
+    """Map raw environment roles to sheriff/deputy/outlaw/traitor classes."""
+
+    mapped = np.asarray(values, dtype=np.int64).copy()
+    if np.any((mapped < 0) | (mapped >= 5)):
+        raise DataError("role target contains a raw role outside [0, 4]")
+    mapped = np.where((mapped == 2) | (mapped == 3), 2, mapped)
+    mapped = np.where(mapped == 4, 3, mapped)
+    return mapped
+
+
 @dataclass(frozen=True)
 class IntentBatch:
     """One cache batch with labels kept outside the public model input mapping."""
@@ -170,6 +188,7 @@ def build_intent_batch(
     indices: Sequence[int] | np.ndarray,
     *,
     device: torch.device | str = "cpu",
+    role_count: int = 5,
 ) -> IntentBatch:
     """Build a deterministic batch from NPZ tensors.
 
@@ -187,13 +206,16 @@ def build_intent_batch(
     viewers = _viewer_indices(tensors["state_vector"])
     role_values = np.asarray(labels["role_labels"], dtype=np.int64)
     role_mask = np.asarray(labels["role_label_mask"], dtype=np.bool_)
+    if int(role_count) not in {4, 5}:
+        raise ValueError("role_count must be 4 or 5")
     selected_labels = np.zeros((len(row_indices), 4), dtype=np.int64)
     selected_mask = np.zeros((len(row_indices), 4), dtype=np.bool_)
     for row, viewer in enumerate(viewers):
         targets = [player for player in range(5) if player != int(viewer)]
-        selected_labels[row] = role_values[row, targets]
+        raw_targets = role_values[row, targets]
+        selected_labels[row] = raw_targets if int(role_count) == 5 else raw_role_to_target(raw_targets)
         selected_mask[row] = role_mask[row, targets]
-    if np.any(selected_mask & ((selected_labels < 0) | (selected_labels >= 5))):
+    if np.any(selected_mask & ((selected_labels < 0) | (selected_labels >= int(role_count)))):
         raise DataError("role target contains an invalid role index")
 
     public_inputs = {
@@ -218,6 +240,7 @@ class IntentSLConfig:
     epochs: int = 1
     batch_size: int = 64
     seed: int = 0
+    role_count: int = 5
     early_stopping_patience: int | None = None
     min_delta: float = 0.0
     checkpoint_path: str | Path | None = None
@@ -231,6 +254,8 @@ class IntentSLConfig:
             raise ValueError("epochs must be a positive integer")
         if isinstance(self.batch_size, bool) or self.batch_size < 1:
             raise ValueError("batch_size must be a positive integer")
+        if isinstance(self.role_count, bool) or self.role_count not in {4, 5}:
+            raise ValueError("role_count must be 4 or 5")
         if self.early_stopping_patience is not None and (
             isinstance(self.early_stopping_patience, bool) or self.early_stopping_patience < 1
         ):
@@ -259,6 +284,7 @@ class IntentSLConfig:
             "epochs": self.epochs,
             "batch_size": self.batch_size,
             "seed": self.seed,
+            "role_count": self.role_count,
             "early_stopping_patience": self.early_stopping_patience,
             "min_delta": self.min_delta,
             "device": self.device,
@@ -323,10 +349,32 @@ class IntentInferenceSLTrainer:
         self._bad_epochs = 0
         self._stopped_early = False
         self._resume_path: Path | None = None
+        # Optional cooperative stop hook: a zero-arg predicate polled at every
+        # batch (mid-epoch) and at each epoch boundary. When it returns True the
+        # trainer stops cleanly and keeps the best weights seen so far. Set by
+        # the caller (e.g. timed/continuous module training). ``max_epochs``
+        # (None = use config.epochs) lets the caller run past config.epochs for
+        # open-ended, time-bounded training.
+        self.should_stop: Callable[[], bool] | None = None
+        self.max_epochs: int | None = None
+        # Lineage when continuing from a saved module (recorded in artifacts).
+        self.resumed_from: str | None = None
+        self.prior_epochs = 0
 
         resume_from = resume_from or self.config.resume_from
         if resume_from is not None:
             self.load_checkpoint(resume_from)
+
+    def _stop_requested(self) -> bool:
+        callback = self.should_stop
+        return bool(callback()) if callback is not None else False
+
+    def _epoch_budget(self) -> int:
+        """Highest epoch number the fit loop may run (inclusive)."""
+
+        if self.max_epochs is None:
+            return int(self.config.epochs)
+        return max(int(self.config.epochs), int(self.max_epochs))
 
     @staticmethod
     def _seed_everything(seed: int, *, deterministic: bool) -> None:
@@ -419,8 +467,11 @@ class IntentInferenceSLTrainer:
 
     @staticmethod
     def _loss_and_accuracy(
-        model: IntentInferenceModule, batch: IntentBatch
-    ) -> tuple[Tensor, int, int]:
+        model: IntentInferenceModule,
+        batch: IntentBatch,
+        *,
+        return_role_counts: bool = False,
+    ) -> tuple[Any, ...]:
         logits = model(
             batch.model_inputs["event_history"],
             batch.model_inputs["event_valid_mask"],
@@ -434,8 +485,17 @@ class IntentInferenceSLTrainer:
         flat_logits = logits[valid]
         flat_labels = batch.role_labels[valid]
         loss = model.role_loss(flat_logits, flat_labels)
-        correct = int((flat_logits.argmax(dim=-1) == flat_labels).sum().item())
-        return loss, correct, int(flat_labels.numel())
+        predicted = flat_logits.argmax(dim=-1)
+        correct = int((predicted == flat_labels).sum().item())
+        targets = int(flat_labels.numel())
+        if not return_role_counts:
+            return loss, correct, targets
+        role_count = int(logits.shape[-1])
+        correct_by_role = torch.zeros(role_count, dtype=torch.long)
+        total_by_role = torch.bincount(flat_labels, minlength=role_count).to(torch.long).cpu()
+        for role in range(role_count):
+            correct_by_role[role] = int(((predicted == flat_labels) & (flat_labels == role)).sum().item())
+        return loss, correct, targets, correct_by_role, total_by_role
 
     def _write_metric(self, record: Mapping[str, Any]) -> None:
         safe = _json_safe(dict(record))
@@ -461,17 +521,24 @@ class IntentInferenceSLTrainer:
             with destination.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(safe, sort_keys=True, separators=(",", ":")) + "\n")
 
-    def _train_epoch(self, epoch: int) -> dict[str, Any]:
+    def _train_epoch(self, epoch: int) -> dict[str, Any] | None:
         self.model.train()
         order = self._epoch_indices(len(self.train_cache), epoch)
         losses: list[float] = []
         gradients: list[float] = []
         correct = targets = 0
+        correct_by_role: torch.Tensor | None = None
+        total_by_role: torch.Tensor | None = None
         for start in range(0, len(order), self.config.batch_size):
+            if self._stop_requested():
+                # Cooperative mid-epoch stop (time limit reached or user stop).
+                break
             indices = order[start : start + self.config.batch_size]
-            batch = build_intent_batch(self.train_cache, indices, device=self.device)
+            batch = build_intent_batch(self.train_cache, indices, device=self.device, role_count=self.config.role_count)
             self.optimizer.zero_grad(set_to_none=True)
-            loss, batch_correct, batch_targets = self._loss_and_accuracy(self.model, batch)
+            loss, batch_correct, batch_targets, batch_correct_by_role, batch_total_by_role = self._loss_and_accuracy(
+                self.model, batch, return_role_counts=True
+            )
             loss.backward()
             squared = 0.0
             for parameter in self.model.parameters():
@@ -483,6 +550,17 @@ class IntentInferenceSLTrainer:
             gradients.append(gradient_norm)
             correct += batch_correct
             targets += batch_targets
+            if correct_by_role is None:
+                correct_by_role = torch.zeros_like(batch_correct_by_role)
+                total_by_role = torch.zeros_like(batch_total_by_role)
+            correct_by_role += batch_correct_by_role
+            assert total_by_role is not None
+            total_by_role += batch_total_by_role
+            batch_role_accuracy = torch.where(
+                batch_total_by_role > 0,
+                batch_correct_by_role.to(torch.float32) / batch_total_by_role.to(torch.float32),
+                torch.zeros_like(batch_total_by_role, dtype=torch.float32),
+            )
             self._write_metric(
                 {
                     "phase": self.phase,
@@ -493,13 +571,28 @@ class IntentInferenceSLTrainer:
                     "batch_size": int(len(indices)),
                     "loss": float(loss.detach().item()),
                     "accuracy": batch_correct / batch_targets,
+                    "accuracy_by_role": [float(value) for value in batch_role_accuracy.tolist()],
+                    "role_names": list(ROLE_TARGET_NAMES if self.config.role_count == 4 else RAW_ROLE_NAMES),
                     "valid_targets": batch_targets,
                     "gradient_norm": gradient_norm,
                 }
             )
+        if correct_by_role is None or total_by_role is None:
+            if self._stop_requested():
+                # Stopped before the first batch of this epoch: nothing was
+                # trained, so there is no epoch to record.
+                return None
+            raise TrainingError("intent training produced no role accuracy counts")
+        role_accuracy = torch.where(
+            total_by_role > 0,
+            correct_by_role.to(torch.float32) / total_by_role.to(torch.float32),
+            torch.zeros_like(total_by_role, dtype=torch.float32),
+        )
         return {
             "loss": float(np.average(losses, weights=None)) if losses else float("nan"),
             "accuracy": correct / targets if targets else float("nan"),
+            "accuracy_by_role": [float(value) for value in role_accuracy.tolist()],
+            "role_names": list(ROLE_TARGET_NAMES if self.config.role_count == 4 else RAW_ROLE_NAMES),
             "valid_targets": targets,
             "gradient_norm": float(np.mean(gradients)) if gradients else 0.0,
             "batches": len(losses),
@@ -509,14 +602,31 @@ class IntentInferenceSLTrainer:
         self.model.eval()
         losses: list[float] = []
         correct = targets = 0
+        correct_by_role: torch.Tensor | None = None
+        total_by_role: torch.Tensor | None = None
         with torch.no_grad():
             for start in range(0, len(loader), self.config.batch_size):
                 indices = np.arange(start, min(start + self.config.batch_size, len(loader)))
-                batch = build_intent_batch(loader, indices, device=self.device)
-                loss, batch_correct, batch_targets = self._loss_and_accuracy(self.model, batch)
+                batch = build_intent_batch(loader, indices, device=self.device, role_count=self.config.role_count)
+                loss, batch_correct, batch_targets, batch_correct_by_role, batch_total_by_role = self._loss_and_accuracy(
+                    self.model, batch, return_role_counts=True
+                )
                 losses.append(float(loss.item()))
                 correct += batch_correct
                 targets += batch_targets
+                if correct_by_role is None:
+                    correct_by_role = torch.zeros_like(batch_correct_by_role)
+                    total_by_role = torch.zeros_like(batch_total_by_role)
+                correct_by_role += batch_correct_by_role
+                assert total_by_role is not None
+                total_by_role += batch_total_by_role
+        if correct_by_role is None or total_by_role is None:
+            raise TrainingError("intent evaluation produced no role accuracy counts")
+        role_accuracy = torch.where(
+            total_by_role > 0,
+            correct_by_role.to(torch.float32) / total_by_role.to(torch.float32),
+            torch.zeros_like(total_by_role, dtype=torch.float32),
+        )
         result = {
             "phase": self.phase,
             "split": split,
@@ -524,6 +634,8 @@ class IntentInferenceSLTrainer:
             "epoch": epoch,
             "loss": float(np.mean(losses)) if losses else float("nan"),
             "accuracy": correct / targets if targets else float("nan"),
+            "accuracy_by_role": [float(value) for value in role_accuracy.tolist()],
+            "role_names": list(ROLE_TARGET_NAMES if self.config.role_count == 4 else RAW_ROLE_NAMES),
             "valid_targets": targets,
             "batches": len(losses),
         }
@@ -604,38 +716,18 @@ class IntentInferenceSLTrainer:
         self._resume_path = source
 
     def fit(self, *, stop_after_epoch: int | None = None) -> TrainingResult:
-        if self.start_epoch > self.config.epochs:
+        epoch_budget = self._epoch_budget()
+        if self.start_epoch > epoch_budget:
             self._restore_best()
             return self._result()
-        for epoch in range(self.start_epoch, self.config.epochs + 1):
-            train_metrics = self._train_epoch(epoch)
-            validation = self._evaluate(self.validation_cache, "validation", epoch)
-            record = {
-                "phase": self.phase,
-                "event": "epoch",
-                "epoch": epoch,
-                "train_loss": train_metrics["loss"],
-                "train_accuracy": train_metrics["accuracy"],
-                "train_gradient_norm": train_metrics["gradient_norm"],
-                "train_valid_targets": train_metrics["valid_targets"],
-                "validation_loss": validation["loss"],
-                "validation_accuracy": validation["accuracy"],
-                "validation_valid_targets": validation["valid_targets"],
-            }
-            self.history.append(record)
-            self._write_metric(record)
-            current_loss = float(validation["loss"])
-            if current_loss < self.best_validation_loss - self.config.min_delta:
-                self.best_validation_loss = current_loss
-                self.best_epoch = epoch
-                self.best_state = _clone_state_dict(self.model)
-                self._bad_epochs = 0
-            else:
-                self._bad_epochs += 1
-            self.start_epoch = epoch + 1
-            if self.config.checkpoint_path is not None:
-                self.save_checkpoint()
+        for epoch in range(self.start_epoch, epoch_budget + 1):
+            if self._stop_requested():
+                break
+            if not self._run_epoch(epoch):
+                break
             if stop_after_epoch is not None and epoch >= stop_after_epoch:
+                break
+            if self._stop_requested():
                 break
             if (
                 self.config.early_stopping_patience is not None
@@ -643,8 +735,73 @@ class IntentInferenceSLTrainer:
             ):
                 self._stopped_early = True
                 break
+        return self.finalize()
+
+    def adopt_current_weights_as_baseline(self) -> dict[str, Any]:
+        """Use the current (e.g. resumed) weights as the best-so-far model.
+
+        Evaluates them on the validation split so continued training only
+        replaces them when it actually improves validation loss.
+        """
+
+        validation = self._evaluate(self.validation_cache, "validation", 0)
+        self.best_validation_loss = float(validation["loss"])
+        self.best_state = _clone_state_dict(self.model)
+        self.best_epoch = 0
+        return validation
+
+    def train_next_epoch(self) -> bool:
+        """Train exactly one more epoch without finalizing.
+
+        Used by time-limited training, which alternates modules epoch by epoch.
+        Unlike ``fit`` it neither restores the best weights nor evaluates the
+        test split, so the live weights keep training. Returns False when a
+        stop request ended the epoch before any batch ran.
+        """
+
+        return self._run_epoch(self.start_epoch)
+
+    def finalize(self) -> TrainingResult:
+        """Restore the best validation weights and build the final result."""
+
         self._restore_best()
         return self._result()
+
+    def _run_epoch(self, epoch: int) -> bool:
+        train_metrics = self._train_epoch(epoch)
+        if train_metrics is None:
+            return False
+        validation = self._evaluate(self.validation_cache, "validation", epoch)
+        record = {
+            "phase": self.phase,
+            "event": "epoch",
+            "epoch": epoch,
+            "train_loss": train_metrics["loss"],
+            "train_accuracy": train_metrics["accuracy"],
+            "train_accuracy_by_role": train_metrics["accuracy_by_role"],
+            "train_role_names": train_metrics["role_names"],
+            "train_gradient_norm": train_metrics["gradient_norm"],
+            "train_valid_targets": train_metrics["valid_targets"],
+            "validation_loss": validation["loss"],
+            "validation_accuracy": validation["accuracy"],
+            "validation_accuracy_by_role": validation["accuracy_by_role"],
+            "validation_role_names": validation["role_names"],
+            "validation_valid_targets": validation["valid_targets"],
+        }
+        self.history.append(record)
+        self._write_metric(record)
+        current_loss = float(validation["loss"])
+        if current_loss < self.best_validation_loss - self.config.min_delta:
+            self.best_validation_loss = current_loss
+            self.best_epoch = epoch
+            self.best_state = _clone_state_dict(self.model)
+            self._bad_epochs = 0
+        else:
+            self._bad_epochs += 1
+        self.start_epoch = epoch + 1
+        if self.config.checkpoint_path is not None:
+            self.save_checkpoint()
+        return True
 
     def _restore_best(self) -> None:
         if self.best_state:
@@ -716,6 +873,9 @@ class IntentInferenceSLTrainer:
                     "phase": self.phase,
                     "epochs_configured": self.config.epochs,
                     "epochs_completed": len(self.history),
+                    "prior_epochs": self.prior_epochs,
+                    "total_epochs": self.prior_epochs + len(self.history),
+                    "resumed_from": self.resumed_from,
                     "best_epoch": self.best_epoch,
                     "best_validation_loss": self.best_validation_loss,
                     "early_stopped": self._stopped_early,
