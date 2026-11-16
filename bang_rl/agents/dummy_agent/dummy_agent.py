@@ -117,6 +117,13 @@ class DummyAgent(BaseAgent):
         # None keeps the public rule-based estimator, the default everywhere.
         self.belief_source: BeliefSource | None = None
         self._belief_observation: Any | None = None
+        # Optional replacement for the rule-based intent scores (see
+        # emotion_coupling.py): a callable (observation, policy_mask, agent, rule_scores) ->
+        # 6 scores, e.g. a learned policy's logits. None keeps the rule-based
+        # intent module. emotion_scale converts the emotion contribution into
+        # the units of those scores (1.0 = rule-score units, the default).
+        self.intent_source: Any | None = None
+        self.emotion_scale: float = 1.0
 
     @property
     def role_beliefs(self) -> np.ndarray:
@@ -333,8 +340,15 @@ class DummyAgent(BaseAgent):
         contribution = self.emotion_module.action_contribution()
         intent = self.intent_module.decision(observation, self.role_beliefs)
         policy_mask = self._policy_action_mask(observation, mask)
+        scores = intent.scores
+        if self.intent_source is not None:
+            scores = np.asarray(
+                self.intent_source(observation, policy_mask, self, intent.scores), dtype=np.float64
+            )
+        if self.emotion_scale != 1.0:
+            contribution = np.asarray(contribution, dtype=np.float64) * float(self.emotion_scale)
         selection = ActionSelector.select_with_info(
-            intent.scores,
+            scores,
             policy_mask,
             emotion_contribution=contribution,
 
