@@ -28,6 +28,7 @@ That is the real deployment effect and is intended.
 from __future__ import annotations
 
 import copy
+import gc
 import hashlib
 import time
 from collections.abc import Callable, Mapping
@@ -109,6 +110,19 @@ REASON_BASE = "base_reference"
 STOP_MAX_ROUNDS = "max_rounds"
 STOP_PATIENCE = "patience"
 STOP_USER = "user_stop_or_time_budget"
+
+# Dummy-vs-dummy games used per round = ratio x main1+dummy4 games collected
+# so far (at least REFINE_MIN_DUMMY_EPISODES). 4.0 keeps the main-AI games at
+# about a fifth of the training data and bounds memory: the dummy datasets are
+# never read whole (a 100k-game dataset does not fit in RAM as episodes).
+REFINE_DEFAULT_DUMMY_RATIO = 4.0
+REFINE_MIN_DUMMY_EPISODES = 1000
+
+
+def refine_dummy_episode_cap(main_games: int, ratio: float = REFINE_DEFAULT_DUMMY_RATIO) -> int:
+    """Dummy episodes read for a round (see ``REFINE_DEFAULT_DUMMY_RATIO``)."""
+
+    return max(REFINE_MIN_DUMMY_EPISODES, int(round(max(0.0, float(ratio)) * max(0, int(main_games)))))
 
 
 def accept_candidate(best: Mapping[str, Any], candidate: Mapping[str, Any]) -> tuple[bool, str]:
@@ -243,6 +257,7 @@ def run_inference_refinement(
     patience = int(getattr(options, "refine_patience", REFINE_DEFAULT_PATIENCE))
     eval_games = int(eval_games if eval_games is not None else getattr(options, "refine_eval_games", MAIN_AI_EVAL_GAMES))
     action_mode = str(getattr(options, "main_action_mode", "deterministic") or "deterministic")
+    dummy_ratio = float(getattr(options, "refine_dummy_ratio", None) or REFINE_DEFAULT_DUMMY_RATIO)
     for label, value in (
         ("게임 수/라운드 games per round", games_per_round),
         ("라운드 수 rounds", max_rounds),
@@ -554,8 +569,18 @@ def run_inference_refinement(
             f"{round_no}라운드: 모듈 학습 중 (에폭 {epochs}, 데이터셋 {len(base_folders)}+{len(main_folders)}개)",
             refine_round=round_no,
         )
+        # Dummy data is capped relative to the main1+dummy4 data collected so
+        # far: reading a whole large dummy dataset (e.g. 100k games) every
+        # round exhausts memory, and it would also drown the main-AI games.
+        # A different random subset (by shard) is drawn each round.
+        dummy_cap = refine_dummy_episode_cap(totals["games"], dummy_ratio)
         episodes, shards, duplicates, selection = _read_canonical_dataset(
-            canonical_root, extra_roots, only_folders=[*base_folders, *main_folders]
+            canonical_root,
+            extra_roots,
+            only_folders=[*base_folders, *main_folders],
+            limited_folders=base_folders,
+            limit_episodes=dummy_cap,
+            limit_seed=int(derive_seed(run_seed, "inference-refinement", "dummy-subset", round_no) % _SEED_MODULUS),
         )
         round_handle = SimpleNamespace(job_id=str(uuid4()), snapshot=handle.snapshot)
         source_refs = [info_ref(item, KIND_DATASET) for item in (*base_folders, *main_folders)]
@@ -573,11 +598,16 @@ def run_inference_refinement(
             config=system_config,
         ).write_all(split)
         cache_meta.summary = {
-            "episodes": len(episodes),
+            "episodes": len(episodes),  # freed right after write_info below
             "episodes_by_players": selection.get("selected_episodes_by_players"),
             "splits": {name: len(item.manifest.get("episode_ids", ())) for name, item in cache_artifacts.items()},
         }
         write_info(cache_dir, cache_meta)
+        episode_count = len(episodes)
+        # The canonical episodes are only needed to build the cache; training
+        # reads the cache. Free them now (they are the largest objects).
+        del episodes, split, shards
+        gc.collect()
         loaders = {
             name: NPZTensorCacheLoader(item.tensor_path, manifest_path=item.manifest_path)
             for name, item in cache_artifacts.items()
@@ -639,6 +669,8 @@ def run_inference_refinement(
             "dataset": str(folder),
             "games": int(collected["games"]),
             "rows": int(collected["rows"]),
+            "dummy_episodes": selection.get("limited_episodes_taken"),
+            "dummy_episode_cap": selection.get("limited_episode_cap"),
             "train_epochs": {"intent": len(intent_result.history), "emotion": len(emotion_result.history)},
             "seconds": round(time.monotonic() - round_started, 1),
             "seconds_collect": round(collect_seconds, 1),
@@ -671,7 +703,7 @@ def run_inference_refinement(
                     extra_conditions={
                         "emotion_schema": FORMULA_LABEL_SCHEMA,
                         "batch_size": batch,
-                        "dataset_episodes": len(episodes),
+                        "dataset_episodes": episode_count,
                         "dataset_episodes_by_players": selection.get("selected_episodes_by_players"),
                         "refinement_job": job_id,
                         "refinement_round": round_no,
@@ -719,6 +751,13 @@ def run_inference_refinement(
             reason=reason,
             **candidate_metrics,
         )
+        # Release this round's tensors and trainers before the next round reads
+        # every dataset again; otherwise two rounds' data are alive at once.
+        for loader in loaders.values():
+            loader.close()
+        del loaders, intent_trainer, emotion_trainer, intent_result, emotion_result
+        del candidate_intent, candidate_emotion
+        gc.collect()
         if accepted:
             save_model(final=False)  # an interrupted run keeps the best model so far
         if not accepted and bad_rounds >= patience:

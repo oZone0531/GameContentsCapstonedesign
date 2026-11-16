@@ -267,6 +267,10 @@ class TrainingConfig:
     refine_epochs: int = 5
     refine_patience: int = 1
     refine_eval_games: int = 250
+    # Module training: read at most this many games (random subset per run;
+    # None or 0 = read everything). ``subset_seed`` fixes the subset.
+    max_games: int | None = None
+    subset_seed: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

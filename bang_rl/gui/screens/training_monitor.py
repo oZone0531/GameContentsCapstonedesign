@@ -251,6 +251,11 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self.refine_eval_games = QSpinBox(self)
             self.refine_eval_games.setRange(1, 1_000_000)
             self.refine_eval_games.setValue(250)
+            self.max_games = QSpinBox(self)
+            self.max_games.setRange(0, 10_000_000)
+            self.max_games.setSingleStep(1000)
+            self.max_games.setSpecialValueText(tr("training.max_games_unlimited"))
+            self.max_games.setValue(10_000)
             self.refresh_base_models()
             self.refresh_datasets()
             # Build the form unparented; ``outer`` below is the panel's only
@@ -270,6 +275,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             form.addRow(tr("training.base_model"), base_model_row)
             form.addRow(tr("training.main_action_mode"), self.action_mode)
             form.addRow(tr("training.datasets"), datasets_row)
+            form.addRow(tr("training.max_games"), self.max_games)
             form.addRow(tr("training.max_minutes"), self.max_minutes)
             form.addRow(tr("training.graph_interval"), self.graph_interval)
             form.addRow(tr("training.target"), self.target)
@@ -342,6 +348,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 (self.action_mode, "tooltip.training_main_action_mode"),
                 (self.datasets, "tooltip.training_datasets"),
                 (self.datasets_row, "tooltip.training_datasets"),
+                (self.max_games, "tooltip.training_max_games"),
                 (self.refine_games, "tooltip.training_games_per_round"),
                 (self.refine_rounds, "tooltip.training_refine_rounds"),
                 (self.refine_epochs, "tooltip.training_refine_epochs"),
@@ -427,6 +434,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self._set_row_visible(self.players, collect)
             self._set_row_visible(self.episodes, collect)  # games to collect
             self._set_row_visible(self.epochs, module)
+            self._set_row_visible(self.max_games, module)
             self._set_row_visible(self.games, main)
             # Legacy RL-runner field; none of the four GUI workflows reads it.
             self._set_row_visible(self.target, False)
@@ -962,6 +970,9 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 refine_epochs=int(self.refine_epochs.value()),
                 refine_patience=int(self.refine_patience.value()),
                 refine_eval_games=int(self.refine_eval_games.value()),
+                max_games=(int(self.max_games.value()) or None)
+                if mode == TRAINING_MODE_MODULE_TRAINING
+                else None,
             )
 
 

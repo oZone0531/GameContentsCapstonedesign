@@ -357,6 +357,41 @@ def _npz_bytes(tensors: Mapping[str, np.ndarray]) -> bytes:
     return output.getvalue()
 
 
+def _write_npz(path: Path, tensors: Mapping[str, np.ndarray]) -> str:
+    """Stream the same bytes as :func:`_npz_bytes` to ``path`` atomically; returns their sha256.
+
+    Building the whole archive in memory (``_npz_bytes``) holds two extra
+    copies of every tensor; streaming keeps only one array buffer at a time.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            with zipfile.ZipFile(handle, mode="w", compression=zipfile.ZIP_STORED, allowZip64=True) as archive:
+                for key in sorted(tensors):
+                    array_buffer = io.BytesIO()
+                    np.save(array_buffer, np.asarray(tensors[key]), allow_pickle=False)
+                    info = zipfile.ZipInfo(f"{key}.npy", date_time=(1980, 1, 1, 0, 0, 0))
+                    info.compress_type = zipfile.ZIP_STORED
+                    info.create_system = 0
+                    info.external_attr = 0
+                    archive.writestr(info, array_buffer.getbuffer())
+                    del array_buffer
+            handle.flush()
+            os.fsync(handle.fileno())
+        digest = _file_hash(temporary)
+        os.replace(temporary, path)
+        return digest
+    except Exception as exc:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        raise DataError(f"failed to atomically write tensor cache {path}") from exc
+
+
 def _atomic_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
@@ -487,15 +522,21 @@ class NPZTensorCacheWriter:
         source_hash = None if manifest is None else manifest.get("source_content_hash")
         split_seed = None if manifest is None else manifest.get("split_seed")
         config_hash = None if manifest is None else manifest.get("config_hash")
-        return {
-            name: self._write_one(
+        artifacts: dict[str, TensorCacheArtifact] = {}
+        stats: Mapping[str, Any] | None = None
+        for name in ("train", "validation", "test"):
+            artifact = self._write_one(
                 name, _episodes(partitions[name].episodes), training,
                 manifest=manifest, source_content_hash=source_hash,
                 source_shard_ids=self.source_shard_ids, split_seed=split_seed,
-                config_hash=config_hash,
+                config_hash=config_hash, train_stats=stats,
             )
-            for name in ("train", "validation", "test")
-        }
+            if name == "train":
+                # Validation/test reuse the train statistics instead of
+                # materializing the whole training set again each.
+                stats = artifact.manifest.get("train_statistics")
+            artifacts[name] = artifact
+        return artifacts
 
     build = write
     write_split = write
@@ -511,6 +552,7 @@ class NPZTensorCacheWriter:
         source_shard_ids: Iterable[str] | None,
         split_seed: int | None,
         config_hash: str | None,
+        train_stats: Mapping[str, Any] | None = None,
     ) -> TensorCacheArtifact:
         all_records = tuple(records)
         normal_records = _normal_episodes(all_records)
@@ -523,8 +565,16 @@ class NPZTensorCacheWriter:
         obs_version = self.observation_schema_version or _version(all_records, "observation_schema_version", "1.0")
         emotion_dim = _emotion_dimension(normal_records or normal_train, self.emotion_dimension)
         tensors = self._materialize(normal_records, emotion_dim)
-        train_tensors = self._materialize(normal_train, emotion_dim)
-        stats = _normalization_stats(train_tensors)
+        if train_stats is not None:
+            stats = train_stats
+        elif [item.episode_id for item in normal_train] == [item.episode_id for item in normal_records]:
+            # The train split itself: its statistics come from the tensors just
+            # built, instead of materializing the same episodes a second time.
+            stats = _normalization_stats(tensors)
+        else:
+            train_tensors = self._materialize(normal_train, emotion_dim)
+            stats = _normalization_stats(train_tensors)
+            del train_tensors
         split_ids = [str(item.episode_id) for item in normal_records]
         manifest_source_metadata = effective_manifest.get("source_metadata", {})
         if not isinstance(manifest_source_metadata, Mapping):
@@ -574,16 +624,16 @@ class NPZTensorCacheWriter:
         existing = self._existing_if_compatible(tensor_path, manifest_path, descriptor, cache_hash)
         if existing is not None and self.resume:
             return existing
-        npz_data = _npz_bytes(tensors)
+        npz_sha256 = _write_npz(tensor_path, tensors)
+        del tensors
         final_manifest = dict(descriptor)
         final_manifest.update({
             "cache_content_hash": cache_hash,
             "npz_file": tensor_path.name,
             "manifest_file": manifest_path.name,
-            "npz_sha256": sha256(npz_data).hexdigest(),
+            "npz_sha256": npz_sha256,
             "generated_at": datetime.now(timezone.utc).isoformat(),
         })
-        _atomic_write(tensor_path, npz_data)
         _atomic_write(manifest_path, _canonical_json(final_manifest) + b"\n")
         return TensorCacheArtifact(name, tensor_path, manifest_path, final_manifest)
 
