@@ -18,7 +18,7 @@ from bang_rl.data import parallel_collection as parallel
 
 
 def _fake_collect(config, games, destination, *, base_seed=0, action_mode="deterministic",
-                  belief=None, shard_games=20, progress=None):
+                  belief=None, shard_games=20, progress=None, created_by=None):
     folder = Path(destination)
     folder.mkdir(parents=True, exist_ok=True)
     for idx in range(games):
