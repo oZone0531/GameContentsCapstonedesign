@@ -453,6 +453,7 @@ def collect_games(
             list(LABEL_NAMES) if FORMULA_LABEL_SCHEMA in label_schemas else None
         ),
         "termination_status": dict(sorted(status.items())),
+        "win_counts": dict(sorted(wins.items())),
         "win_rate": {key: round(value / games, 4) for key, value in sorted(wins.items())},
         "mean_steps": round(float(np.mean(lengths)), 2),
         "total_steps": int(sum(lengths)),
