@@ -140,6 +140,8 @@ class SessionConfig:
     artifact_path: str | Path | None = None
     agents: Sequence[Any] | Mapping[Any, Any] | None = None
     action_mode: str = "deterministic"
+    intent_selections: tuple[str, ...] | None = None
+    intent_model_path: str | Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,16 +165,16 @@ class PublicGameState:
     termination_status: str
     winning_team: str | None = None
     winners: tuple[int, ...] = ()
-    # Every seat's true role index, populated ONLY once the episode is over
-    # (terminated or truncated) so the GUI can reveal all players at game end.
-    # Empty during play so no living role ever leaks. Never persisted to a
-    # recorded observation or replay record (replays stay public-projection).
+
+
+
+
     final_roles: tuple[int, ...] = ()
-    # Item 1: True only for spectator (all-AI) sessions, where there is no human
-    # whose hidden info must be protected, so every seat's true role is revealed
-    # DURING play. Defaults False so a human session keeps the sheriff-only-
-    # until-terminal privacy rule unchanged. The GUI reads this to pass
-    # reveal_all into board_layout.role_for_display.
+
+
+
+
+
     reveal_all_roles: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -231,15 +233,15 @@ class TrainingConfig:
     output_path: str | Path | None = OUTPUTS_DIR
     artifact_path: str | Path | None = ARTIFACTS_DIR
     resume_artifact_path: str | Path | None = ARTIFACTS_DIR
-    # Module training is bounded either by epoch count (default) or by time.
-    # ``train_by_time=True`` ignores the epoch count and trains until
-    # ``max_training_seconds`` elapses (None = unlimited, until the user stops),
-    # then saves. Stop is honoured mid-epoch in both modes.
+
+
+
+
     train_by_time: bool = False
     max_training_seconds: float | None = None
-    # Store one graph point per this many training batches (1 = every batch).
+
     graph_point_interval: int = 1
-    # Continue module training from saved .phase2model files (weights only).
+
     resume_intent_artifact_path: str | Path | None = None
     resume_emotion_artifact_path: str | Path | None = None
 
@@ -491,8 +493,8 @@ class GameService:
         agents = self._build_agents(options, config, seed_manager, artifact)
         owned_loggers: tuple[StructuredLogger, ...] = ()
         if self.logger is None:
-            # Never let an environment close pytest/UI stderr during service
-            # cleanup.  Application-owned buffers are closed with the session.
+
+
             streams = [io.StringIO() for _ in range(4)]
             env_logger = StructuredLogger(LogChannel.INVALID_ACTION, stream=streams[0], component="app-environment")
             event_logger = StructuredLogger(LogChannel.EPISODE_EVENTS, stream=streams[1], component="app-episode-events")
@@ -511,25 +513,25 @@ class GameService:
             diagnostics_logger=diagnostics_logger,
             diagnostics_metadata={"run_id": session_id, "job_id": snapshot.job_id, "config_version": config.config_version},
         )
-        # Initialize every seat's episode so each agent folds its OWN role and
-        # the public sheriff into its internal state from the very first turn.
-        # Without this, a dummy that has not yet taken a turn still holds its
-        # RoleBeliefEstimator constructor default (a uniform 1/5 matrix), which
-        # reads as the naive 40/20/20 outlaw/traitor/deputy prior in the GUI and
-        # replay.  environment.observe(index) hands each seat its OWN per-seat
-        # public projection (self_role is that seat's role, sheriff is public),
-        # so the eliminated prior falls out of the existing belief math.  The
-        # per-agent guard mirrors the project's defensive export style: a single
-        # agent failing here must never abort session creation.  Do NOT mirror
-        # this into restore_session, which re-applies saved per-seat internals.
-        #
-        # Intended, deterministic side effect: running the normal episode-start
-        # lifecycle here also reseeds each stochastic agent's action RNG from the
-        # episode seed.  Interactive game sessions never called on_episode_start
-        # before, so such agents used to run the whole game on their
-        # constructor-time RNG.  The reseeded stream is still fully determined by
-        # the session seed (reproducible), just a different stream than the
-        # pre-fix behavior; this is a conscious decision, not a silent change.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         for index, agent in enumerate(agents):
             on_episode_start = getattr(agent, "on_episode_start", None)
             if on_episode_start is None:
@@ -542,7 +544,7 @@ class GameService:
                         "observation": environment.observe(index),
                     }
                 )
-            except Exception:  # noqa: BLE001 - defensive: never abort session setup
+            except Exception:
                 self._log("agent_episode_start_failed", session_id=session_id, seat=index)
         handle = SessionHandle(session_id, self._normalize_mode(options.mode), seed, snapshot)
         with self._lock:
@@ -559,7 +561,7 @@ class GameService:
             "human_vs_dummy": "human_dummy",
             "human_vs_main": "human_main_dummy",
             "human_main": "human_main_dummy",
-            # Item 6: all-AI spectator modes and their GUI-string variants.
+
             "random_ai_5": "random_five",
             "random5": "random_five",
             "dummy_ai_5": "dummy_five",
@@ -568,9 +570,9 @@ class GameService:
         }
         return aliases.get(normalized, normalized)
 
-    # Modes the human plays a seat in (seat 0 is a HumanAgent).
+
     _HUMAN_MODES = frozenset({"human_random", "human_dummy", "human_main_dummy"})
-    # Item 6: all-AI spectator modes; every seat is AI-driven.
+
     _SPECTATOR_MODES = frozenset({"random_five", "dummy_five", "main_one_dummy_four"})
 
     def _build_agents(self, options: SessionConfig, config: SystemConfig, seeds: SeedManager, artifact: Any) -> tuple[Any, ...]:
@@ -589,7 +591,23 @@ class GameService:
                 "random_five, dummy_five, or main_one_dummy_four"
             )
 
+        selections = options.intent_selections or ("rule",) * 5
+        if len(selections) != 5 or any(item not in ("rule", "learned") for item in selections):
+            raise ValueError("intent_selections must have five entries: rule/learned")
+        learned_policy = None
+
         def _dummy(index: int) -> Any:
+            nonlocal learned_policy
+            if selections[index] == "learned":
+                from bang_rl.intent_training import LearnedIntentAgent, LearnedIntentPolicy
+                if not options.intent_model_path:
+                    raise ValueError("Learned intent selected without a .intentmodel file")
+                if learned_policy is None:
+                    learned_policy = LearnedIntentPolicy.load(options.intent_model_path)
+                return LearnedIntentAgent(
+                    learned_policy, player_idx=index, seed=seeds.agent_seed(f"player_{index}"),
+                    stochastic=options.action_mode == "stochastic",
+                )
             return DummyAgent(
                 f"player_{index}", seed=seeds.agent_seed(f"player_{index}"), player_idx=index,
                 policy_config=config.preset.intent_policy,
@@ -597,8 +615,8 @@ class GameService:
                 action_mode=options.action_mode,
             )
 
-        # Item 6: all-AI spectator compositions -- every one of the five seats
-        # is AI-driven so the human only watches.
+
+
         if mode == "random_five":
             return tuple(
                 RandomAgent(f"player_{index}", seed=seeds.agent_seed(f"player_{index}")) for index in range(5)
@@ -612,7 +630,7 @@ class GameService:
             values.extend(_dummy(index) for index in range(1, 5))
             return tuple(values)
 
-        # Human-played compositions: seat 0 is the human, seats 1..4 are AI.
+
         values = [HumanAgent("player_0", seed=seeds.agent_seed("player_0"))]
         for index in range(1, 5):
             agent_seed = seeds.agent_seed(f"player_{index}")
@@ -637,22 +655,22 @@ class GameService:
     @staticmethod
     def _state(session: _Session) -> PublicGameState:
         env = session.environment
-        # Item 7 (flicker fix) + item 1 (spectator reveal): project the public
-        # observation from a STABLE viewer, not from state.agent_selection (the
-        # current player). env.observe() with no argument defaults the viewer to
-        # whoever's turn it is, so self_role and the SELF/REVEALED visibility
-        # bits (which the GUI reads for seat 0) rotated with the current player
-        # and made the human seat's role text flicker frame-to-frame. Always
-        # project from the fixed human seat (index 0) so self_role/visibility are
-        # seat-0-relative every turn. For a spectator session index 0 is also a
-        # stable, arbitrary geometry viewer and all roles are revealed below.
+
+
+
+
+
+
+
+
+
         mode = getattr(session.handle, "mode", None)
         is_spectator = mode in GameService._SPECTATOR_MODES
         observation = _json_value(env.observe("player_0"))
         selected = getattr(env.agent_selection, "index", None)
         status = "normal" if bool(env.state.terminated) else "truncated" if bool(env.state.truncated) else "running"
-        # Surface the winning faction as a stable string id (e.g. "sheriff_team")
-        # only when the episode terminated normally. Never expose living roles.
+
+
         winning_team: str | None = None
         winners: tuple[int, ...] = ()
         terminal = env.state.terminal_result if bool(env.state.terminated) else None
@@ -661,32 +679,32 @@ class GameService:
             if team is not None:
                 winning_team = str(getattr(team, "name", team)).lower()
             winners = tuple(int(index) for index in getattr(terminal, "winners", ()))
-        # Reveal every seat's true role ONLY once the episode is over so the
-        # GUI can show all players at game end. During play this stays empty so
-        # no living role leaks. This is the only GUI-facing read of the private
-        # env.state.roles, guarded so a fake/mock session that lacks it never
-        # raises.
+
+
+
+
+
         final_roles: tuple[int, ...] = ()
         if bool(env.state.terminated) or bool(env.state.truncated):
             true_roles = getattr(getattr(env, "state", None), "roles", None)
             if true_roles is not None:
                 final_roles = tuple(int(getattr(role, "value", role)) for role in true_roles)
-        # Item 1: for a SPECTATOR (all-AI) session there is no human whose
-        # hidden role must be protected, so reveal every living seat's true role
-        # DURING play. Rewrite the public observation's revealed_roles from the
-        # authoritative env.state.roles (the same guarded private read used for
-        # final_roles) and mark every seat REVEALED (visibility >= 2). This is a
-        # strict superset of the sheriff/eliminated reveal, so it never hides
-        # anything the public projection already showed. Human sessions never
-        # take this path, so their sheriff-only-until-terminal privacy is
-        # unchanged.
+
+
+
+
+
+
+
+
+
         reveal_all_roles = bool(is_spectator)
         if reveal_all_roles:
             true_roles = getattr(getattr(env, "state", None), "roles", None)
             if true_roles is not None and isinstance(observation, dict):
                 roles = [int(getattr(role, "value", role)) for role in true_roles]
                 observation["revealed_roles"] = list(roles)
-                # RoleVisibility.REVEALED == 2; keep every seat visible.
+
                 observation["role_visibility"] = [2 for _ in roles]
         return PublicGameState(
             session.handle.session_id,
@@ -722,8 +740,8 @@ class GameService:
         session = self._session(handle)
         return _json_value(session.environment.state.to_dict())
 
-    # The controller probes these method names for the authoritative state
-    # export; expose the same behaviour under each so either name works.
+
+
     full_state = get_full_state
     authoritative_state = get_full_state
     export_state = get_full_state
@@ -788,7 +806,7 @@ class GameService:
         ``{"kind": "unknown"}`` descriptor. Kept Qt-free.
         """
 
-        # A DummyAgent carries the emotion module + role belief / guess we want.
+
         state_dict = getattr(agent, "state_dict", None)
         if isinstance(agent, DummyAgent) and callable(state_dict):
             try:
@@ -799,14 +817,14 @@ class GameService:
             return {"kind": "random"}
         if isinstance(agent, HumanAgent):
             return {"kind": "human"}
-        # Main-AI (_ArtifactAgent): no single state_dict. Capture the inference
-        # modules' stateful stream buffers where available, best effort. This is
-        # genuinely opportunistic: an inference module's ``get_state()`` returns
-        # ``None`` when it holds no active stream buffer, so ``module_states``
-        # can legitimately be empty and a later restore is then a no-op for that
-        # seat. Record a ``captured`` boolean so a caller (and a resume) can tell
-        # whether any non-empty main-AI internal state was actually recorded,
-        # rather than silently assuming it was.
+
+
+
+
+
+
+
+
         artifact = getattr(agent, "artifact", None)
         if artifact is not None:
             descriptor: dict[str, Any] = {"kind": "main"}
@@ -825,7 +843,7 @@ class GameService:
             if module_states:
                 descriptor["module_states"] = module_states
             return descriptor
-        # Fall back to a generic state_dict probe for any other agent type.
+
         if callable(state_dict):
             try:
                 return {"kind": "unknown", "state": _json_value(state_dict())}
@@ -897,13 +915,13 @@ class GameService:
             mode=resolved_mode, config=system_config, seed=resolved_seed, artifact_path=artifact_path
         )
         agents = self._build_agents(options, system_config, seed_manager, artifact)
-        # Item 4: optionally restore each AI seat's internal state so a resumed
-        # session continues with recorded AI internals rather than fresh agents.
-        # A DummyAgent seat is restored in full (emotion / role belief); the
-        # Main-AI seat is best-effort (only an active inference stream buffer is
-        # reapplied, when one was captured). Every step here is defensive: a
-        # missing / malformed entry leaves that seat's freshly built agent
-        # untouched.
+
+
+
+
+
+
+
         if internals is not None:
             agents = self._restore_agent_internals(agents, internals)
         owned_loggers: tuple[StructuredLogger, ...] = ()
@@ -926,7 +944,7 @@ class GameService:
             diagnostics_logger=diagnostics_logger,
             diagnostics_metadata={"run_id": session_id, "job_id": snapshot.job_id, "config_version": system_config.config_version},
         )
-        # Apply the authoritative recorded state so play resumes from the moment.
+
         environment.load_state(restored_state)
         handle = SessionHandle(session_id, resolved_mode, resolved_seed, snapshot)
         with self._lock:
@@ -934,7 +952,7 @@ class GameService:
         self._log("game_session_restored", session_id=session_id, mode=handle.mode, seed=resolved_seed, job_id=snapshot.job_id)
         return handle
 
-    # The controller also probes ``create_session_from_state``; expose the same.
+
     create_session_from_state = restore_session
 
     @staticmethod
@@ -981,7 +999,7 @@ class GameService:
                             if value is not None and callable(set_state):
                                 set_state(value)
             except Exception:
-                # Keep the freshly built agent for this seat on any failure.
+
                 continue
         return agents
 
@@ -992,9 +1010,9 @@ class GameService:
             env.step(None)
             return StepResult(self._state(session), 0.0, None, _freeze({"cleanup": True}), cleanup=True)
         selected = int(env.state.agent_selection)
-        # Emotion formula: every living dummy (not only the actor) advances its
-        # emotion state at every step, each from its OWN public observation.
-        # No-op for dummies on the rule-table EmotionModule (the default).
+
+
+
         for index, seat_agent in enumerate(session.agents):
             if (
                 index != selected
@@ -1065,8 +1083,8 @@ class TrainingService:
         config = _mapping_config(options.config)
         mode = str(options.mode).strip()
         if mode in {TRAINING_MODE_DATA_COLLECTION, TRAINING_MODE_MODULE_TRAINING}:
-            # Capture the effective production Formula schema in the job
-            # snapshot, not only in the runner-local config copy.
+
+
             effective_emotion = ensure_formula_emotion(config.emotion)
             effective_preset = config.preset.model_copy(
                 update={"emotion": ensure_formula_emotion(config.preset.emotion)}
@@ -1097,9 +1115,9 @@ class TrainingService:
         resume_source = latest_artifact(options.resume_artifact_path)
         resume_artifact = None
         if resume_source is not None:
-            # This is a weights-only continuation.  The loader verifies the
-            # bundle and leaves PPO trainable with a fresh optimizer created by
-            # the caller's PPOTrainer.
+
+
+
             resume_artifact = load_final_artifact_for_training(resume_source)
         guard = ResourceGuard(job.snapshot)
         agents = tuple(options.agents) if options.agents is not None else tuple(
@@ -1137,7 +1155,7 @@ class TrainingService:
             resume_artifact_path=None if resume_source is None else str(resume_source),
             resume_artifact=resume_artifact,
         )
-        # Paths are public job metadata and should be visible before completion.
+
         run.report_path = str(resolve_training_file(options.report_path, root=REPORTS_DIR, filename=f"{job.job_id}.json", suffix=".json"))
         run.artifact_path = (
             None
