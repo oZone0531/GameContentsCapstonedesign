@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ..dialogs import DummyAISettingsDialog
+from ..intent_preferences import IntentSeatPreferences
 from ..i18n import LANGUAGE_LABELS, LANGUAGES, current_language, set_language, tr
 from ..qt_compat import (
     QComboBox,
@@ -15,6 +16,8 @@ from ..qt_compat import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QScrollArea,
     QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
@@ -25,7 +28,7 @@ from ..qt_compat import (
 from ..settings import SettingsEditor, SettingsSnapshot, SettingsValidationError
 
 
-if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tested
+if QT_AVAILABLE:
 
     class SettingsScreen(QWidget):
         """Settings form with validation before values are staged or saved."""
@@ -50,9 +53,9 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
                 self.language.setCurrentIndex(current_index)
             self.language.currentIndexChanged.connect(self._change_language)
 
-            # Per-emotion initial-value editor for the dummy AI. One spinbox is
-            # built per emotion currently in ``config.preset.emotion`` (works
-            # for any emotion_count, not a hard-coded 6).
+
+
+
             self.emotion_group = QGroupBox(tr("settings.emotion_initial_values"), self)
             self.emotion_form = QFormLayout(self.emotion_group)
             self.emotion_initial_help = QLabel(tr("settings.emotion_initial_help"), self.emotion_group)
@@ -67,6 +70,37 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             self.emotion_save_button.clicked.connect(self._save_emotion_file)
             self.emotion_load_button = QPushButton(tr("settings.emotion_load_file"), self)
             self.emotion_load_button.clicked.connect(self._load_emotion_file)
+
+            prefs = IntentSeatPreferences.load()
+            self.intent_group = QGroupBox(tr("settings.intent_group"), self)
+            intent_form = QFormLayout(self.intent_group)
+            self.intent_note = QLabel(tr("settings.intent_note"), self)
+            self.intent_note.setWordWrap(True)
+            intent_form.addRow(self.intent_note)
+            self.intent_default = QComboBox(self)
+            self.intent_default.addItem(tr("settings.intent_rule"), "rule")
+            self.intent_default.addItem(tr("settings.intent_learned"), "learned")
+            self.intent_default.setCurrentIndex(max(0, self.intent_default.findData(prefs.default)))
+            intent_form.addRow(tr("settings.intent_default"), self.intent_default)
+            self.intent_seats: list[QComboBox] = []
+            for index in range(5):
+                selector = QComboBox(self)
+                for key, mode in (("settings.intent_follow", "default"),
+                                  ("settings.intent_rule", "rule"),
+                                  ("settings.intent_learned", "learned")):
+                    selector.addItem(tr(key), mode)
+                selector.setCurrentIndex(max(0, selector.findData(prefs.overrides[index])))
+                intent_form.addRow(tr("settings.intent_seat", seat=index+1, index=index), selector)
+                self.intent_seats.append(selector)
+            self.intent_path = QLineEdit(prefs.model_path, self)
+            self.intent_browse = QPushButton(tr("settings.intent_browse"), self)
+            self.intent_browse.clicked.connect(self._browse_intent_model)
+            intent_path_row = QHBoxLayout()
+            intent_path_row.addWidget(self.intent_path)
+            intent_path_row.addWidget(self.intent_browse)
+            self.intent_path_label = QLabel(tr("settings.intent_path"), self)
+            intent_form.addRow(self.intent_path_label, intent_path_row)
+            self.intent_form = intent_form
             self.reward = QPlainTextEdit(self)
             self.reward.setPlainText(json.dumps(self.editor.snapshot.reward_config, indent=2))
             self.error = QLabel(self)
@@ -82,24 +116,31 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
 
             form = QFormLayout()
             form.addRow(tr("settings.language"), self.language)
-            # Keep the form so _apply_tooltips() (also called on language change)
-            # can attach tooltips to the menu LABELS, not just the fields.
+
+
             self.form = form
             self._apply_label_tooltips()
             layout = QVBoxLayout(self)
             layout.addWidget(self.back_button)
-            layout.addLayout(form)
-            layout.addWidget(self.emotion_group)
-            layout.addWidget(self.dummy_ai_button)
+            scroll = QScrollArea(self)
+            scroll.setWidgetResizable(True)
+            content = QWidget(scroll)
+            content_layout = QVBoxLayout(content)
+            content_layout.addLayout(form)
+            content_layout.addWidget(self.emotion_group)
+            content_layout.addWidget(self.dummy_ai_button)
+            content_layout.addWidget(self.intent_group)
             emotion_file_row = QHBoxLayout()
             emotion_file_row.addWidget(self.emotion_save_button)
             emotion_file_row.addWidget(self.emotion_load_button)
-            layout.addLayout(emotion_file_row)
-            layout.addWidget(self.reward_label)
-            layout.addWidget(self.reward)
-            layout.addWidget(self.help)
-            layout.addWidget(self.save_button)
-            layout.addWidget(self.error)
+            content_layout.addLayout(emotion_file_row)
+            content_layout.addWidget(self.reward_label)
+            content_layout.addWidget(self.reward)
+            content_layout.addWidget(self.help)
+            content_layout.addWidget(self.save_button)
+            content_layout.addWidget(self.error)
+            scroll.setWidget(content)
+            layout.addWidget(scroll, 1)
 
         def _build_emotion_spins(self) -> None:
             """(Re)create one initial-value spinbox per configured emotion."""
@@ -167,13 +208,27 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
                 if label is not None:
                     label.setToolTip(tr(key))
 
+        def _browse_intent_model(self) -> None:
+            selected, _ = QFileDialog.getOpenFileName(
+                self, tr("settings.intent_browse"), self.intent_path.text(),
+                tr("intent.file_filter"))
+            if selected:
+                self.intent_path.setText(selected)
+
+        def _intent_preferences(self) -> IntentSeatPreferences:
+            return IntentSeatPreferences(
+                default=str(self.intent_default.currentData()),
+                overrides=tuple(str(selector.currentData()) for selector in self.intent_seats),
+                model_path=self.intent_path.text().strip(),
+            )
+
         def _open_dummy_ai(self) -> None:
             dialog = DummyAISettingsDialog(self.editor, parent=self, on_applied=self._on_dummy_applied)
             dialog.exec()
 
         def _on_dummy_applied(self) -> None:
-            # The dummy-AI dialog may have changed emotion names/count; rebuild
-            # the per-emotion initial-value rows to match the staged config.
+
+
             self._build_emotion_spins()
             self.error.setText(tr("settings.dummy_ai_applied"))
 
@@ -184,8 +239,8 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             if not path:
                 return
             try:
-                # Stage the per-emotion initial values shown on this screen so
-                # the saved file matches what the user sees.
+
+
                 if self.emotion_spins:
                     self.editor.apply_dummy_emotion(self._emotion_initial_payload())
                 self.editor.export_dummy_emotion(path)
@@ -227,6 +282,24 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
             self.dummy_ai_button.setText(tr("settings.dummy_ai"))
             self.emotion_save_button.setText(tr("settings.emotion_save_file"))
             self.emotion_load_button.setText(tr("settings.emotion_load_file"))
+            self.intent_group.setTitle(tr("settings.intent_group"))
+            self.intent_note.setText(tr("settings.intent_note"))
+            for combo, choices in [(self.intent_default, ("settings.intent_rule", "settings.intent_learned"))] + [
+                (selector, ("settings.intent_follow", "settings.intent_rule", "settings.intent_learned"))
+                for selector in self.intent_seats
+            ]:
+                for index, key in enumerate(choices):
+                    combo.setItemText(index, tr(key))
+            self.intent_path_label.setText(tr("settings.intent_path"))
+            for field, key in ((self.intent_default, "settings.intent_default"),):
+                label = self.intent_form.labelForField(field)
+                if label is not None:
+                    label.setText(tr(key))
+            for index, selector in enumerate(self.intent_seats):
+                label = self.intent_form.labelForField(selector)
+                if label is not None:
+                    label.setText(tr("settings.intent_seat", seat=index+1, index=index))
+            self.intent_browse.setText(tr("settings.intent_browse"))
             self._apply_tooltips()
             self._apply_label_tooltips()
 
@@ -256,20 +329,24 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; editor is headless tes
 
         def _save(self) -> None:
             try:
-                # Stage the per-emotion initial values into config.preset.emotion
-                # first, then the flat training/hardware/reward values.
+
+
                 if self.emotion_spins:
                     self.editor.apply_dummy_emotion(self._emotion_initial_payload())
+                prefs = self._intent_preferences()
+
+                prefs.validate_model()
                 self.editor.apply(self._values())
                 self.editor.save()
-                self.error.setText(tr("settings.saved"))
-            except SettingsValidationError as exc:
-                self.error.setText(str(exc))
+                prefs.save()
+                self.error.setText(tr("settings.saved") + " " + tr("settings.intent_saved"))
+            except Exception as exc:
+                self.error.setText(tr("settings.intent_save_failed", error=str(exc)))
 
 
 else:
 
-    class SettingsScreen:  # type: ignore[no-redef]
+    class SettingsScreen:
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
             require_qt()
 
