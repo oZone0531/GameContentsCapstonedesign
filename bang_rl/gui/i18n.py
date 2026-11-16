@@ -15,31 +15,94 @@ from typing import Callable
 LANGUAGES: tuple[str, ...] = ("en", "ko")
 DEFAULT_LANGUAGE = "en"
 
-# Human-readable names for the language picker, keyed by language code.
+
 LANGUAGE_LABELS: dict[str, str] = {"en": "English", "ko": "한국어"}
 
 _SETTINGS_FILE = Path.home() / ".bang_rl_gui.json"
 
-# key -> {language_code: text}
+
 _STRINGS: dict[str, dict[str, str]] = {
-    # Main menu / window
+
     "app.title": {"en": "Bang RL", "ko": "Bang RL"},
     "menu.training": {"en": "AI Training", "ko": "AI 학습"},
     "menu.settings": {"en": "Settings", "ko": "설정"},
     "menu.exit": {"en": "Exit", "ko": "종료"},
     "common.back": {"en": "← Back to menu", "ko": "← 메뉴로 돌아가기"},
 
-    # Game mode selector
+
+    'menu.intent_training': {'en': 'Intent Module Training', 'ko': '의도 모듈 학습'},
+    'intent.title': {'en': 'Intent Module Training', 'ko': '의도 모듈 학습'},
+    'intent.subtitle': {'en': 'Train each role independently (100 per role = 400 games). BANG/PASS only; emotions are excluded.', 'ko': '역할별로 독립 학습합니다 (역할별 100회 = 총 400게임). BANG/PASS만 사용하며 감정 모듈은 제외합니다.'},
+    'intent.games': {'en': 'Training games per role', 'ko': '역할별 학습 게임 수'},
+    'intent.steps': {'en': 'Maximum environment steps per game', 'ko': '게임당 최대 환경 Step'},
+    'intent.seed': {'en': 'Random seed', 'ko': '난수 시드'},
+    'intent.random': {'en': 'Random AI opponents (%)', 'ko': '상대방 Random AI 비율 (%)'},
+    'intent.batch': {'en': 'Completed games per policy update', 'ko': '정책 업데이트당 종료 게임 수'},
+    'intent.eval': {'en': 'Evaluation games per role', 'ko': '역할별 사전/사후 평가 게임 수'},
+    'intent.output': {'en': 'Output model file', 'ko': '모델 저장 경로'},
+    'intent.browse_output': {'en': 'Save as...', 'ko': '저장 위치...'},
+    'intent.resume': {'en': 'Start from existing model (optional)', 'ko': '기존 모델에서 추가 학습 (선택)'},
+    'intent.resume_hint': {'en': 'New model: leave blank. To continue training, select a previous .intentmodel. Original will be preserved. Optimizer state is reset.', 'ko': '새 학습: 비워두세요. 추가 학습: 기존 .intentmodel을 선택하세요. 원본은 보존되며 옵티마이저 상태는 초기화됩니다.'},
+    'intent.browse_resume': {'en': 'Choose model...', 'ko': '기존 모델 선택...'},
+    'intent.clear_resume': {'en': 'New training', 'ko': '새로 학습'},
+    'intent.start': {'en': 'Start training', 'ko': '학습 시작'},
+    'intent.cancel': {'en': 'Stop training', 'ko': '학습 중단'},
+    'intent.load': {'en': 'Load model for analysis / continuation', 'ko': '분석·추가 학습용 모델 불러오기'},
+    'intent.explain': {'en': 'Explain example decision', 'ko': '학습 결과 예시 분석'},
+    'intent.before': {'en': 'Ready', 'ko': '시작 전'},
+    'intent.baseline': {'en': 'Evaluating existing rule-based intent (without emotion)...', 'ko': '기존 규칙형 의도 모델 평가 중 (감정 제외)...'},
+    'intent.training': {'en': 'Training {done}/{total} games | {roles}', 'ko': '학습 {done}/{total}게임 | {roles}'},
+    'intent.checkpoint': {'en': 'Checkpoint saved: {path}', 'ko': '중간 모델 저장: {path}'},
+    'intent.eval_result': {'en': 'Evaluation [{role}]: win rate {rate} / completed {normal} / truncated {truncated}', 'ko': '평가 [{role}]: 승률 {rate} / 정상 {normal} / 중단 {truncated}'},
+    'intent.saved_model': {'en': 'Model saved: {path}', 'ko': '모델 저장: {path}'},
+    'intent.saved_report': {'en': 'Report saved: {path}', 'ko': '보고서 저장: {path}'},
+    'intent.comparison': {'en': 'Rule AI vs learned AI (win rate, normally completed games)', 'ko': '규칙형 AI와 학습형 AI 비교 (정상 종료 게임 승률)'},
+    'intent.initial_compare': {'en': 'Loaded model before/after additional training', 'ko': '불러온 모델의 추가 학습 전후 비교'},
+    'intent.compare_role': {'en': '{role}: before {before} → after {after}', 'ko': '{role}: 이전 {before} → 이후 {after}'},
+    'intent.allfive': {'en': 'All-five-agent evaluation (team wins)', 'ko': '5인 전원 적용 평가 (팀별 승률)'},
+    'intent.allfive_rule': {'en': 'Rule AI x5', 'ko': '기존 규칙 AI 5명'},
+    'intent.allfive_learned': {'en': 'Learned AI x5', 'ko': '학습 의도 AI 5명'},
+    'intent.allfive_detail': {'en': '{label}: {rates} (completed {normal}, truncated {truncated})', 'ko': '{label}: {rates} (정상 {normal}, 중단 {truncated})'},
+    'intent.cumulative': {'en': 'Cumulative training: {games} games per role', 'ko': '누적 학습: 역할별 {games}게임'},
+    'intent.complete': {'en': 'Training finished. Model and report saved.', 'ko': '학습 완료. 모델과 보고서가 저장됐습니다.'},
+    'intent.cancel_request': {'en': 'Stopping after the current game...', 'ko': '현재 게임 종료 후 학습 중단 처리 중...'},
+    'intent.cancelled': {'en': 'Stopped. Existing checkpoints remain.', 'ko': '학습 중단. 기존 체크포인트는 남아 있습니다.'},
+    'intent.error': {'en': 'Training error: {error}', 'ko': '학습 오류: {error}'},
+    'intent.config_error': {'en': 'Invalid training configuration', 'ko': '학습 설정 오류'},
+    'intent.load_title': {'en': 'Choose trained intent model', 'ko': '학습된 의도 모델 선택'},
+    'intent.loaded': {'en': 'Model loaded for analysis and additional training: {path}', 'ko': '분석·추가 학습용 모델 불러옴: {path}'},
+    'intent.load_failed': {'en': 'Cannot load intent model', 'ko': '모델 불러오기 실패'},
+    'intent.analysis_failed': {'en': 'Cannot analyze intent model', 'ko': '의도 모델 분석 실패'},
+    'intent.analysis_title': {'en': 'Example: sheriff opening state', 'ko': '분석 예시: 보안관 초기 상태'},
+    'intent.analysis_action': {'en': 'Chosen action: {action}', 'ko': '선택 행동: {action}'},
+    'intent.analysis_probabilities': {'en': 'Action probabilities', 'ko': '행동 확률'},
+    'intent.analysis_contributions': {'en': 'Local gradient contributions (approximation)', 'ko': '국소적 기여도 (근사)'},
+    'intent.analysis_note': {'en': 'This is a local neural approximation, not a fixed decision formula.', 'ko': '고정된 의도식이 아니라 신경망의 해당 상태에 대한 근사적 설명입니다.'},
+    'intent.file_filter': {'en': 'Learned Intent Model (*.intentmodel)', 'ko': '학습 의도 모델 (*.intentmodel)'},
+    'intent.preserve_error': {'en': 'Choose an output file different from the input model.', 'ko': '기존 모델을 보존하도록 저장 경로를 다르게 선택해주세요.'},
+    'settings.intent_group': {'en': 'Dummy AI intent model selection', 'ko': '더미 AI 의도 모듈 선택'},
+    'settings.intent_note': {'en': 'Choose a default and optionally override each player seat (0–4). Only Dummy AI seats are affected; learned intent currently runs without emotion.', 'ko': '전체 기본값을 정하고 플레이어 좌석(0~4)을 개별 변경할 수 있습니다. 더미 AI에만 적용되며 학습형 의도 모듈은 현재 감정 모듈 없이 실행됩니다.'},
+    'settings.intent_default': {'en': 'Default for all Dummy AI', 'ko': '전체 더미 AI 기본값'},
+    'settings.intent_rule': {'en': 'Original rule intent', 'ko': '기존 규칙형 의도 모듈'},
+    'settings.intent_learned': {'en': 'Learned intent model', 'ko': '학습된 의도 모듈'},
+    'settings.intent_follow': {'en': 'Follow default', 'ko': '전체 기본값 따르기'},
+    'settings.intent_seat': {'en': 'Player {seat} (seat {index})', 'ko': '플레이어 {seat} (좌석 {index})'},
+    'settings.intent_path': {'en': 'Learned model file', 'ko': '학습 모델 파일'},
+    'settings.intent_browse': {'en': 'Browse...', 'ko': '찾아보기...'},
+    'settings.intent_saved': {'en': 'Dummy AI intent selection saved.', 'ko': '더미 AI 의도 모듈 설정을 저장했습니다.'},
+    'settings.intent_save_failed': {'en': 'Unable to save intent settings: {error}', 'ko': '의도 모듈 설정 저장 실패: {error}'},
+
+
     "mode.group": {"en": "Game mode", "ko": "게임 모드"},
     "mode.human_random": {"en": "Human 1 vs Random AI 4", "ko": "사람 1 vs 랜덤 AI 4"},
     "mode.human_dummy": {"en": "Human 1 vs Dummy AI 4", "ko": "사람 1 vs 더미 AI 4"},
     "mode.human_main_dummy": {"en": "Human 1 vs Main AI 1 + Dummy AI 3", "ko": "사람 1 vs 메인 AI 1 + 더미 AI 3"},
-    # Item 6: all-AI spectator modes.
+
     "mode.random_five": {"en": "Random AI x5", "ko": "랜덤 AI 5명"},
     "mode.dummy_five": {"en": "Dummy AI x5", "ko": "더미 AI 5명"},
     "mode.main_one_dummy_four": {"en": "Main AI 1 vs Dummy AI 4", "ko": "메인 AI 1 vs 더미 AI 4"},
 
-    # Game screen
+
     "game.title": {"en": "Bang RL — Game", "ko": "Bang RL — 게임"},
     "game.public_state": {"en": "Public game state", "ko": "공개 게임 상태"},
     "game.opponents": {"en": "Opponents", "ko": "상대"},
@@ -68,12 +131,12 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "AI turn speed: {seconds:.1f}s per turn",
         "ko": "AI 턴 속도: 턴당 {seconds:.1f}초",
     },
-    # Item 3 (FEAT-002): manual turn-advance mode. The speed slider at its
-    # minimum means "manual": auto-advance stops and the user presses Next turn.
+
+
     "game.next_turn": {"en": "Next turn", "ko": "다음 턴"},
-    # Item 3 (FEAT-003): spectator playback controls mirror the replay screen
-    # (prev turn / pause-play / next turn), so the game screen gets its own
-    # prev-turn and play labels. game.pause / game.next_turn already exist.
+
+
+
     "game.prev_turn": {"en": "Previous turn", "ko": "이전 턴"},
     "game.play": {"en": "Play", "ko": "재생"},
     "game.ai_speed_manual": {
@@ -121,39 +184,39 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Spectator mode: you are watching the AI play and cannot take actions.",
         "ko": "관전 모드: AI의 플레이를 지켜보는 중이며 조작할 수 없습니다.",
     },
-    # Item 6: spectator hint shown in place of the click hint.
+
     "game.spectating": {
         "en": "Spectating - AI players only",
         "ko": "관전 중 - AI만 플레이합니다",
     },
-    # Item 7: buttons shown under the winner banner when a game is over.
+
     "game.restart": {"en": "Restart", "ko": "재시작"},
     "game.return_menu": {"en": "Return to menu", "ko": "메뉴로 돌아가기"},
 
-    # Winning factions (game-over message)
+
     "faction.sheriff_team": {"en": "Sheriff team", "ko": "보안관 팀"},
     "faction.outlaw_team": {"en": "Outlaw team", "ko": "무법자 팀"},
     "faction.traitor_team": {"en": "Traitor", "ko": "배신자"},
 
-    # HUD table headers
+
     "hud.player": {"en": "Player", "ko": "플레이어"},
     "hud.hp": {"en": "HP", "ko": "체력"},
     "hud.status": {"en": "Status", "ko": "상태"},
     "hud.role": {"en": "Role info", "ko": "역할 정보"},
 
-    # Roles
+
     "role.sheriff": {"en": "Sheriff", "ko": "보안관"},
     "role.deputy": {"en": "Deputy", "ko": "부관"},
     "role.outlaw_a": {"en": "Outlaw A", "ko": "무법자 A"},
     "role.outlaw_b": {"en": "Outlaw B", "ko": "무법자 B"},
     "role.traitor": {"en": "Traitor", "ko": "배신자"},
     "role.hidden": {"en": "Hidden", "ko": "숨김"},
-    # Merged outlaw label for the spectator / replay role-inference list. The
-    # schema splits outlaw_a / outlaw_b, but the inference merges the two slots
-    # into a single bucket, so the hover list shows one "무법자" / "Outlaw" entry.
+
+
+
     "role.outlaw_merged": {"en": "Outlaw", "ko": "무법자"},
 
-    # Event log labels
+
     "event.bang": {"en": "BANG", "ko": "뱅"},
     "event.pass": {"en": "PASS", "ko": "패스"},
     "event.player_eliminated": {"en": "Player eliminated", "ko": "플레이어 탈락"},
@@ -167,7 +230,7 @@ _STRINGS: dict[str, dict[str, str]] = {
     "event.role": {"en": "[role: {role}]", "ko": "[역할: {role}]"},
     "event.step": {"en": "Turn {step} ", "ko": "{step}턴 "},
 
-    # Bang! hit / elimination status shown during the shot animation.
+
     "board.hit": {
         "en": "Player {player} was hit!",
         "ko": "플레이어 {player}가 명중당했습니다!",
@@ -176,14 +239,14 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Player {player} was eliminated!",
         "ko": "플레이어 {player}가 탈락했습니다!",
     },
-    # Spectator / replay role-inference hover: fallback shown when a hovered
-    # seat is not a dummy AI or its belief row is unavailable.
+
+
     "board.no_inference": {
         "en": "No inference info",
         "ko": "추론 정보 없음",
     },
 
-    # Settings screen
+
     "settings.language": {"en": "Language", "ko": "언어"},
     "settings.ppo_clip": {"en": "PPO clip epsilon", "ko": "PPO 클립 엡실론"},
     "settings.emotion_baseline": {"en": "Emotion initial baseline", "ko": "감정 초기 기준값"},
@@ -213,7 +276,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         ),
     },
 
-    # Dummy AI emotion configuration (Settings screen + dialog)
+
     "settings.emotion_initial_values": {
         "en": "Emotion initial values", "ko": "감정 초기 기준값",
     },
@@ -266,7 +329,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Dummy AI emotions updated.", "ko": "더미 AI 감정이 업데이트되었습니다.",
     },
 
-    # Dummy AI emotion save/load to a standalone external file
+
     "settings.emotion_save_file": {
         "en": "Save emotions to file", "ko": "감정 설정 파일로 저장",
     },
@@ -294,7 +357,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ko": "GUI 밖에서 저장하거나 편집한 더미 AI 감정 설정 파일을 불러옵니다.",
     },
 
-    # Training monitor
+
     "training.mode": {"en": "Mode", "ko": "모드"},
     "training.mode.data_collection": {"en": "Collect training data", "ko": "학습 데이터 수집"},
     "training.mode.module_training": {"en": "Train intent and emotion modules", "ko": "의도·감정 추론 모듈 학습"},
@@ -314,7 +377,7 @@ _STRINGS: dict[str, dict[str, str]] = {
     "training.resume_artifact_path": {"en": "Continue Main AI from (.bangmodel)", "ko": "이어 학습할 메인 AI (.bangmodel)"},
     "training.resume_module": {"en": "Continue modules from", "ko": "이어 학습할 추론 모듈"},
     "training.resume_module_none": {"en": "None (train from scratch)", "ko": "없음 (새로 학습)"},
-    # Saved inference-module performance dialog
+
     "perf.open": {"en": "Saved model performance", "ko": "저장된 모델 성능 보기"},
     "perf.title": {"en": "Saved inference module performance", "ko": "저장된 추론 모듈 성능"},
     "perf.empty": {"en": "No saved intent/emotion modules yet. Run module training first.", "ko": "저장된 의도·감정 모듈이 없습니다. 먼저 모듈 학습을 실행하세요."},
@@ -351,7 +414,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ko": "승률 그래프에는 pyqtgraph(선택 설치)가 필요합니다.",
     },
 
-    # Settings field help tooltips (shown on mouse-over of each field/label)
+
     "tooltip.language": {
         "en": "Choose the language used by buttons, labels, menus, and help messages in this window. Changing it does not change the game rules or a running job.",
         "ko": "이 창의 버튼, 라벨, 메뉴, 도움말에 사용할 언어를 선택합니다. 언어를 바꿔도 게임 규칙이나 진행 중인 학습 작업은 바뀌지 않습니다.",
@@ -405,7 +468,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ko": "더미 AI 설정을 엽니다. 이 설정에서는 학습되지 않은 규칙 기반 플레이어가 공개 사건, 행동, 보상, 현재 Formula 감정 상태에 어떻게 반응하는지 정합니다.",
     },
 
-    # AI-training settings menu (TrainingSetupPanel) field/label tooltips
+
     "tooltip.training_mode": {
         "en": "Choose what this screen should do. Collect training data plays Dummy AI games and saves examples. Module training learns the Intent and Emotion inference modules from saved data. Main AI training is a reserved placeholder for the later PPO phase.",
         "ko": "이 화면에서 수행할 작업을 선택합니다. 학습 데이터 수집은 더미 AI 게임을 실행해 예시를 저장합니다. 추론 모듈 학습은 저장된 데이터로 의도·감정 모듈을 학습합니다. 메인 AI 학습은 나중에 PPO를 연결하기 위한 준비 모드입니다.",
@@ -463,7 +526,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ko": "향후 메인 AI 학습을 이어갈 때 사용할 기존 .bangmodel 파일 또는 폴더입니다. 데이터 수집과 Phase-2 추론 모듈 학습에서는 사용하지 않습니다.",
     },
 
-    # Dummy AI emotion dialog field/label tooltips
+
     "tooltip.emotion_schema_version": {
         "en": "A label for the format of this emotion configuration. Keep it unchanged unless you intentionally create a new format, because saved data and trained modules use it to check compatibility.",
         "ko": "이 감정 설정 형식의 이름표입니다. 의도적으로 새 형식을 만드는 경우가 아니라면 그대로 두세요. 저장된 데이터와 학습 모듈이 서로 호환되는지 확인할 때 사용합니다.",
@@ -505,7 +568,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ko": "감정값을 행동 선호도로 바꾸는 JSON 맵입니다. 양의 효과는 행동 점수를 높이고 음의 효과는 낮춥니다. 감정은 행동 선호만 바꾸며, 불법 행동을 허용하지는 않습니다.",
     },
 
-    # Replay viewer (reuses the graphical board + log + speed slider)
+
     "menu.replay": {"en": "Replay", "ko": "리플레이"},
     "replay.title": {"en": "Bang RL - Replay", "ko": "Bang RL - 리플레이"},
     "replay.play": {"en": "Play", "ko": "재생"},
@@ -517,8 +580,8 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Playback speed: {seconds:.1f}s per turn",
         "ko": "재생 속도: 턴당 {seconds:.1f}초",
     },
-    # Item 3 (FEAT-002): manual mode indication for the replay speed slider at
-    # its minimum. The user advances with the existing Next turn / Prev buttons.
+
+
     "replay.speed_manual": {
         "en": "Playback: Manual (press Next turn)",
         "ko": "재생: 수동 (다음 턴 버튼)",
@@ -537,7 +600,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Recorded episode (*.json *.jsonl)",
         "ko": "기록된 에피소드 (*.json *.jsonl)",
     },
-    # Item 10: rename / delete a saved replay from the browser.
+
     "replay.rename": {"en": "Rename", "ko": "이름 바꾸기"},
     "replay.delete": {"en": "Delete", "ko": "삭제"},
     "replay.rename_prompt": {
@@ -558,12 +621,12 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Could not delete the replay file.",
         "ko": "리플레이 파일을 삭제하지 못했습니다.",
     },
-    # Item 5: browser labels for the two replay formats.
+
     "replay.format_public": {"en": "Public", "ko": "공개"},
     "replay.format_full": {"en": "Full state", "ko": "전체 상태"},
 
-    # Item 6: read-only info panel shown while a replay plays back. Surfaces the
-    # recorded mode / outcome / seed and the per-seat AI + version breakdown.
+
+
     "replay.info_title": {"en": "Replay info", "ko": "리플레이 정보"},
     "replay.info_mode": {"en": "Mode: {mode}", "ko": "모드: {mode}"},
     "replay.info_format": {"en": "Format: {format}", "ko": "포맷: {format}"},
@@ -575,7 +638,7 @@ _STRINGS: dict[str, dict[str, str]] = {
     "replay.ai_main": {"en": "Main AI {version}", "ko": "메인 AI {version}"},
     "replay.ai_unknown": {"en": "Unknown AI", "ko": "알 수 없는 AI"},
 
-    # Model selection dialog
+
     "model.title": {"en": "Select inference model", "ko": "추론 모델 선택"},
     "model.select_prompt": {"en": "Select a compatible model.", "ko": "호환되는 모델을 선택하세요."},
     "model.compatible": {"en": "Compatible", "ko": "호환됨"},
@@ -644,12 +707,12 @@ class _Translator:
         try:
             _SETTINGS_FILE.write_text(json.dumps({"language": language}), encoding="utf-8")
         except OSError:
-            # Persisting the preference is best-effort; the in-memory choice
-            # still applies for this session.
+
+
             pass
 
 
-# Process-wide translator instance shared by every GUI screen.
+
 translator = _Translator()
 
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .i18n import tr
+from .intent_preferences import IntentSeatPreferences
 from .qt_compat import (
     Qt,
     QApplication,
@@ -23,6 +24,7 @@ from .dialogs.model_select import ModelSelection, ModelSelectionDialog
 from .game import GameGuiError, GameMode, GameSessionController
 from .replay import ReplayModel
 from .screens.game_mode import GameModeSelect
+from .screens.intent_training import IntentTrainingScreen
 from .screens.game_screen import GameScreen
 from .screens.replay_screen import ReplayScreen
 from .screens.settings import SettingsScreen
@@ -31,28 +33,28 @@ from .settings import SettingsEditor
 from .training import TrainingMonitorController
 
 
-# Fixed, large window geometry shared by every screen. These live outside the
-# ``if QT_AVAILABLE:`` gate so they can be imported and unit-tested headlessly.
-# The window is sized once (see MainWindow.__init__) and never resized when the
-# user switches between the menu, game, training, and settings screens, so its
-# size stays constant and every screen's content fits without scrolling.
+
+
+
+
+
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 860
 
-# Minimum application font point size (item: make GUI text >= 10pt). Shared with
-# __main__.main() which sets the global QApplication font.
+
+
 MIN_FONT_POINT_SIZE = 10
 
-# Menu button geometry (user item 1). Each main-menu button and each game-mode
-# button is sized to about half the window width, with horizontal padding and a
-# larger font, then centered in its vertical layout. These live outside the
-# ``if QT_AVAILABLE:`` gate so they can be imported and unit-tested headlessly
-# (mirroring WINDOW_WIDTH / MIN_FONT_POINT_SIZE above). GameModeSelect imports
-# them so the whole menu stays visually consistent.
+
+
+
+
+
+
 MENU_BUTTON_WIDTH = WINDOW_WIDTH // 2
 MENU_BUTTON_MIN_HEIGHT = 48
-# Point size (>= 14pt) and horizontal/vertical padding applied via a stylesheet
-# so the button text is large relative to the wide window.
+
+
 MENU_BUTTON_FONT_POINT_SIZE = 16
 MENU_BUTTON_STYLE = "padding: 12px 40px; font-size: 16pt;"
 
@@ -75,7 +77,7 @@ def style_menu_button(button: Any) -> None:
         button.setFont(font)
 
 
-if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
+if QT_AVAILABLE:
 
     class MainWindow(QMainWindow):
         """Menu → game, training monitor, or settings for the three modes."""
@@ -93,10 +95,10 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             require_qt()
             super().__init__(parent)
             self.setWindowTitle(tr("app.title"))
-            # Size the window once to a large fixed geometry and keep it there.
-            # A matching minimum size stops any screen from shrinking it, and
-            # _set_screen no longer calls adjustSize(), so switching screens
-            # never changes the window size (item 1).
+
+
+
+
             self.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
             self.setMinimumSize(WINDOW_WIDTH, WINDOW_HEIGHT)
             self.service = service
@@ -109,14 +111,15 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.settings_editor = SettingsEditor(config)
             self._game_screen: GameScreen | None = None
             self._training_monitor: TrainingMonitor | None = None
+            self._intent_training_screen: IntentTrainingScreen | None = None
             self._settings_screen: SettingsScreen | None = None
             self._replay_screen: ReplayScreen | None = None
             self._selection: ModelSelection | None = None
-            # Item 7: remember the last started game so Restart re-runs it.
+
             self._last_mode: GameMode | None = None
             self._last_artifact: str | None = None
-            # An in-memory replay episode may be supplied by an embedder; when
-            # set it is used instead of prompting for a file.
+
+
             self.replay_episode: Any = None
             self._show_menu()
 
@@ -147,14 +150,14 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
         def _show_menu(self) -> None:
             menu = QWidget(self)
             layout = QVBoxLayout(menu)
-            # Item 8: the title is the largest element at the top, with the
-            # buttons evenly spaced below. A stretch above the title and below
-            # the last button balances the whole group vertically.
+
+
+
             layout.setSpacing(16)
             layout.addStretch(1)
             title = QLabel(tr("app.title"), menu)
             title_font = title.font()
-            # Clearly bigger than the menu buttons (~2x the button font).
+
             title_font.setPointSize(MENU_BUTTON_FONT_POINT_SIZE * 2)
             title_font.setBold(True)
             title.setFont(title_font)
@@ -169,6 +172,10 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             training_button.clicked.connect(self._show_training)
             layout.addWidget(training_button)
             self._style_menu_button(training_button, layout)
+            intent_button = QPushButton(tr("menu.intent_training"), menu)
+            intent_button.clicked.connect(self._show_intent_training)
+            layout.addWidget(intent_button)
+            self._style_menu_button(intent_button, layout)
             settings_button = QPushButton(tr("menu.settings"), menu)
             settings_button.clicked.connect(self._show_settings)
             layout.addWidget(settings_button)
@@ -210,6 +217,14 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             layout.addStretch(1)
             self._set_screen(loading)
 
+        def _show_intent_training(self) -> None:
+            self._intent_training_screen = IntentTrainingScreen(
+                on_back=self._show_menu,
+                rule_policy_config=self.settings_editor.snapshot.config.preset.intent_policy,
+                parent=self,
+            )
+            self._set_screen(self._intent_training_screen)
+
         def _show_training(self) -> None:
             setup_panel = TrainingSetupPanel(
                 config=self.settings_editor.snapshot.config,
@@ -246,9 +261,9 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 except (TypeError, ValueError, KeyError) as exc:
                     self.statusBar().showMessage(str(exc) or tr("replay.no_episode"), 0)
                     model = None
-            # Open the folder-based browser rooted at the in-project replay
-            # folder so every auto-saved human game is listed. An in-memory
-            # episode (if supplied) is still shown first via the model argument.
+
+
+
             from ..paths import REPLAYS_DIR
 
             self._replay_screen = ReplayScreen(
@@ -292,11 +307,11 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
 
         def _select_mode(self, mode: GameMode) -> None:
             artifact_path: str | None = None
-            # Clear any prior Main-AI metadata so a non-Main mode does not carry
-            # a stale AI version into its saved replay.
+
+
             self.controller.set_ai_metadata(None)
-            # Item 6: both the human Main-AI mode and the Main-AI spectator mode
-            # need a compatible .bangmodel, chosen through the same dialog.
+
+
             if mode in (GameMode.HUMAN_MAIN_DUMMY, GameMode.MAIN_ONE_DUMMY_FOUR):
                 self._selection = self._selection or ModelSelection()
                 options = self._selection.discover(self.artifact_paths, config=self.config)
@@ -304,8 +319,8 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 if dialog.exec() != dialog.DialogCode.Accepted or dialog.selected_option is None:
                     return
                 artifact_path = dialog.selected_option.path
-                # Record the chosen artifact's metadata (incl. version) so the
-                # auto-saved replay captures which AI version was used.
+
+
                 self.controller.set_ai_metadata(dialog.selected_option.metadata)
             self._start_game(mode, artifact_path)
 
@@ -317,56 +332,77 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             game (spectator or human).
             """
 
-            # Item 5 (FEAT-003): show a 'Loading...' screen BEFORE the blocking
-            # controller.start() (session creation / env build) so the UI does
-            # not look frozen. processEvents() lets Qt actually paint the
-            # loading widget before start() blocks the event loop. This runs
-            # inside _start_game, i.e. AFTER any ModelSelectionDialog in
-            # _select_mode has been accepted, so the dialog is never hidden
-            # behind the loading screen; on_restart funnels here too.
+
+
+
+
+
+
+
             self._show_loading()
             if QApplication is not None:
                 QApplication.processEvents()
-            # Detach any callback still bound to a previously-shown (and now
-            # torn-down) GameScreen so controller.start()'s internal publish
-            # cannot render into deleted C++ widgets.
+
+
+
             self.controller.on_update = None
-            # Start the game with the settings staged in the Settings screen
-            # (e.g. Dummy AI emotion). Previously games always ran on the
-            # config given at window construction (the default SystemConfig).
+
+
+
             self.config = self.settings_editor.snapshot.config
             self.controller.config = self.config
-            # Item 1 (FEAT-003): for a HUMAN mode whose first turn is an AI
-            # (Sheriff-first), let the GameScreen animate the AI run-up one turn
-            # at a time instead of the controller silently fast-forwarding it.
-            # advance_ai=False keeps the controller on the AI turn so the screen
-            # drives the cadence via _maybe_start_ai_sequence. Spectator modes
-            # already never fast-forward (their _advance_to_human_turn early-
-            # returns), so the default is fine there.
+
+
+
+            try:
+                intent_preferences = IntentSeatPreferences.load()
+                self.controller.intent_selections = intent_preferences.resolved
+                self.controller.intent_model_path = intent_preferences.model_path
+
+                from .game import GameMode as _Mode
+                dummy_seats = {
+                    _Mode.DUMMY_FIVE: range(5),
+                    _Mode.HUMAN_DUMMY: range(1, 5),
+                    _Mode.HUMAN_MAIN_DUMMY: range(2, 5),
+                    _Mode.MAIN_ONE_DUMMY_FOUR: range(1, 5),
+                }.get(mode, ())
+                if any(intent_preferences.resolved[i] == "learned" for i in dummy_seats):
+                    intent_preferences.validate_model()
+            except Exception as exc:
+                self.statusBar().showMessage(str(exc), 0)
+                self._show_menu()
+                return
+
+
+
+
+
+
+
             advance_ai = not bool(getattr(mode, "is_human", False))
             try:
                 self.controller.start(
                     mode, artifact_path=artifact_path, advance_ai=advance_ai
                 )
             except GameGuiError as exc:
-                # showMessage's default timeout auto-clears the text; passing 0
-                # keeps the error visible in the always-present status bar until
-                # the next action replaces it. Fall back to a localized generic
-                # message when the exception carries no text.
+
+
+
+
                 message = str(exc) or tr("game.error_generic")
                 self.statusBar().showMessage(message, 0)
-                # Item 5 (FEAT-003): do not strand the user on the 'Loading...'
-                # screen when start() fails; restore the menu so the status-bar
-                # error is shown on a sensible screen they can act from.
+
+
+
                 self._show_menu()
                 return
             self._last_mode = mode
             self._last_artifact = artifact_path
-            # GameScreen.__init__ re-binds controller.on_update to its own
-            # _render and renders the current snapshot itself, so building it
-            # after start() keeps the callback pointed at a live screen. Item 7
-            # wires the Restart / Return-to-menu callbacks the screen shows when
-            # a game is over.
+
+
+
+
+
             self._game_screen = GameScreen(
                 self.controller, self, on_back=self._show_menu, on_restart=self.on_restart
             )
@@ -387,7 +423,7 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
 
 else:
 
-    class MainWindow:  # type: ignore[no-redef]
+    class MainWindow:
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
             require_qt()
 
