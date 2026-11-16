@@ -1,4 +1,4 @@
-"""Emotion formula module for the DummyAgent (alternative to ``EmotionModule``).
+"""Emotion formula module of the DummyAgent (its only emotion model).
 
 Spec: emotion_formula_spec.md (SWCON367 emotion design).
 
@@ -6,8 +6,8 @@ Spec: emotion_formula_spec.md (SWCON367 emotion design).
 - Per-opponent relation R[5] in [-1, 1] (negative = grudge, positive = liking).
 - Every coefficient is an ``EmotionParams`` variable (no hard-coded constants).
 
-Selection: a DummyAgent uses this module only when its ``EmotionConfig`` has a
-``formula`` block. Without it the existing ``EmotionModule`` is used unchanged.
+Every DummyAgent uses this module, configured by the ``formula`` block of its
+``EmotionConfig`` (the tuned formula by default).
 
 Range convention for relations (team decision 2026-10-06):
 - internal value ``R`` is signed in [-1, 1];

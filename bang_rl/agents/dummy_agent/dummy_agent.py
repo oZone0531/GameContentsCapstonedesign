@@ -9,9 +9,7 @@ from typing import Any
 import numpy as np
 
 from ..base import BaseAgent, validate_action_mask
-from .emotion_formula import FormulaEmotionModule, formula_block
-
-from .emotion_module import EmotionModule
+from .emotion_formula import FormulaEmotionModule
 from .intent_policy import ActionSelection, ActionSelector, IntentModule, IntentPolicyConfig
 from .belief_source import BeliefSource
 from .role_belief import DEPUTY_ROLE, SHERIFF_ROLE, RoleBeliefEstimator
@@ -28,41 +26,6 @@ _PRIVATE_FIELDS = {
     "emotion_label",
     "reward_breakdown",
 }
-
-
-def _relation_target_contribution(
-    relation: Any,
-    weight: float,
-    player_idx: int | None,
-) -> list[float]:
-    """Return the per-target relation term over the length-6 action space.
-
-    The action space is: index ``0`` = pass; indices ``1..5`` = bang at seat
-    ``s`` where ``s = action_index - 1``.  Pass gets no term.  For each bang
-    action the term is ``-weight * relation[s]``.
-
-    Sign convention (consistent with FEAT-002): ``relation[s]`` is signed, with
-    negative meaning grudge and positive meaning trust.  The leading minus sign
-    means that, with ``weight > 0``, a grudge (negative relation) toward seat
-    ``s`` produces a POSITIVE bump to the "bang seat ``s``" score, so the agent
-    is biased to shoot the opponent it resents; trust (positive relation)
-    lowers that score.  With ``weight == 0.0`` (the default) every entry is
-    exactly ``0.0`` so action selection is byte-for-byte unchanged.
-
-    The self slot (``s == player_idx``) is neutral in the relation vector, so
-    its term is ~0; it is skipped defensively regardless.  This helper is pure
-    (builtins only, no numpy) so it is unit-testable in the restricted sandbox.
-    """
-
-    contribution = [0.0] * 6
-    weight_value = float(weight)
-    if weight_value == 0.0:
-        return contribution
-    for seat in range(5):
-        if player_idx is not None and seat == player_idx:
-            continue
-        contribution[seat + 1] = -weight_value * float(relation[seat])
-    return contribution
 
 
 def _json_safe(value: Any) -> Any:
@@ -95,7 +58,7 @@ class DummyAgent(BaseAgent):
         player_idx: int | None = None,
         role_estimator: RoleBeliefEstimator | None = None,
         intent_module: IntentModule | None = None,
-        emotion_module: EmotionModule | None = None,
+        emotion_module: FormulaEmotionModule | None = None,
         emotion_config: Any | None = None,
         emotion: Any | None = None,
         policy_config: IntentPolicyConfig | Mapping[str, Any] | Any | None = None,
@@ -130,23 +93,23 @@ class DummyAgent(BaseAgent):
                 player_idx=player_idx,
                 config=policy_config if policy_config is not None else intent_config,
             )
-        if emotion_module is not None and not isinstance(
-            emotion_module, (EmotionModule, FormulaEmotionModule)
-        ):
-            raise TypeError("emotion_module must be an EmotionModule, FormulaEmotionModule, or None")
+        if emotion_module is not None and not isinstance(emotion_module, FormulaEmotionModule):
+            raise TypeError("emotion_module must be a FormulaEmotionModule or None")
         if emotion_config is not None and emotion is not None:
             raise ValueError("provide only one of emotion_config or emotion")
         selected_emotion = emotion_config if emotion_config is not None else emotion
         if emotion_module is not None:
             self.emotion_module = emotion_module
-        elif formula_block(selected_emotion) is not None:
-            # Emotion formula (FormulaEmotionModule) is used ONLY when the emotion
-            # config carries a ``formula`` block; otherwise nothing changes.
+        else:
+            if selected_emotion is None:
+                # Imported lazily: bang_rl.config must not import the agents
+                # package while it is itself being imported.
+                from bang_rl.config import EmotionConfig
+
+                selected_emotion = EmotionConfig()
             self.emotion_module = FormulaEmotionModule(
                 selected_emotion, player_idx=player_idx, seed=self._emotion_seed()
             )
-        else:
-            self.emotion_module = EmotionModule(selected_emotion, player_idx=player_idx)
         self._action_mode = action_mode
         self._rng = rng if rng is not None else np.random.default_rng(self.action_seed())
         self._last_selection: ActionSelection | None = None
@@ -154,6 +117,13 @@ class DummyAgent(BaseAgent):
         # None keeps the public rule-based estimator, the default everywhere.
         self.belief_source: BeliefSource | None = None
         self._belief_observation: Any | None = None
+        # Optional replacement for the rule-based intent scores (see
+        # emotion_coupling.py): a callable (observation, policy_mask, agent, rule_scores) ->
+        # 6 scores, e.g. a learned policy's logits. None keeps the rule-based
+        # intent module. emotion_scale converts the emotion contribution into
+        # the units of those scores (1.0 = rule-score units, the default).
+        self.intent_source: Any | None = None
+        self.emotion_scale: float = 1.0
 
     @property
     def role_beliefs(self) -> np.ndarray:
@@ -181,10 +151,6 @@ class DummyAgent(BaseAgent):
             raise TypeError("belief source must implement BeliefSource")
         self.belief_source = source
 
-    @property
-    def uses_emotion_formula(self) -> bool:
-        return isinstance(self.emotion_module, FormulaEmotionModule)
-
     def _emotion_seed(self, seed: int | None = None) -> int | None:
         root = self.seed if seed is None else seed
         if root is None:
@@ -195,12 +161,9 @@ class DummyAgent(BaseAgent):
         """Advance role beliefs and the emotion formula at a boundary where this
         dummy does NOT act (called for every living dummy at every step).
 
-        ``observation`` must be THIS dummy's own public observation. With the
-        rule-table EmotionModule this is a no-op, so default behaviour is unchanged.
+        ``observation`` must be THIS dummy's own public observation.
         """
 
-        if not self.uses_emotion_formula:
-            return
         if self.emotion_module.terminated or self.emotion_module.truncated:
             return
         self._public_events(observation)  # rejects privileged fields
@@ -219,7 +182,7 @@ class DummyAgent(BaseAgent):
         return self.intent_module
 
     @property
-    def emotion(self) -> EmotionModule:
+    def emotion(self) -> FormulaEmotionModule:
         return self.emotion_module
 
     @property
@@ -285,11 +248,8 @@ class DummyAgent(BaseAgent):
         self._belief_observation = context_observation
         if self.belief_source is not None:
             self.belief_source.on_episode_start(self.role_estimator.player_idx, context_observation)
-        if self.uses_emotion_formula:
-            seed = self._emotion_seed(self.episode_seed) if self.episode_seed is not None else None
-            self.emotion_module.on_episode_start(context, seed=seed)
-        else:
-            self.emotion_module.on_episode_start(context)
+        seed = self._emotion_seed(self.episode_seed) if self.episode_seed is not None else None
+        self.emotion_module.on_episode_start(context, seed=seed)
         self._last_selection = None
         if self.episode_seed is not None:
             self._rng = np.random.default_rng(self.action_seed(self.episode_seed))
@@ -346,23 +306,6 @@ class DummyAgent(BaseAgent):
             raise ValueError("environment_step must be a non-negative integer")
         return int(value)
 
-    @classmethod
-    def _board_state(cls, observation: Any) -> tuple[Any, Any]:
-        """Return the PUBLIC per-seat (healths, alive) from the observation.
-
-        Reads only the public ``healths`` / ``alive`` fields through ``_field``
-        (never a private field).  A fixture that omits either field yields
-        ``(None, None)`` so the emotion module treats it as "no board observed"
-        (a safe no-op), exactly like ``FactionStrengthEstimator._board`` /
-        ``IntentModule._alive_and_health`` tolerate a missing board.
-        """
-
-        healths = cls._field(observation, "healths", "health", default=None)
-        alive = cls._field(observation, "alive", default=None)
-        if healths is None or alive is None:
-            return None, None
-        return healths, alive
-
     def _policy_action_mask(self, observation: Any, action_mask: Any) -> np.ndarray:
         """Return the environment legality mask without role-level hard bans.
 
@@ -374,59 +317,6 @@ class DummyAgent(BaseAgent):
         """
 
         return validate_action_mask(action_mask)
-
-    def _prepare_emotion(self, observation: Any) -> None:
-        healths, alive = self._board_state(observation)
-        self._prepare_emotion_values(
-            self._public_events(observation),
-            self._environment_step(observation),
-            healths,
-            alive,
-        )
-
-    def _prepare_emotion_values(
-        self,
-        events: tuple[Any, ...],
-        step: int | None,
-        healths: Any = None,
-        alive: Any = None,
-    ) -> None:
-        # Feed the latest PUBLIC board snapshot into the emotion module before
-        # applying events so control judgments can read it.  A missing board
-        # (None) clears the snapshot to a safe no-op.
-        self.emotion_module.observe_public_state(healths, alive)
-        if step is None:
-            # Small standalone fixtures may omit the environment clock.  They
-            # can still deliver a valid public event boundary, but no decay is
-            # inferred without an explicit environment step.
-            self.emotion_module.apply_events(events)
-        else:
-            self.emotion_module.prepare_action(step, events)
-
-    def _emotion_contribution(self) -> np.ndarray:
-        values = self.emotion_module.values
-        by_name = dict(zip(self.emotion_module.emotion_names, values))
-        contribution = np.zeros(6, dtype=np.float64)
-        for action in range(6):
-            effects = self.emotion_module.effects_for_action(action)
-            contribution[action] = sum(
-                float(by_name[name]) * float(effect)
-                for name, effect in effects.items()
-                if name in by_name
-            )
-        # Additive per-target relation term (FEAT-004): bias banging a resented
-        # seat when relation_target_weight > 0.  Defaults to exactly 0.0 so
-        # existing configs and determinism are preserved.  Read relation via the
-        # read-only property (a detached copy); never mutate emotion/relation
-        # state during action selection.
-        weight = float(self.intent_module.config.relation_target_weight)
-        if weight != 0.0:
-            relation = self.emotion_module.relation
-            target_term = _relation_target_contribution(
-                relation, weight, self.emotion_module.player_idx
-            )
-            contribution += np.asarray(target_term, dtype=np.float64)
-        return contribution
 
     def act(self, observation: Any, action_mask: Any, *, mode: str | None = None) -> int:
         """Choose an action from intent plus emotion using only public state."""
@@ -440,25 +330,25 @@ class DummyAgent(BaseAgent):
         # Validate public event fields and the environment boundary before
         # mutating either private module.
         public_events = self._public_events(observation)
-        environment_step = self._environment_step(observation)
-        board_healths, board_alive = self._board_state(observation)
+        self._environment_step(observation)
         self.role_estimator.update(observation)
         self._belief_observation = observation
-        if self.uses_emotion_formula:
-            # Formula path: the same boundary may already have been observed by
-            # observe_public_boundary; processed events are skipped and decay /
-            # noise only run when the environment step advances.
-            self.emotion_module.observe(observation, self.role_beliefs)
-            contribution = self.emotion_module.action_contribution()
-        else:
-            self._prepare_emotion_values(
-                public_events, environment_step, board_healths, board_alive
-            )
-            contribution = self._emotion_contribution()
+        # The same boundary may already have been observed by
+        # observe_public_boundary; processed events are skipped and decay /
+        # noise only run when the environment step advances.
+        self.emotion_module.observe(observation, self.role_beliefs)
+        contribution = self.emotion_module.action_contribution()
         intent = self.intent_module.decision(observation, self.role_beliefs)
         policy_mask = self._policy_action_mask(observation, mask)
+        scores = intent.scores
+        if self.intent_source is not None:
+            scores = np.asarray(
+                self.intent_source(observation, policy_mask, self, intent.scores), dtype=np.float64
+            )
+        if self.emotion_scale != 1.0:
+            contribution = np.asarray(contribution, dtype=np.float64) * float(self.emotion_scale)
         selection = ActionSelector.select_with_info(
-            intent.scores,
+            scores,
             policy_mask,
             emotion_contribution=contribution,
 
@@ -520,10 +410,8 @@ class DummyAgent(BaseAgent):
         emotion_state = state.get("emotion_module")
         if emotion_state is None:
             emotion_module = None
-        elif FormulaEmotionModule.is_formula_state(emotion_state):
-            emotion_module = FormulaEmotionModule.from_state_dict(emotion_state)
         else:
-            emotion_module = EmotionModule.from_state_dict(emotion_state)
+            emotion_module = FormulaEmotionModule.from_state_dict(emotion_state)
         selector_state = state.get("action_selector", {})
         mode = selector_state.get("mode", "deterministic")
         agent = cls(

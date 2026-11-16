@@ -127,12 +127,36 @@ def _aggregate(
     return result
 
 
+def _write_dataset_info(
+    path: Path, summary: dict[str, Any], *, games: int, base_seed: int,
+    action_mode: str, belief: str | None, created_by: str,
+) -> None:
+    """Same collection_summary.json + dataset info as the serial collector."""
+
+    from uuid import uuid4
+
+    from bang_rl.artifact_builders import dataset_info, dataset_summary
+    from bang_rl.artifact_info import dump_json_with_info, write_info
+
+    meta = dataset_info(
+        id=str(uuid4()), games=games, base_seed=base_seed, created_by=created_by,
+        action_mode=action_mode, belief=belief or "rule",
+    )
+    meta.summary = dataset_summary(summary)
+    meta.name = path.name
+    (path / "collection_summary.json").write_text(
+        dump_json_with_info(summary, meta, indent=2), encoding="utf-8"
+    )
+    write_info(path, meta)
+
+
 def collect_games_parallel(
     config: SystemConfig, games: int, output_dir: str | Path,
     *, workers: int = 4, base_seed: int = 0,
     action_mode: str = "deterministic", belief: str | None = "rule",
     batch_games: int | None = None, shard_games: int = 20,
     progress: Callable[[int, int], None] | None = None,
+    created_by: str = "collect_games_parallel",
 ) -> dict[str, Any]:
     """Collect the original canonical dataset in separate CPU processes.
 
@@ -161,10 +185,13 @@ def collect_games_parallel(
 
     start = time.perf_counter()
     if workers == 1:
+        # The serial collector writes collection_summary.json and the dataset
+        # info (data library metadata) itself; only the timing fields are added.
         result = collect_games(
             config, games, path, base_seed=base_seed,
             action_mode=action_mode, belief=belief,
             progress=progress, shard_games=shard_games,
+            created_by=created_by,
         )
         elapsed = time.perf_counter() - start
         result.update(
@@ -173,7 +200,6 @@ def collect_games_parallel(
             games_per_second=round(games / max(elapsed, 1e-9), 3),
             environment_steps_per_second=round(result["total_steps"] / max(elapsed, 1e-9), 3),
         )
-        (path / "collection_summary.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         return result
 
     # Keep tasks small enough for load balancing but not so small that process
@@ -224,9 +250,8 @@ def collect_games_parallel(
             [results[batch.index] for batch in tasks], games, base_seed,
             action_mode, effective_workers, elapsed, shards, batch_games,
         )
-        (path / "collection_summary.json").write_text(
-            json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        _write_dataset_info(path, summary, games=games, base_seed=base_seed,
+                            action_mode=action_mode, belief=belief, created_by=created_by)
         return summary
     finally:
         shutil.rmtree(staging, ignore_errors=True)

@@ -1,12 +1,5 @@
 """Runtime coordination, deterministic seeds, and structured telemetry."""
 
-from .emotion import (
-    EMOTION_RUNTIME_STATE_VERSION,
-    EmotionLabelSnapshot,
-    EmotionRuntime,
-    EmotionRuntimeError,
-    EmotionTransitionRecord,
-)
 from .job import JobSnapshot, TrainingJob
 from .pause_coordinator import PauseCoordinator, PauseState, WorkerCancelled, WorkerControl
 from .seed import RNGStreams, SeedBundle, SeedManager, derive_seed, seed_everything
@@ -31,11 +24,6 @@ from .reward import (
 )
 
 __all__ = [
-    "EMOTION_RUNTIME_STATE_VERSION",
-    "EmotionLabelSnapshot",
-    "EmotionRuntime",
-    "EmotionRuntimeError",
-    "EmotionTransitionRecord",
     "JobSnapshot",
     "TrainingJob",
     "PauseCoordinator",

@@ -18,8 +18,9 @@ import numpy as np
 import torch
 
 from bang_rl.agents.dummy_agent import DummyAgent
+from bang_rl.agents.main_agent.policy_inputs import build_policy_inputs
 from bang_rl.agents.random_agent import RandomAgent
-from bang_rl.config import EvaluationConfig, EnvConfig, PresetConfig, SystemConfig, ensure_formula_emotion
+from bang_rl.config import EvaluationConfig, EnvConfig, PresetConfig, SystemConfig
 from bang_rl.config.snapshot import JobSnapshot
 from bang_rl.data.emotion_slots import emotion_value_mask
 from bang_rl.env import BangEnvironment
@@ -62,40 +63,144 @@ def semantic_role_prediction(distribution: Any) -> int:
 def opponent_emotion_target(agent: Any) -> tuple[np.ndarray, tuple[str, ...]] | None:
     """An opponent's current emotion in the label layout the main agent learns.
 
-    Formula dummies report their 9-entry label (global emotions + relation per
-    seat); rule-table dummies report their value vector. Returns None for
-    agents without emotions.
+    Dummies report their 9-entry label (global emotions + relation per seat).
+    Returns None for agents without emotions.
     """
 
     module = getattr(agent, "emotion_module", None)
     if module is None:
         return None
-    if getattr(agent, "uses_emotion_formula", False):
-        from bang_rl.agents.dummy_agent.emotion_formula import LABEL_NAMES
+    from bang_rl.agents.dummy_agent.emotion_formula import LABEL_NAMES
 
-        return np.asarray(module.label(), dtype=np.float64), tuple(LABEL_NAMES)
-    values = getattr(agent, "emotion_state", None)
-    if values is None:
-        return None
-    names = tuple(getattr(module, "emotion_names", ()) or ())
-    return np.asarray(values, dtype=np.float64).reshape(-1), names
+    return np.asarray(module.label(), dtype=np.float64), tuple(LABEL_NAMES)
 
 
 def observe_boundaries(agents: Mapping[int, Any], env: Any, actor: int) -> None:
-    """Advance every living non-acting formula dummy at this step boundary.
+    """Advance every living non-acting dummy at this step boundary.
 
-    Same order as ``GameService.step``: without it a formula dummy's emotion
+    Same order as ``GameService.step``: without it a dummy's emotion
     only advances on its own turns, so evaluation games would differ from the
     games the dummies were tuned and collected on.
     """
 
     alive = getattr(env.state, "alive", None)
     for index, agent in agents.items():
-        if index == actor or not getattr(agent, "uses_emotion_formula", False):
+        if index == actor or not hasattr(agent, "observe_public_boundary"):
             continue
         if alive is not None and not bool(alive[index]):
             continue
         agent.observe_public_boundary(env.observe(index))
+
+
+def build_dummy_opponents(
+    seat: int,
+    seed: int,
+    preset: PresetConfig,
+    *,
+    action_mode: str = PRIMARY_ACTION_MODE,
+) -> dict[int, DummyAgent]:
+    """The four DummyAgents facing the main agent in ``seat`` for one game.
+
+    Evaluation and main-AI training share this builder so both play the same
+    opponents: the preset's intent policy and emotion formula, and
+    ``seed + player_idx + 1`` as each dummy's seed.
+    """
+
+    return {
+        index: DummyAgent(
+            agent_id=f"player_{index}",
+            player_idx=index,
+            seed=seed + index + 1,
+            policy_config=preset.intent_policy,
+            emotion_config=preset.emotion,
+            action_mode=action_mode,
+        )
+        for index in range(5)
+        if index != seat
+    }
+
+
+@dataclass(slots=True)
+class InferenceMetrics:
+    """Running role-classification and emotion-estimation metrics for one agent.
+
+    ``observe_step`` is called at each main-agent decision with the fused role
+    distribution and the estimated opponent emotions. It reads the true roles
+    and the opponents' emotion labels (privileged), so it is metrics-only and
+    must never feed a model.
+    """
+
+    role_correct: int = 0
+    role_total: int = 0
+    hidden_correct: int = 0
+    hidden_total: int = 0
+    emotion_squared_error: float = 0.0
+    emotion_dimensions: int = 0
+
+    def observe_step(
+        self,
+        *,
+        env: Any,
+        observation: Any,
+        seat: int,
+        fused_intent: Any,
+        estimated_emotion: Any,
+        opponents: Mapping[int, Any],
+    ) -> None:
+        target_slots = [index for index in range(5) if index != seat]
+        actual_roles = env.state.roles  # metrics-only privileged read
+        visibility = np.asarray(observation["role_visibility"]).reshape(-1)
+        for stream, target in enumerate(target_slots):
+            predicted = semantic_role_prediction(fused_intent[stream])
+            actual = SEMANTIC_ROLE_OF[int(actual_roles[target])]
+            self.role_total += 1
+            self.role_correct += int(predicted == actual)
+            if int(visibility[target]) == 0:
+                self.hidden_total += 1
+                self.hidden_correct += int(predicted == actual)
+        alive_state = getattr(env.state, "alive", None)
+        alive_now = np.ones(5, dtype=bool) if alive_state is None else np.asarray(alive_state, dtype=bool)
+        for stream, target in enumerate(target_slots):
+            if not alive_now[target]:
+                continue  # dead players carry no emotion label
+            target_entry = opponent_emotion_target(opponents[target])
+            if target_entry is None:
+                continue
+            target_values, target_names = target_entry
+            predicted_values = np.asarray(estimated_emotion[stream], dtype=np.float64).reshape(-1)
+            if target_values.shape != predicted_values.shape:
+                continue
+            # Skip entries fixed at a constant (relation to the owner itself or
+            # to a dead seat), as in emotion training.
+            entries = (
+                emotion_value_mask(target_names, np.array(target), alive_now)
+                if len(target_names) == target_values.size
+                else np.ones(target_values.size, dtype=bool)
+            )
+            error = np.square(predicted_values - target_values)[entries]
+            self.emotion_squared_error += float(error.sum())
+            self.emotion_dimensions += int(entries.sum())
+
+    def merge(self, other: "InferenceMetrics") -> None:
+        for name in self.__slots__:
+            setattr(self, name, getattr(self, name) + getattr(other, name))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {name: getattr(self, name) for name in self.__slots__}
+
+    @property
+    def role_accuracy(self) -> float | None:
+        return self.role_correct / self.role_total if self.role_total else None
+
+    @property
+    def hidden_role_accuracy(self) -> float | None:
+        return self.hidden_correct / self.hidden_total if self.hidden_total else None
+
+    @property
+    def emotion_mse(self) -> float | None:
+        return self.emotion_squared_error / self.emotion_dimensions if self.emotion_dimensions else None
+
+
 REPORT_FORMAT_VERSION = "1.0"
 CONFIDENCE_LEVEL = 0.95
 _WILSON_Z = 1.959963984540054
@@ -489,32 +594,19 @@ class PrimaryEvaluationProtocol:
     ) -> tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         # Every object passed below is derived from PublicEnvironmentState.  In
         # particular, no true role or DummyAgent emotion target reaches a model.
-        processed = self.artifact.preprocessor.preprocess(observation)
-        with torch.inference_mode():
-            raw_intent = self.artifact.intent.predict_proba(processed)
-            estimated_emotion = self.artifact.emotion.predict_proba(processed)
-        raw_intent_array = raw_intent.detach().cpu().numpy() if torch.is_tensor(raw_intent) else np.asarray(raw_intent)
-        estimated_emotion_array = estimated_emotion.detach().cpu().numpy() if torch.is_tensor(estimated_emotion) else np.asarray(estimated_emotion)
-        values = {key: observation[key] for key in observation.keys()}
-        fused = self.artifact.role_fusion.fuse(
-            raw_intent_array,
-            role_visibility=values["role_visibility"],
-            revealed_roles=values["revealed_roles"],
-            confirmed_role_distribution=values["confirmed_role_distribution"],
-            self_role=values["self_role"],
-            sheriff_idx=values["sheriff_idx"],
+        inputs = build_policy_inputs(
+            observation,
+            preprocessor=self.artifact.preprocessor,
+            intent=self.artifact.intent,
+            emotion=self.artifact.emotion,
+            role_fusion=self.artifact.role_fusion,
             viewer_idx=seat,
         )
-        fused_array = np.asarray(fused, dtype=np.float32)
-        emotion_features = estimated_emotion_array.reshape(-1).astype(np.float32)
-        policy_inputs = {
-            "self_state": processed.state_vector,
-            "board_state": processed.player_state_matrix,
-            "confirmed_role_features": processed.role_beliefs,
-            "fused_intent": fused_array,
-            "emotion_features": emotion_features,
-            "action_mask": processed.action_mask,
-        }
+        processed = inputs.processed
+        policy_inputs = inputs.ppo_inputs()
+        raw_intent_array = inputs.raw_intent
+        fused_array = inputs.fused_intent
+        estimated_emotion_array = inputs.estimated_emotion
         with torch.inference_mode():
             if action_mode == "stochastic":
                 # A private generator isolates stochastic evaluation from the
@@ -619,31 +711,18 @@ class PrimaryEvaluationProtocol:
         episode_id = f"{self.evaluation_run_id}-game-{evaluation_index:03d}"
         env = self.environment_factory(episode_id, seed, self.config.env)
         first_observation = env.reset(seed=seed, episode_id=episode_id)
-        opponents = {
-            index: (
-                RandomAgent(
-                    agent_id=f"player_{index}",
-                    seed=seed + index + 1,
-                )
-                if opponent == "random"
-                else DummyAgent(
-                    agent_id=f"player_{index}",
-                    player_idx=index,
-                    seed=seed + index + 1,
-                    policy_config=preset.intent_policy,
-                    emotion_config=ensure_formula_emotion(preset.emotion),
-                    action_mode=action_mode,
-                )
-            )
-            for index in range(5)
-            if index != seat
-        }
+        if opponent == "random":
+            opponents: dict[int, Any] = {
+                index: RandomAgent(agent_id=f"player_{index}", seed=seed + index + 1)
+                for index in range(5)
+                if index != seat
+            }
+        else:
+            opponents = build_dummy_opponents(seat, seed, preset, action_mode=action_mode)
         for agent in opponents.values():
             agent.on_episode_start({"episode_id": episode_id, "seed": seed})
 
-        role_correct = role_total = hidden_correct = hidden_total = 0
-        emotion_squared_error = 0.0
-        emotion_dimensions = 0
+        inference_metrics = InferenceMetrics()
         while not env.state.terminated and not env.state.truncated:
             selection = env.agent_selection
             selected_attribute = getattr(selection, "index", None)
@@ -667,42 +746,14 @@ class PrimaryEvaluationProtocol:
                         int(np.asarray(observation["environment_step"]).reshape(-1)[0]),
                     ),
                 )
-                target_slots = [index for index in range(5) if index != seat]
-                actual_roles = env.state.roles  # metrics-only privileged read
-                visibility = np.asarray(observation["role_visibility"]).reshape(-1)
-                for stream, target in enumerate(target_slots):
-                    predicted = semantic_role_prediction(fused_intent[stream])
-                    actual = SEMANTIC_ROLE_OF[int(actual_roles[target])]
-                    role_total += 1
-                    role_correct += int(predicted == actual)
-                    is_hidden = int(visibility[target]) == 0
-                    if is_hidden:
-                        hidden_total += 1
-                        hidden_correct += int(predicted == actual)
-                alive_state = getattr(env.state, "alive", None)
-                alive_now = (
-                    np.ones(5, dtype=bool) if alive_state is None else np.asarray(alive_state, dtype=bool)
+                inference_metrics.observe_step(
+                    env=env,
+                    observation=observation,
+                    seat=seat,
+                    fused_intent=fused_intent,
+                    estimated_emotion=estimated_emotion,
+                    opponents=opponents,
                 )
-                for stream, target in enumerate(target_slots):
-                    if not alive_now[target]:
-                        continue  # dead players carry no emotion label
-                    target_entry = opponent_emotion_target(opponents[target])
-                    if target_entry is None:
-                        continue
-                    target_values, target_names = target_entry
-                    predicted_values = np.asarray(estimated_emotion[stream], dtype=np.float64).reshape(-1)
-                    if target_values.shape != predicted_values.shape:
-                        continue
-                    # Skip entries fixed at a constant (relation to the owner
-                    # itself or to a dead seat), as in emotion training.
-                    entries = (
-                        emotion_value_mask(target_names, np.array(target), alive_now)
-                        if len(target_names) == target_values.size
-                        else np.ones(target_values.size, dtype=bool)
-                    )
-                    error = np.square(predicted_values - target_values)[entries]
-                    emotion_squared_error += float(error.sum())
-                    emotion_dimensions += int(entries.sum())
             else:
                 action = opponents[selected].act(observation, mask)
             if mask[action] != 1:
@@ -729,15 +780,7 @@ class PrimaryEvaluationProtocol:
             "winning_team": None if result is None or result.winning_team is None else result.winning_team.name,
             "winners": [] if result is None else list(result.winners),
         }
-        metrics = {
-            "role_correct": role_correct,
-            "role_total": role_total,
-            "hidden_correct": hidden_correct,
-            "hidden_total": hidden_total,
-            "emotion_squared_error": emotion_squared_error,
-            "emotion_dimensions": emotion_dimensions,
-        }
-        return game, metrics
+        return game, inference_metrics.to_dict()
 
     def run(self, evaluation: EvaluationConfig | None = None) -> EvaluationReport:
         try:

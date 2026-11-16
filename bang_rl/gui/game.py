@@ -67,6 +67,8 @@ class _GuiSessionConfig:
     config: Any = None
     seed: int | None = None
     artifact_path: str | None = None
+    intent_selections: tuple[str, ...] | None = None
+    intent_model_path: str | None = None
 
 
 class GameGuiError(RuntimeError):
@@ -176,6 +178,8 @@ class GameSessionController:
         # one-save-per-episode rule.
         self.ai_metadata: Mapping[str, Any] | None = None
         self.mode_ai_versions: dict[str, Any] = {}
+        self.intent_selections: tuple[str, ...] | None = None
+        self.intent_model_path: str | None = None
         self._replay_observations: list[dict[str, Any]] = []
         # Item 5: authoritative per-turn EnvironmentState dicts captured from the
         # service (when it exposes them) so a moment can be restored to a live,
@@ -249,6 +253,8 @@ class GameSessionController:
             config=self.config,
             seed=self.seed,
             artifact_path=artifact_path,
+            intent_selections=self.intent_selections,
+            intent_model_path=self.intent_model_path,
         )
         try:
             if self.service is None:
@@ -1000,9 +1006,23 @@ class GameSessionController:
             # the Qt-free helper. Best-effort/defensive: build_replay_filename
             # sanitizes the mode so a bad value never crashes the save (and
             # falls back to the mode-less name).
-            saved_path = replay_store.save_replay(
-                record, filename=replay_store.build_replay_filename(self.mode.value)
-            )
+            # The file also carries an info block (first key) and follows the
+            # artifact naming rule; fall back to the legacy name if building
+            # the info fails for any reason.
+            try:
+                from uuid import uuid4
+
+                from bang_rl.artifact_builders import replay_info
+
+                info = replay_info(record, id=uuid4().hex, created_by="gui_game")
+            except Exception:
+                info = None
+            if info is not None:
+                saved_path = replay_store.save_replay(record, info=info)
+            else:
+                saved_path = replay_store.save_replay(
+                    record, filename=replay_store.build_replay_filename(self.mode.value)
+                )
             # Emotion decision trace: a human-readable <replay>.txt beside every
             # FULL replay (per turn: emotion state, intent + emotion = total,
             # and whether emotion changed the pick). Best-effort; never raises.

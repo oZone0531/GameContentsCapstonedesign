@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "formula-1.0+label9",
   "emotions": [
     {
       "name": "calm",
@@ -16,6 +16,26 @@
     {
       "name": "anxiety",
       "description": "Share of bad events while I feel out of control (HP-based control appraisal)."
+    },
+    {
+      "name": "relation_0",
+      "description": "Relation toward seat 0: 0 = grudge, 0.5 = neutral, 1 = liking."
+    },
+    {
+      "name": "relation_1",
+      "description": "Relation toward seat 1: 0 = grudge, 0.5 = neutral, 1 = liking."
+    },
+    {
+      "name": "relation_2",
+      "description": "Relation toward seat 2: 0 = grudge, 0.5 = neutral, 1 = liking."
+    },
+    {
+      "name": "relation_3",
+      "description": "Relation toward seat 3: 0 = grudge, 0.5 = neutral, 1 = liking."
+    },
+    {
+      "name": "relation_4",
+      "description": "Relation toward seat 4: 0 = grudge, 0.5 = neutral, 1 = liking."
     }
   ],
   "formula": {

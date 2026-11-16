@@ -225,7 +225,7 @@
         "timestamp": 1790020041643
       }
     ],
-    "18. TASK-2-4. Dummy EmotionModule 구현 (depends on TASK-2-3)": [
+    "18. TASK-2-4. Dummy 9감정 공식 모듈 구현 (depends on TASK-2-3)": [
       {
         "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
         "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",
@@ -281,7 +281,7 @@
         "timestamp": 1790020042255
       }
     ],
-    "26. TASK-4-1. EmotionRuntime 구현 (depends on TASK-3-6)": [
+    "26. TASK-4-1. 감정 경계 처리 구현 (depends on TASK-3-6)": [
       {
         "executionId": "ab1c0b59-33d2-4283-944e-a50568390ed2",
         "chatSessionId": "sess_d1f4defd-c89a-4456-aa62-05c896474aea",

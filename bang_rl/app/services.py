@@ -19,8 +19,17 @@ from typing import Any
 from uuid import uuid4
 
 import numpy as np
+import torch
 
 from bang_rl.agents import DummyAgent, HumanAgent, RandomAgent
+from bang_rl.agents.main_agent.policy_inputs import build_policy_inputs
+from bang_rl.artifact_builders import (
+    main_ai_pending_info,
+    report_info,
+    report_sources,
+    report_summary,
+)
+from bang_rl.artifact_info import ArtifactInfo, dump_json_with_info, now_iso
 from bang_rl.config import (
     ConfigLoader,
     ConfigService as SchemaConfigService,
@@ -28,7 +37,6 @@ from bang_rl.config import (
     PresetConfig,
     SystemConfig,
     TrainingJob,
-    ensure_formula_emotion,
 )
 from bang_rl.env import BangEnvironment
 from bang_rl.exceptions import BangRLError, CompatibilityError, TrainingError
@@ -54,6 +62,7 @@ from bang_rl.training import (
 )
 from bang_rl.training.pipeline_runner import (
     TRAINING_MODE_DATA_COLLECTION,
+    TRAINING_MODE_INFERENCE_REFINEMENT,
     TRAINING_MODE_MAIN_AI,
     TRAINING_MODE_MODULE_TRAINING,
     run_training_workflow,
@@ -140,6 +149,8 @@ class SessionConfig:
     artifact_path: str | Path | None = None
     agents: Sequence[Any] | Mapping[Any, Any] | None = None
     action_mode: str = "deterministic"
+    intent_selections: tuple[str, ...] | None = None
+    intent_model_path: str | Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,6 +253,26 @@ class TrainingConfig:
     # Continue module training from saved .phase2model files (weights only).
     resume_intent_artifact_path: str | Path | None = None
     resume_emotion_artifact_path: str | Path | None = None
+    # Data collection players: "dummy5" (all dummies) or "main1-dummy4" (the
+    # ``base_model_path`` .bangmodel plays one seat among four dummies).
+    collection_players: str = "dummy5"
+    # How the main AI picks actions while collecting/refining: "deterministic"
+    # (like the GUI game and evaluation) or "stochastic".
+    main_action_mode: str = "deterministic"
+    # The .bangmodel that main1+dummy4 collection plays and that inference
+    # refinement starts from (its PPO stays fixed).
+    base_model_path: str | Path | None = None
+    # Dataset folders to train the modules on (None = every dataset found).
+    dataset_paths: Sequence[str | Path] | None = None
+    # Inference refinement: ``episodes`` is games per round.
+    refine_rounds: int = 5
+    refine_epochs: int = 5
+    refine_patience: int = 1
+    refine_eval_games: int = 250
+    # Module training: read at most this many games (random subset per run;
+    # None or 0 = read everything). ``subset_seed`` fixes the subset.
+    max_games: int | None = None
+    subset_seed: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -408,6 +439,8 @@ class _TrainingRun:
     records: list[Mapping[str, Any]] = field(default_factory=list)
     report_metadata: Mapping[str, Any] = field(default_factory=dict)
     thread: Thread | None = None
+    # Local start time (ISO 8601 with offset); shared by every file the job writes.
+    created_at: str = field(default_factory=now_iso)
 
 
 class _ArtifactAgent:
@@ -429,31 +462,21 @@ class _ArtifactAgent:
         return None
 
     def act(self, observation: Any, action_mask: Any) -> int:
-        processed = self.artifact.preprocessor.preprocess(observation)
-        intent = self.artifact.intent.predict_proba(processed).detach().cpu().numpy()
-        emotion = self.artifact.emotion.predict_proba(processed).detach().cpu().numpy()
         values = observation if isinstance(observation, Mapping) else observation.to_observation_dict()
-        fused = self.artifact.role_fusion.fuse(
-            intent,
-            values.get("role_visibility"),
-            values.get("revealed_roles"),
-            values.get("confirmed_role_distribution"),
-            self_role=values.get("self_role"),
-            sheriff_idx=values.get("sheriff_idx"),
-            viewer_idx=values.get("current_player_idx", values.get("viewer_idx")),
+        viewer = values.get("current_player_idx", values.get("viewer_idx"))
+        if viewer is None:
+            viewer = int(self.agent_id.removeprefix("player_"))
+        inputs = build_policy_inputs(
+            observation,
+            preprocessor=self.artifact.preprocessor,
+            intent=self.artifact.intent,
+            emotion=self.artifact.emotion,
+            role_fusion=self.artifact.role_fusion,
+            viewer_idx=int(np.asarray(viewer).reshape(-1)[0]),
         )
-        output = self.artifact.ppo.act(
-            {
-                "self_state": processed.state_vector,
-                "board_state": processed.player_state_matrix,
-                "confirmed_role_features": processed.role_beliefs,
-                "fused_intent": fused,
-                "emotion_features": emotion,
-            },
-            action_mask,
-            deterministic=True,
-        )
-        return int(output.action.detach().cpu().item())
+        with torch.inference_mode():
+            output = self.artifact.ppo.act(inputs.ppo_inputs(), action_mask, deterministic=True)
+        return int(output.action.detach().cpu().reshape(-1)[0].item())
 
 
 class GameService:
@@ -589,11 +612,27 @@ class GameService:
                 "random_five, dummy_five, or main_one_dummy_four"
             )
 
+        selections = options.intent_selections or ("rule",) * 5
+        if len(selections) != 5 or any(item not in ("rule", "learned") for item in selections):
+            raise ValueError("intent_selections must have five entries: rule/learned")
+        learned_policy = None
+
         def _dummy(index: int) -> Any:
+            nonlocal learned_policy
+            if selections[index] == "learned":
+                from bang_rl.intent_training import LearnedIntentAgent, LearnedIntentPolicy
+                if not options.intent_model_path:
+                    raise ValueError("Learned intent selected without a .intentmodel file")
+                if learned_policy is None:
+                    learned_policy = LearnedIntentPolicy.load(options.intent_model_path)
+                return LearnedIntentAgent(
+                    learned_policy, player_idx=index, seed=seeds.agent_seed(f"player_{index}"),
+                    stochastic=options.action_mode == "stochastic",
+                )
             return DummyAgent(
                 f"player_{index}", seed=seeds.agent_seed(f"player_{index}"), player_idx=index,
                 policy_config=config.preset.intent_policy,
-                emotion_config=ensure_formula_emotion(config.preset.emotion),
+                emotion_config=config.preset.emotion,
                 action_mode=options.action_mode,
             )
 
@@ -752,7 +791,7 @@ class GameService:
           ``env.state.health``), so HP is always carried per step.
         * ``seats``: a seat -> descriptor mapping. A DummyAgent seat reuses
           ``agent.state_dict()`` (which already serializes its emotion module
-          via ``EmotionModule.state_dict`` and its role beliefs / guess via
+          via ``FormulaEmotionModule.state_dict`` and its role beliefs / guess via
           ``RoleBeliefEstimator.state_dict``). A RandomAgent seat records a
           minimal ``{"kind": "random"}`` descriptor (it has no belief / emotion
           state). The Main-AI seat (``_ArtifactAgent``) has no single
@@ -992,14 +1031,12 @@ class GameService:
             env.step(None)
             return StepResult(self._state(session), 0.0, None, _freeze({"cleanup": True}), cleanup=True)
         selected = int(env.state.agent_selection)
-        # Emotion formula: every living dummy (not only the actor) advances its
-        # emotion state at every step, each from its OWN public observation.
-        # No-op for dummies on the rule-table EmotionModule (the default).
+        # Every living dummy (not only the actor) advances its emotion state at
+        # every step, each from its OWN public observation.
         for index, seat_agent in enumerate(session.agents):
             if (
                 index != selected
                 and isinstance(seat_agent, DummyAgent)
-                and seat_agent.uses_emotion_formula
                 and env.state.alive[index]
             ):
                 seat_agent.observe_public_boundary(env.observe(index))
@@ -1064,16 +1101,6 @@ class TrainingService:
             options = TrainingConfig(config=request, **kwargs)
         config = _mapping_config(options.config)
         mode = str(options.mode).strip()
-        if mode in {TRAINING_MODE_DATA_COLLECTION, TRAINING_MODE_MODULE_TRAINING}:
-            # Capture the effective production Formula schema in the job
-            # snapshot, not only in the runner-local config copy.
-            effective_emotion = ensure_formula_emotion(config.emotion)
-            effective_preset = config.preset.model_copy(
-                update={"emotion": ensure_formula_emotion(config.preset.emotion)}
-            )
-            config = config.model_copy(
-                update={"emotion": effective_emotion, "preset": effective_preset}
-            )
         if isinstance(options.episodes, bool) or options.episodes < 0:
             raise ValueError("episodes must be a non-negative integer")
         if options.target_transitions is not None and (isinstance(options.target_transitions, bool) or options.target_transitions < 1):
@@ -1083,6 +1110,7 @@ class TrainingService:
                 TRAINING_MODE_DATA_COLLECTION,
                 TRAINING_MODE_MODULE_TRAINING,
                 TRAINING_MODE_MAIN_AI,
+                TRAINING_MODE_INFERENCE_REFINEMENT,
             }:
                 raise TrainingError(
                     "default TrainingService execution is not wired to the declared collection/SL/PPO/artifact pipeline; "
@@ -1094,7 +1122,11 @@ class TrainingService:
         seed = config.seed if options.seed is None else int(options.seed)
         ensure_training_directories()
         job = TrainingJob.start(config, mode=options.mode, seed=seed, split_seed=options.split_seed)
-        resume_source = latest_artifact(options.resume_artifact_path)
+        # Inference refinement loads its base model itself (frozen, from
+        # ``base_model_path``); an implicit "newest model" must not be loaded.
+        resume_source = (
+            None if mode == TRAINING_MODE_INFERENCE_REFINEMENT else latest_artifact(options.resume_artifact_path)
+        )
         resume_artifact = None
         if resume_source is not None:
             # This is a weights-only continuation.  The loader verifies the
@@ -1103,7 +1135,7 @@ class TrainingService:
             resume_artifact = load_final_artifact_for_training(resume_source)
         guard = ResourceGuard(job.snapshot)
         agents = tuple(options.agents) if options.agents is not None else tuple(
-            DummyAgent(f"player_{index}", seed=SeedManager(seed, snapshot=job.snapshot).agent_seed(f"player_{index}"), player_idx=index, policy_config=config.preset.intent_policy, emotion_config=ensure_formula_emotion(config.preset.emotion))
+            DummyAgent(f"player_{index}", seed=SeedManager(seed, snapshot=job.snapshot).agent_seed(f"player_{index}"), player_idx=index, policy_config=config.preset.intent_policy, emotion_config=config.preset.emotion)
             for index in range(5)
         )
         logger = self.logger or get_component_logger("training-service", channel=LogChannel.TRAINING, job_id=job.job_id)
@@ -1138,11 +1170,21 @@ class TrainingService:
             resume_artifact=resume_artifact,
         )
         # Paths are public job metadata and should be visible before completion.
-        run.report_path = str(resolve_training_file(options.report_path, root=REPORTS_DIR, filename=f"{job.job_id}.json", suffix=".json"))
+        # Default file names follow the naming rule (time, kind, key conditions,
+        # short id). The stable id inside the file, not the name, links files.
+        report_name = report_info(run).name
+        run.report_path = str(resolve_training_file(options.report_path, root=REPORTS_DIR, filename=f"{report_name}.json", suffix=".json"))
         run.artifact_path = (
             None
             if mode in {TRAINING_MODE_DATA_COLLECTION, TRAINING_MODE_MODULE_TRAINING}
-            else str(resolve_training_file(options.artifact_path, root=ARTIFACTS_DIR, filename=f"{job.job_id}.bangmodel", suffix=".bangmodel"))
+            else str(
+                resolve_training_file(
+                    options.artifact_path,
+                    root=ARTIFACTS_DIR,
+                    filename=f"{main_ai_pending_info(run, handle).name}.bangmodel",
+                    suffix=".bangmodel",
+                )
+            )
         )
         with self._lock:
             self._runs[handle.job_id] = run
@@ -1272,7 +1314,12 @@ class TrainingService:
             )
             report_path = run.report_path
             if report_path is not None:
-                _write_json(Path(report_path), report.to_dict())
+                try:
+                    info = report_info(run, sources=report_sources(run), summary=report_summary(run))
+                    info.name = Path(report_path).stem
+                except Exception:  # noqa: BLE001 - metadata must never lose the report itself
+                    info = None
+                _write_json(Path(report_path), report.to_dict(), info)
             run.logger.event("training_finished", status=run.status, environment_steps=run.environment_steps, main_agent_transitions=run.transitions)
 
     def pause(self, handle: TrainingHandle | str, timeout: float | None = None) -> None:
@@ -1478,7 +1525,17 @@ class EvaluationService:
         }
         report = EvaluationReport(run_id, evaluation.protocol_id, games, normal, truncated, wins, losses, "N/A" if normal == 0 else wins / normal, truncated / games, seeds, _path_string(options.report_path), _freeze(report_metadata))
         if options.report_path is not None:
-            _write_json(Path(options.report_path), report.to_dict())
+            from bang_rl.artifact_info import KIND_EVALUATION, new_info
+
+            evaluation_info = new_info(
+                KIND_EVALUATION,
+                id=str(run_id),
+                created_by="evaluation_service",
+                conditions={"protocol": evaluation.protocol_id, "games": games, "label": "diagnostic"},
+                summary={"win_rate": report.win_rate, "truncated_rate": report.truncated_rate},
+            )
+            evaluation_info.name = Path(options.report_path).stem
+            _write_json(Path(options.report_path), report.to_dict(), evaluation_info)
         if self.logger is not None:
             self.logger.event("evaluation_diagnostic_finished", run_id=run_id, total_games=games, normal_games=normal, truncated_games=truncated)
         return report
@@ -1593,9 +1650,13 @@ def _path_string(value: str | Path | None) -> str | None:
     return None if value is None else str(value)
 
 
-def _write_json(path: Path, value: Mapping[str, Any]) -> None:
+def _write_json(path: Path, value: Mapping[str, Any], info: ArtifactInfo | None = None) -> None:
+    """Write deterministic JSON (keys sorted); ``info`` becomes the first key."""
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(_json_value(value), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    # Round trip through sort_keys so nested mappings stay sorted too.
+    rest = json.loads(json.dumps(_json_value(value), sort_keys=True))
+    path.write_text(dump_json_with_info(rest, info, indent=2) + "\n", encoding="utf-8")
 
 
 __all__ = [

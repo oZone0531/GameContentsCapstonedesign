@@ -120,7 +120,7 @@ def test_one_step_uses_pre_action_targets_and_updates_weights_with_masked_mse(tm
     config = EmotionSLConfig(epochs=1, batch_size=3, seed=5)
     train = _cache(tmp_path, "train", seed=1)
     validation = _cache(tmp_path, "validation", seed=2)
-    model = EmotionInferenceModule(config=EmotionConfig(emotion_count=2), seed=5)
+    model = EmotionInferenceModule(config=EmotionConfig(schema_version="1.0", emotion_count=2), seed=5)
     batch = build_emotion_batch(train, [0, 1, 2])
     with torch.no_grad():
         initial = model(batch.model_inputs["event_history"], batch.valid_mask)

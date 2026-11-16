@@ -14,10 +14,11 @@ class GuiDependencyError(RuntimeError):
 
 
 try:  # pragma: no cover - availability depends on the host environment
-    from PyQt6.QtCore import QObject, QPointF, QRectF, QTimer, Qt, pyqtSignal
+    from PyQt6.QtCore import QObject, QPointF, QRectF, QTimer, QUrl, Qt, pyqtSignal
     from PyQt6.QtGui import (
         QBrush,
         QColor,
+        QDesktopServices,
         QFont,
         QFontMetrics,
         QPainter,
@@ -26,6 +27,7 @@ try:  # pragma: no cover - availability depends on the host environment
     )
     from PyQt6.QtWidgets import QToolTip
     from PyQt6.QtWidgets import (
+        QAbstractItemView,
         QApplication,
         QCheckBox,
         QComboBox,
@@ -51,10 +53,12 @@ try:  # pragma: no cover - availability depends on the host environment
         QSizePolicy,
         QSlider,
         QSpinBox,
+        QSplitter,
         QStackedWidget,
         QTableWidget,
         QTableWidgetItem,
         QTabWidget,
+        QTextBrowser,
         QVBoxLayout,
         QWidget,
     )
@@ -64,7 +68,8 @@ try:  # pragma: no cover - availability depends on the host environment
 except ImportError as exc:  # pragma: no cover - exercised when Qt is absent
     QT_AVAILABLE = False
     QT_IMPORT_ERROR = exc
-    QObject = QTimer = Qt = pyqtSignal = QApplication = None
+    QObject = QTimer = Qt = pyqtSignal = QApplication = QUrl = None
+    QAbstractItemView = QDesktopServices = QSplitter = QTextBrowser = None
     QPointF = QRectF = None
     QFont = None
     QBrush = QColor = QFontMetrics = QPainter = QPen = QPolygonF = None
@@ -92,11 +97,13 @@ def require_qt() -> None:
 __all__ = [
     "GuiDependencyError",
     "QT_AVAILABLE",
+    "QAbstractItemView",
     "QApplication",
     "QBrush",
     "QCheckBox",
     "QColor",
     "QComboBox",
+    "QDesktopServices",
     "QDialog",
     "QDialogButtonBox",
     "QDoubleSpinBox",
@@ -126,12 +133,15 @@ __all__ = [
     "QSizePolicy",
     "QSlider",
     "QSpinBox",
+    "QSplitter",
     "QStackedWidget",
     "QTableWidget",
     "QTableWidgetItem",
     "QTabWidget",
+    "QTextBrowser",
     "QTimer",
     "QToolTip",
+    "QUrl",
     "QVBoxLayout",
     "QWidget",
     "require_qt",

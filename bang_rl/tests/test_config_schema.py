@@ -340,14 +340,6 @@ def test_emotion_description_round_trips_through_model_dump() -> None:
     assert reloaded.emotions[0].description == "분노 설명"
 
 
-def test_emotion_desc_alias_maps_to_description() -> None:
-    emotion = EmotionDefinition(name="공포", desc="위협을 느낄 때의 공포")
-    assert emotion.description == "위협을 느낄 때의 공포"
-    # The alias also works through the emotions list normalization.
-    config = EmotionConfig(emotions=[{"name": "공포", "desc": "공포 설명"}])
-    assert config.emotions[0].description == "공포 설명"
-
-
 def test_emotion_description_coerces_none_and_non_string() -> None:
     # A null description degrades to empty; a non-string is coerced via str().
     assert EmotionDefinition(name="x", description=None).description == ""

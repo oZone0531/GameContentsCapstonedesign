@@ -104,6 +104,34 @@ def _json_ready(value: Any) -> Any:
     return value
 
 
+# Dummy-emotion fields a saved module's embedded config may still carry from
+# before the dummies used only the emotion formula. They never affected the
+# inference network, so they are dropped when such a module is loaded.
+_OBSOLETE_CONFIG_KEYS = frozenset(
+    {"relation_baseline", "relation_updates", "hp_low_threshold", "hp_lethal_threshold"}
+)
+_EMOTION_DEFINITION_KEYS = frozenset({"name", "description"})
+
+
+def _saved_emotion_config(config_data: Any) -> Any:
+    """Embedded emotion config of a saved module, without obsolete fields."""
+
+    if not isinstance(config_data, Mapping):
+        return config_data
+    cleaned = {key: item for key, item in config_data.items() if key not in _OBSOLETE_CONFIG_KEYS}
+    if cleaned.get("formula", ...) is None:
+        cleaned.pop("formula")
+    emotions = cleaned.get("emotions")
+    if isinstance(emotions, (list, tuple)):
+        cleaned["emotions"] = [
+            {key: item for key, item in entry.items() if key in _EMOTION_DEFINITION_KEYS}
+            if isinstance(entry, Mapping)
+            else entry
+            for entry in emotions
+        ]
+    return cleaned
+
+
 class EmotionInferenceModule(nn.Module):
     """Infer normalized continuous emotions from four public event streams.
 
@@ -562,7 +590,7 @@ class EmotionInferenceModule(nn.Module):
                 "emotion_count": architecture.get("emotion_count", 1),
                 "initial_baseline": architecture.get("initial_baseline", 0.0),
             }
-        config = EmotionConfig.model_validate(config_data)
+        config = EmotionConfig.model_validate(_saved_emotion_config(config_data))
         if architecture.get("emotion_schema_version", config.schema_version) != config.schema_version:
             raise ValueError("emotion schema metadata does not match emotion config")
         encoder_metadata = architecture.get("encoder", {})

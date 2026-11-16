@@ -119,10 +119,19 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             if option is None:
                 self._details.setText(tr("model.select_prompt"))
                 return
-            metadata = ", ".join(f"{key}: {value}" for key, value in option.metadata.items())
+            metadata = ", ".join(
+                f"{key}: {value}" for key, value in option.metadata.items() if key != "info"
+            )
             errors = "; ".join(str(error.get("message", error)) for error in option.errors)
             suffix = f" Errors: {errors}" if errors else ""
-            self._details.setText(f"{metadata or tr('model.no_metadata')}{suffix}")
+            text = f"{metadata or tr('model.no_metadata')}{suffix}"
+            try:
+                from bang_rl.artifact_info import info_tooltip, read_info
+
+                note = info_tooltip(read_info(option.path))
+            except Exception:  # noqa: BLE001 - details are optional
+                note = ""
+            self._details.setText(f"{note}\n\n{text}" if note else text)
 
         def _accept_selection(self) -> None:
             item = self._list.currentItem()

@@ -5,11 +5,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from bang_rl.agents import EmotionModule
-from bang_rl.config import EmotionConfig, RewardConfig
+from bang_rl.agents.dummy_agent.emotion_formula import LABEL_NAMES
+from bang_rl.config import RewardConfig
 from bang_rl.data import EpisodeCollector, NPZTensorCacheLoader, NPZTensorCacheWriter
 from bang_rl.env import Action, ActionResult, BangEnvironment, EnvironmentState, EventType, GameEvent, Team
-from bang_rl.runtime import EmotionRuntime, RewardCalculator
+from bang_rl.runtime import RewardCalculator
 
 
 ROLES = (0, 1, 2, 3, 4)
@@ -69,25 +69,30 @@ def test_invalid_action_is_diagnostic_only_and_does_not_create_step() -> None:
 
 
 def test_emotion_label_and_reward_breakdown_align_to_same_pre_action_step() -> None:
-    config = EmotionConfig(
-        schema_version="collector-emotion-v1",
-        emotions=[{"name": "fear", "initial_value": 0.4}],
-    )
-    runtime = EmotionRuntime(emotion_modules={index: EmotionModule(config, player_idx=index) for index in range(5)})
-    runtime.reset({"episode_id": "runtime", "seed": 8})
-    labels = runtime.before_action(0, actor_idx=0)
     result = pass_result(1)
     reward = RewardCalculator(RewardConfig(version="collector-reward-v1")).calculate_all(result, roles=ROLES)
-    emotion_record = runtime.on_action_result(result)
+    label = {
+        "episode_id": "runtime",
+        "environment_step": 0,
+        "player_idx": 0,
+        "values": [0.4] * len(LABEL_NAMES),
+        "emotion_names": list(LABEL_NAMES),
+        "emotion_schema_version": "formula-1.0+label9",
+        "input_event_ids": [],
+    }
 
     collector = EpisodeCollector()
     collector.start_episode(episode_id="runtime", seed=8, roles=ROLES)
-    collector.before_action(labels[0].public_observation, emotion_record=type("Boundary", (), {"labels": labels})())
-    step = collector.record_step(result, emotion_record=emotion_record, reward_batch=reward)
+    collector.before_action(
+        {"environment_step": 0, "current_player_idx": 0, "action_mask": [1] * 6},
+        emotion_record={"labels": {"0": label}},
+    )
+    step = collector.record_step(result, reward_batch=reward)
     collector.finish_episode(result={**result.to_dict(), "truncated": True, "terminated": False}, final_state={"environment_step": 1})
 
     assert step.emotion_labels["0"]["environment_step"] == 0
     assert step.emotion_labels["0"]["input_event_ids"] == []
+    assert step.emotion_labels["0"]["emotion_names"] == list(LABEL_NAMES)
     assert step.reward_breakdowns["0"]["reward_config_version"] == "collector-reward-v1"
     assert step.event_ids == (1,)
 

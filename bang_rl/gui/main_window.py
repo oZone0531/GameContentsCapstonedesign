@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .i18n import tr
+from .intent_preferences import IntentSeatPreferences
 from .qt_compat import (
     Qt,
     QApplication,
@@ -23,12 +24,25 @@ from .dialogs.model_select import ModelSelection, ModelSelectionDialog
 from .game import GameGuiError, GameMode, GameSessionController
 from .replay import ReplayModel
 from .screens.game_mode import GameModeSelect
+from .screens.intent_training import IntentTrainingScreen
 from .screens.game_screen import GameScreen
 from .screens.replay_screen import ReplayScreen
 from .screens.settings import SettingsScreen
 from .screens.training_monitor import TrainingMonitor, TrainingSetupPanel
 from .settings import SettingsEditor
-from .training import TrainingMonitorController
+from .library_view import (
+    ACTION_PLAY,
+    ACTION_VIEW_REPLAY,
+    LibraryChoice,
+    build_preset,
+)
+from .training import (
+    PresetResult,
+    TrainingMonitorController,
+    TrainingPreset,
+    controller_status,
+    training_is_active,
+)
 
 
 # Fixed, large window geometry shared by every screen. These live outside the
@@ -109,6 +123,7 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.settings_editor = SettingsEditor(config)
             self._game_screen: GameScreen | None = None
             self._training_monitor: TrainingMonitor | None = None
+            self._intent_training_screen: IntentTrainingScreen | None = None
             self._settings_screen: SettingsScreen | None = None
             self._replay_screen: ReplayScreen | None = None
             self._selection: ModelSelection | None = None
@@ -169,6 +184,16 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             training_button.clicked.connect(self._show_training)
             layout.addWidget(training_button)
             self._style_menu_button(training_button, layout)
+            library_button = QPushButton(tr("menu.library"), menu)
+            library_button.setToolTip(tr("tooltip.library_open"))
+            library_button.clicked.connect(lambda: self._open_library())
+            layout.addWidget(library_button)
+            self._style_menu_button(library_button, layout)
+            self._library_button = library_button
+            intent_button = QPushButton(tr("menu.intent_training"), menu)
+            intent_button.clicked.connect(self._show_intent_training)
+            layout.addWidget(intent_button)
+            self._style_menu_button(intent_button, layout)
             settings_button = QPushButton(tr("menu.settings"), menu)
             settings_button.clicked.connect(self._show_settings)
             layout.addWidget(settings_button)
@@ -210,18 +235,112 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             layout.addStretch(1)
             self._set_screen(loading)
 
-        def _show_training(self) -> None:
-            setup_panel = TrainingSetupPanel(
-                config=self.settings_editor.snapshot.config,
-                parent=self,
-            )
-            self._training_monitor = TrainingMonitor(
-                self.training_controller,
-                setup_panel=setup_panel,
-                parent=self,
+        def _show_intent_training(self) -> None:
+            self._intent_training_screen = IntentTrainingScreen(
                 on_back=self._show_menu,
+                rule_policy_config=self.settings_editor.snapshot.config.preset.intent_policy,
+                parent=self,
             )
+            self._set_screen(self._intent_training_screen)
+
+        def _show_training(self) -> None:
+            # Building the training screen (saved-model scan, plot widgets) can
+            # take a moment, so show the same 'Loading...' screen as game start
+            # and let Qt paint it before the blocking construction.
+            self._show_loading()
+            if QApplication is not None:
+                QApplication.processEvents()
+            try:
+                setup_panel = TrainingSetupPanel(
+                    config=self.settings_editor.snapshot.config,
+                    parent=self,
+                )
+                self._training_monitor = TrainingMonitor(
+                    self.training_controller,
+                    setup_panel=setup_panel,
+                    parent=self,
+                    on_back=self._show_menu,
+                    on_library_choice=self._handle_library_choice,
+                )
+            except Exception as exc:  # noqa: BLE001 - never strand the user on 'Loading...'
+                self._training_monitor = None
+                self.statusBar().showMessage(str(exc) or tr("game.error_generic"), 0)
+                self._show_menu()
+                return
             self._set_screen(self._training_monitor)
+
+        def open_training(self, preset: TrainingPreset | None = None) -> PresetResult | None:
+            """Open the training screen, optionally with a preset applied (data library).
+
+            A running job is never touched: its monitor is shown again, and a
+            preset is only applied while no job is active (otherwise a message
+            says so and the setup form stays as it was).
+            """
+
+            busy = training_is_active(self.training_controller)
+            self._show_training()
+            monitor = self._training_monitor
+            if monitor is None or preset is None:
+                return None
+            if busy:
+                text = tr("library.busy")
+                monitor.set_notice(text)
+                self.statusBar().showMessage(text, 0)
+                return PresetResult(False, text)
+            result = monitor.setup_panel.apply_preset(preset)
+            monitor.set_notice(result.message)
+            self.statusBar().showMessage(result.message.splitlines()[0] if result.message else "", 0)
+            return result
+
+        def _open_library(self, kind_filter: str | None = None) -> None:
+            """Open the data library; a chosen action is carried out after it closes."""
+
+            from .dialogs.data_library import DataLibraryDialog
+
+            dialog = DataLibraryDialog(
+                config=self.settings_editor.snapshot.config,
+                kind_filter=kind_filter if isinstance(kind_filter, str) else None,
+                training_busy=lambda: training_is_active(self.training_controller),
+                status_provider=lambda: controller_status(self.training_controller),
+                parent=self,
+            )
+            dialog.exec()
+            if dialog.chosen is not None:
+                self._handle_library_choice(dialog.chosen)
+
+        def _handle_library_choice(self, choice: LibraryChoice) -> None:
+            """Carry out what the data library handed back (apply to training, play, replay)."""
+
+            preset = build_preset(choice.action, choice.entries)
+            if preset is not None:
+                self.open_training(preset)
+                return
+            entry = choice.entries[0] if choice.entries else None
+            if entry is None:
+                return
+            if choice.action == ACTION_PLAY:
+                self._play_with_model(GameMode(str(choice.params.get("mode"))), str(entry.path))
+            elif choice.action == ACTION_VIEW_REPLAY:
+                self._show_replay_file(entry.path)
+
+        def _play_with_model(self, mode: GameMode, path: str) -> None:
+            """Start ``mode`` with the chosen ``.bangmodel`` (the same checks as the mode menu)."""
+
+            self.controller.set_ai_metadata(None)
+            self._selection = self._selection or ModelSelection()
+            option = self._selection.discover([path], config=self.config)[0]
+            if not option.compatible:
+                self.statusBar().showMessage(tr("library.play_incompatible", name=Path(path).name), 0)
+                return
+            self.controller.set_ai_metadata(option.metadata)
+            self._start_game(mode, option.path)
+
+        def _show_replay_file(self, path: str | Path) -> None:
+            """Open the replay screen on one replay file."""
+
+            self._show_replay()
+            if self._replay_screen is not None:
+                self._replay_screen.open_path(path)
 
         def _show_settings(self) -> None:
             self._settings_screen = SettingsScreen(
@@ -299,7 +418,17 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             # need a compatible .bangmodel, chosen through the same dialog.
             if mode in (GameMode.HUMAN_MAIN_DUMMY, GameMode.MAIN_ONE_DUMMY_FOUR):
                 self._selection = self._selection or ModelSelection()
-                options = self._selection.discover(self.artifact_paths, config=self.config)
+                paths = self.artifact_paths
+                if not paths:
+                    # No explicit list: find every .bangmodel by extension in the
+                    # model folders (any file name), including saved/main_ai.
+                    from bang_rl.training.main_ai_artifacts import list_saved_main_ai_models
+
+                    try:
+                        paths = tuple(str(model.path) for model in list_saved_main_ai_models())
+                    except OSError:
+                        paths = ()
+                options = self._selection.discover(paths, config=self.config)
                 dialog = ModelSelectionDialog(options, self)
                 if dialog.exec() != dialog.DialogCode.Accepted or dialog.selected_option is None:
                     return
@@ -336,13 +465,34 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             # config given at window construction (the default SystemConfig).
             self.config = self.settings_editor.snapshot.config
             self.controller.config = self.config
-            # Item 1 (FEAT-003): for a HUMAN mode whose first turn is an AI
-            # (Sheriff-first), let the GameScreen animate the AI run-up one turn
-            # at a time instead of the controller silently fast-forwarding it.
-            # advance_ai=False keeps the controller on the AI turn so the screen
-            # drives the cadence via _maybe_start_ai_sequence. Spectator modes
-            # already never fast-forward (their _advance_to_human_turn early-
-            # returns), so the default is fine there.
+
+
+
+            try:
+                intent_preferences = IntentSeatPreferences.load()
+                self.controller.intent_selections = intent_preferences.resolved
+                self.controller.intent_model_path = intent_preferences.model_path
+
+                from .game import GameMode as _Mode
+                dummy_seats = {
+                    _Mode.DUMMY_FIVE: range(5),
+                    _Mode.HUMAN_DUMMY: range(1, 5),
+                    _Mode.HUMAN_MAIN_DUMMY: range(2, 5),
+                    _Mode.MAIN_ONE_DUMMY_FOUR: range(1, 5),
+                }.get(mode, ())
+                if any(intent_preferences.resolved[i] == "learned" for i in dummy_seats):
+                    intent_preferences.validate_model()
+            except Exception as exc:
+                self.statusBar().showMessage(str(exc), 0)
+                self._show_menu()
+                return
+
+
+
+
+
+
+
             advance_ai = not bool(getattr(mode, "is_human", False))
             try:
                 self.controller.start(

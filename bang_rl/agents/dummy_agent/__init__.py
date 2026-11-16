@@ -1,7 +1,7 @@
 """Dummy agent implementation package."""
 
 from .dummy_agent import DummyAgent
-from .emotion_module import EMOTION_MODULE_STATE_VERSION, EmotionModule
+from .emotion_formula import FormulaEmotionModule
 from .intent_policy import (
     ACTION_SELECTION_SCHEMA_VERSION,
     ActionSelection,
@@ -31,8 +31,7 @@ from .role_belief import (
 
 __all__ = [
     "DummyAgent",
-    "EmotionModule",
-    "EMOTION_MODULE_STATE_VERSION",
+    "FormulaEmotionModule",
     "ACTION_SELECTION_SCHEMA_VERSION",
     "ActionSelection",
     "ActionSelector",
