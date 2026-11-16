@@ -476,16 +476,22 @@ class EmotionFormulaConfig(ConfigModel):
     When ``EmotionConfig.formula`` is set, DummyAgents use ``FormulaEmotionModule``
     instead of ``EmotionModule``. ``params`` overrides ``EmotionParams`` defaults and
     ``personality_by_role`` (keys: sheriff / deputy / outlaw / traitor) overrides
-    them per role. Unknown names are rejected.
+    them per role. ``personality_presets`` holds named override sets; with
+    ``personality_mode="random"`` every dummy draws one preset per game,
+    independent of its role and reproducible from the episode seed (applied on
+    top of the role overrides). The default ``"role"`` keeps the original
+    behaviour. Unknown names are rejected.
     """
 
     schema_version: str = Field(default="formula-1.0", min_length=1)
     params: dict[str, float] = Field(default_factory=dict)
     personality_by_role: dict[str, dict[str, float]] = Field(default_factory=dict)
+    personality_presets: dict[str, dict[str, float]] = Field(default_factory=dict)
+    personality_mode: str = Field(default="role", min_length=1)
 
     @model_validator(mode="after")
     def known_names_only(self) -> "EmotionFormulaConfig":
-        for values in (self.params, *self.personality_by_role.values()):
+        for values in (self.params, *self.personality_by_role.values(), *self.personality_presets.values()):
             for key, item in values.items():
                 if isinstance(item, bool) or not isfinite(float(item)):
                     raise ValueError(f"formula param {key!r} must be a finite number")
@@ -493,7 +499,9 @@ class EmotionFormulaConfig(ConfigModel):
         # config schema module itself is being imported.
         from bang_rl.agents.dummy_agent.emotion_formula import validate_formula_block
 
-        validate_formula_block(self.params, self.personality_by_role)
+        validate_formula_block(
+            self.params, self.personality_by_role, self.personality_presets, self.personality_mode
+        )
         return self
 
 

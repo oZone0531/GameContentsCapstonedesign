@@ -64,6 +64,34 @@
       "deputy": {},
       "outlaw": {},
       "traitor": {}
-    }
+    },
+    "personality_presets": {
+      "normal": {},
+      "hot": {
+        "p_A": 3.0,
+        "theta": 0.65,
+        "d_A": 0.005,
+        "p_R": 1.5,
+        "kappa_A": 1.5
+      },
+      "timid": {
+        "p_F": 2.0,
+        "theta": 0.9,
+        "d_F": 0.005,
+        "p_S": 0.7,
+        "kappa_F": 3.5
+      },
+      "calm": {
+        "p_S": 0.5,
+        "p_A": 1.0,
+        "p_F": 0.5,
+        "p_R": 0.5,
+        "d_S": 0.04,
+        "d_A": 0.02,
+        "d_F": 0.02,
+        "lambda_E": 0.6
+      }
+    },
+    "personality_mode": "role"
   }
 }
