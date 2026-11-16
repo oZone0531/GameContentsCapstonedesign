@@ -1,4 +1,5 @@
-"""Saved Phase-2 module browser: final performance and 'continue training'."""
+"""Saved model browser: Phase-2 module performance ('continue training') and
+saved main-AI (.bangmodel) training results."""
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
@@ -79,6 +80,26 @@ def format_module_summary(summary: Mapping[str, Any] | None) -> list[str]:
     return lines
 
 
+def _name_notes_lines(summary: Mapping[str, Any]) -> list[str]:
+    """Readable name and the user's note (if any) from an artifact summary."""
+
+    lines: list[str] = []
+    name = summary.get("name")
+    if name and name != summary.get("job_id"):
+        lines.append(tr("perf.name", name=name))
+    notes = str(summary.get("notes") or "").strip()
+    if notes:
+        lines.append(tr("perf.notes_line", notes=notes))
+    return lines
+
+
+def _note_snippet(notes: str, limit: int = 28) -> str:
+    first = " ".join(str(notes or "").split())
+    if not first:
+        return ""
+    return " · " + (first if len(first) <= limit else first[: limit - 1] + "…")
+
+
 def format_module_run_summary(run_summary: Mapping[str, Any]) -> str:
     """Full text shown for one saved run (see summarize_module_run)."""
 
@@ -86,6 +107,7 @@ def format_module_run_summary(run_summary: Mapping[str, Any]) -> str:
         tr("perf.job", job=run_summary.get("job_id", "—")),
         tr("perf.saved_at", time=run_summary.get("modified", "—")),
     ]
+    lines += _name_notes_lines(run_summary)
     if run_summary.get("report_path"):
         lines.append(tr("perf.report", path=run_summary["report_path"]))
     lines += ["", tr("perf.intent_section")]
@@ -93,6 +115,80 @@ def format_module_run_summary(run_summary: Mapping[str, Any]) -> str:
     lines += ["", tr("perf.emotion_section")]
     lines += format_module_summary(run_summary.get("emotion"))
     return "\n".join(lines)
+
+
+def format_main_ai_model_summary(summary: Mapping[str, Any]) -> str:
+    """Full text for one saved main-AI model (see summarize_main_ai_artifact)."""
+
+    from ..main_ai_view import ROLE_NAMES, fmt, role_label
+
+    lines = [
+        tr("perf.job", job=summary.get("job_id", "—")),
+        tr("perf.saved_at", time=summary.get("modified", "—")),
+    ]
+    lines += _name_notes_lines(summary)
+    lines += [
+        tr("perf.main_ai_file", path=summary.get("path", "—")),
+        "",
+        tr("perf.main_ai_section"),
+    ]
+    if summary.get("error"):
+        lines.append("  " + tr("perf.error", error=summary["error"]))
+        return "\n".join(lines)
+    if not summary.get("is_main_ai_training"):
+        lines.append("  " + tr("perf.main_ai_not_trained"))
+        return "\n".join(lines)
+    lines.append("  " + tr(
+        "perf.main_ai_training",
+        games=summary.get("training_games", "—"),
+        updates=summary.get("ppo_updates", "—"),
+        seconds=fmt(summary.get("training_seconds"), 0),
+    ))
+    origin = summary.get("source_origin")
+    job = summary.get("source_module_job_id")
+    lines.append("  " + tr(
+        "perf.main_ai_source",
+        origin=tr(f"perf.main_ai_origin.{origin}") if origin else "—",
+        job=tr("perf.main_ai_source_job", job=job) if job else "",
+    ))
+    baselines = summary.get("baselines") or {}
+    dummy = baselines.get("dummy") or {}
+    random = baselines.get("random") or {}
+    lines.append("  " + tr(
+        "perf.main_ai_eval",
+        games=summary.get("eval_games", "—"),
+        win=fmt(summary.get("eval_win_rate")),
+        score=fmt(summary.get("normalized_mean")),
+    ))
+    lines.append("  " + tr(
+        "perf.main_ai_eval_extra",
+        accuracy=fmt(summary.get("role_accuracy")),
+        mse=fmt(summary.get("emotion_mse"), 4),
+        truncated=summary.get("truncated_games", "—"),
+    ))
+    lines.append("  " + tr(
+        "perf.main_ai_baselines", dummy=fmt(dummy.get("win_rate")), random=fmt(random.get("win_rate"))
+    ))
+    by_role = summary.get("eval_by_role") or {}
+    dummy_roles = dummy.get("by_role") or {}
+    random_roles = random.get("by_role") or {}
+    parts = [
+        f"{role_label(name)} {fmt(by_role.get(name), 2)} / {fmt(dummy_roles.get(name), 2)} / {fmt(random_roles.get(name), 2)}"
+        for name in ROLE_NAMES
+    ]
+    lines.append("  " + tr("mainai.by_role") + " " + " · ".join(parts))
+    normalized = summary.get("normalized_by_role") or {}
+    lines.append("  " + tr("perf.main_ai_normalized"))
+    lines.append("    " + " · ".join(f"{role_label(name)} {fmt(normalized.get(name), 2)}" for name in ROLE_NAMES))
+    return "\n".join(lines)
+
+
+def main_ai_model_label(model: Any) -> str:
+    """One-line list label for a SavedMainAiModel."""
+
+    return tr("perf.main_ai_item", time=model.modified_text, id=model.short_id) + _note_snippet(
+        getattr(model, "notes", "")
+    )
 
 
 def _module_parts(run: Any) -> str:
@@ -106,7 +202,9 @@ def _module_parts(run: Any) -> str:
 def module_run_label(run: Any) -> str:
     """One-line list label for a SavedModuleRun."""
 
-    return f"{run.modified_text} · {run.short_id} · {_module_parts(run)}"
+    return f"{run.modified_text} · {run.short_id} · {_module_parts(run)}" + _note_snippet(
+        getattr(run, "notes", "")
+    )
 
 
 if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
@@ -126,9 +224,16 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             parent: QWidget | None = None,
             list_runs: Callable[..., Sequence[Any]] | None = None,
             summarize: Callable[..., Mapping[str, Any]] | None = None,
+            list_main_ai: Callable[..., Sequence[Any]] | None = None,
+            summarize_main_ai: Callable[..., Mapping[str, Any]] | None = None,
+            main_ai_dirs: Sequence[str | Path] | None = None,
         ) -> None:
             require_qt()
             super().__init__(parent)
+            from bang_rl.training.main_ai_artifacts import (
+                list_saved_main_ai_models,
+                summarize_main_ai_artifact,
+            )
             from bang_rl.training.module_artifacts import (
                 list_saved_module_runs,
                 summarize_module_run,
@@ -136,10 +241,17 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
 
             self._model_root = model_root
             self._reports_dir = reports_dir
+            # A custom model root (tests, other installs) scopes main-AI models too.
+            if main_ai_dirs is None and model_root is not None:
+                main_ai_dirs = [Path(model_root) / "main_ai"]
+            self._main_ai_dirs = main_ai_dirs
             self._list_runs = list_runs or list_saved_module_runs
             self._summarize = summarize or summarize_module_run
+            self._list_main_ai = list_main_ai or list_saved_main_ai_models
+            self._summarize_main_ai = summarize_main_ai or summarize_main_ai_artifact
             self._cache: dict[str, str] = {}
             self._runs: list[Any] = []
+            self._main_ai_models: list[Any] = []
             self.selected_job_id: str | None = None
 
             self.setWindowTitle(tr("perf.title"))
@@ -154,12 +266,18 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.resume_button = QPushButton(tr("perf.use_for_resume"), self)
             self.resume_button.setToolTip(tr("tooltip.perf_use_for_resume"))
             self.close_button = QPushButton(tr("perf.close"), self)
+            self.notes_button = QPushButton(tr("perf.edit_notes"), self)
+            self.notes_button.setToolTip(tr("tooltip.perf_edit_notes"))
+            self.save_copy_button = QPushButton(tr("perf.save_copy"), self)
+            self.save_copy_button.setToolTip(tr("tooltip.perf_save_copy"))
 
             body = QHBoxLayout()
             body.addWidget(self.list, 1)
             body.addWidget(self.details, 2)
             buttons = QHBoxLayout()
             buttons.addWidget(self.refresh_button)
+            buttons.addWidget(self.notes_button)
+            buttons.addWidget(self.save_copy_button)
             buttons.addStretch(1)
             buttons.addWidget(self.resume_button)
             buttons.addWidget(self.close_button)
@@ -172,32 +290,110 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.refresh_button.clicked.connect(self.refresh)
             self.resume_button.clicked.connect(self._use_for_resume)
             self.close_button.clicked.connect(self.reject)
+            self.notes_button.clicked.connect(self._edit_notes)
+            self.save_copy_button.clicked.connect(self._save_copy)
             self.refresh()
 
         def refresh(self) -> None:
             self._cache.clear()
             self._runs = list(self._list_runs(self._model_root))
+            try:
+                self._main_ai_models = list(self._list_main_ai(self._main_ai_dirs))
+            except OSError:
+                self._main_ai_models = []
             self.list.clear()
+            # Saved module runs first, then saved main-AI models.
             for run in self._runs:
-                self.list.addItem(QListWidgetItem(module_run_label(run)))
-            has_runs = bool(self._runs)
-            self.empty_label.setVisible(not has_runs)
-            self.resume_button.setEnabled(has_runs)
-            if has_runs:
+                item = QListWidgetItem(module_run_label(run))
+                item.setToolTip(getattr(run, "tooltip", "") or module_run_label(run))
+                self.list.addItem(item)
+            for model in self._main_ai_models:
+                item = QListWidgetItem(main_ai_model_label(model))
+                item.setToolTip(getattr(model, "tooltip", "") or main_ai_model_label(model))
+                self.list.addItem(item)
+            has_items = bool(self._runs or self._main_ai_models)
+            self.notes_button.setEnabled(has_items)
+            self.save_copy_button.setEnabled(has_items)
+            self.empty_label.setVisible(not has_items)
+            self.resume_button.setEnabled(bool(self._runs))
+            if has_items:
                 self.list.setCurrentRow(0)
             else:
                 self.details.setPlainText("")
 
         def _show_row(self, row: int) -> None:
-            if not 0 <= row < len(self._runs):
+            module_count = len(self._runs)
+            if 0 <= row < module_count:
+                run = self._runs[row]
+                text = self._cache.get(f"module:{run.job_id}")
+                if text is None:
+                    text = format_module_run_summary(self._summarize(run, reports_dir=self._reports_dir))
+                    self._cache[f"module:{run.job_id}"] = text
+                self.resume_button.setEnabled(True)
+            elif module_count <= row < module_count + len(self._main_ai_models):
+                model = self._main_ai_models[row - module_count]
+                text = self._cache.get(f"main:{model.path}")
+                if text is None:
+                    text = format_main_ai_model_summary(self._summarize_main_ai(model.path))
+                    self._cache[f"main:{model.path}"] = text
+                # A main-AI model is not a module run to continue from.
+                self.resume_button.setEnabled(False)
+            else:
                 self.details.setPlainText("")
                 return
-            run = self._runs[row]
-            text = self._cache.get(run.job_id)
-            if text is None:
-                text = format_module_run_summary(self._summarize(run, reports_dir=self._reports_dir))
-                self._cache[run.job_id] = text
             self.details.setPlainText(text)
+
+        def _selected(self) -> tuple[str, Any] | None:
+            row = self.list.currentRow()
+            if 0 <= row < len(self._runs):
+                return "module", self._runs[row]
+            index = row - len(self._runs)
+            if 0 <= index < len(self._main_ai_models):
+                return "main", self._main_ai_models[index]
+            return None
+
+        def _edit_notes(self) -> None:
+            from bang_rl.artifact_info import read_info, update_notes
+
+            from .save_outputs import NotesDialog
+
+            selected = self._selected()
+            if selected is None:
+                return
+            kind, item = selected
+            paths = (
+                [p for p in (item.intent_path, item.emotion_path) if p is not None]
+                if kind == "module"
+                else [item.path]
+            )
+            first = next((read_info(p) for p in paths if read_info(p) is not None), None)
+            title = item.display_name
+            dialog = NotesDialog(title, first.notes if first is not None else "", self)
+            if not dialog.exec():
+                return
+            for path in paths:
+                if read_info(path) is not None:
+                    update_notes(path, dialog.text)
+            self.refresh()
+
+        def _save_copy(self) -> None:
+            from bang_rl.saved_artifacts import plan_main_ai, plan_modules
+
+            from .save_outputs import SaveOutputsDialog
+
+            selected = self._selected()
+            if selected is None:
+                return
+            kind, item = selected
+            plan = (
+                plan_modules(item.intent_path, item.emotion_path)
+                if kind == "module"
+                else plan_main_ai(item.path)
+            )
+            if plan is None:
+                return
+            SaveOutputsDialog(plan, self).exec()
+            self.refresh()
 
         def _use_for_resume(self) -> None:
             row = self.list.currentRow()
@@ -214,7 +410,9 @@ else:
 
 __all__ = [
     "ModulePerformanceDialog",
+    "format_main_ai_model_summary",
     "format_module_run_summary",
     "format_module_summary",
+    "main_ai_model_label",
     "module_run_label",
 ]

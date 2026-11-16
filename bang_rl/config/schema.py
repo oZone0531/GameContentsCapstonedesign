@@ -334,7 +334,6 @@ class IntentPolicyConfig(ConfigModel):
     sheriff_role_bonus: float = 1.0
     deputy_role_bonus: float = 0.25
     target_health_weight: float = 0.0
-    relation_target_weight: float = 0.0
     role_target_weights: dict[str, float] = Field(default_factory=dict)
     pass_confidence_score: float = Field(default=0.45, ge=0.0, le=1.0)
     outlaw_target_threshold: float = Field(default=0.60, ge=0.0, le=1.0)
@@ -383,48 +382,13 @@ class IntentPolicyConfig(ConfigModel):
 
 
 class EmotionDefinition(ConfigModel):
-    """One configurable DummyAgent emotion and its public update rules."""
+    """One named emotion output with an optional author-written description."""
 
     name: str = Field(min_length=1)
     # Free-form, author-written natural-language description of the emotion.
-    # Optional with a default empty string so every pre-existing config (which
-    # has no ``description``) still validates under ConfigModel's extra="forbid"
-    # (that policy only rejects UNKNOWN keys, not declared fields with defaults).
     # Shown as a tooltip on the emotion bar in spectator mode and replay. This is
     # author content stored verbatim, not a localization key.
     description: str = ""
-    initial_value: float | None = None
-    change_rate: float = 0.0
-    decay_rate: float = 0.0
-    event_updates: dict[str, float] = Field(default_factory=dict)
-    action_updates: dict[str, float] = Field(default_factory=dict)
-    reward_updates: dict[str, float] = Field(default_factory=dict)
-    terminal_updates: dict[str, float] = Field(default_factory=dict)
-    effects: dict[str, float] = Field(default_factory=dict)
-
-    @model_validator(mode="before")
-    @classmethod
-    def accept_preset_spellings(cls, value: object) -> object:
-        if not isinstance(value, dict):
-            return value
-        values = dict(value)
-        aliases = {
-            "initial": "initial_value",
-            "baseline": "initial_value",
-            "change": "change_rate",
-            "delta": "change_rate",
-            "decay": "decay_rate",
-            "event_rules": "event_updates",
-            "action_rules": "action_updates",
-            "reward_rules": "reward_updates",
-            "terminal_rules": "terminal_updates",
-            "action_effects": "effects",
-            "desc": "description",
-        }
-        for source, target in aliases.items():
-            if source in values and target not in values:
-                values[target] = values.pop(source)
-        return values
 
     @field_validator("description", mode="before")
     @classmethod
@@ -439,48 +403,17 @@ class EmotionDefinition(ConfigModel):
             return value
         return str(value)
 
-    @field_validator(
-        "initial_value", "change_rate", "decay_rate", mode="before"
-    )
-    @classmethod
-    def numeric_values_must_be_finite(cls, value: object) -> object:
-        if value is None:
-            return value
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(float(value)):
-            raise ValueError("emotion numeric parameters must be finite numbers")
-        return value
-
-    @field_validator("initial_value")
-    @classmethod
-    def initial_value_must_be_normalized(cls, value: float | None) -> float | None:
-        if value is not None and not 0.0 <= value <= 1.0:
-            raise ValueError("emotion initial_value must be in [0, 1]")
-        return value
-
-    @field_validator("event_updates", "action_updates", "reward_updates", "terminal_updates", "effects")
-    @classmethod
-    def update_rules_must_be_finite(cls, value: dict[str, float]) -> dict[str, float]:
-        normalized: dict[str, float] = {}
-        for key, item in value.items():
-            if not isinstance(key, str) or not key.strip():
-                raise ValueError("emotion update rule keys must be non-empty strings")
-            if isinstance(item, bool) or not isinstance(item, (int, float)) or not isfinite(float(item)):
-                raise ValueError("emotion update rule values must be finite numbers")
-            normalized[key] = float(item)
-        return normalized
-
 
 class EmotionFormulaConfig(ConfigModel):
-    """Optional emotion-formula block (``bang_rl.agents.dummy_agent.emotion_formula``).
+    """Emotion-formula block (``bang_rl.agents.dummy_agent.emotion_formula``).
 
-    When ``EmotionConfig.formula`` is set, DummyAgents use ``FormulaEmotionModule``
-    instead of ``EmotionModule``. ``params`` overrides ``EmotionParams`` defaults and
-    ``personality_by_role`` (keys: sheriff / deputy / outlaw / traitor) overrides
-    them per role. ``personality_presets`` holds named override sets; with
-    ``personality_mode="random"`` every dummy draws one preset per game,
-    independent of its role and reproducible from the episode seed (applied on
-    top of the role overrides). The default ``"role"`` keeps the original
-    behaviour. Unknown names are rejected.
+    DummyAgents always run ``FormulaEmotionModule`` with this block. ``params``
+    overrides ``EmotionParams`` defaults and ``personality_by_role`` (keys: sheriff /
+    deputy / outlaw / traitor) overrides them per role. ``personality_presets`` holds
+    named override sets; with ``personality_mode="random"`` every dummy draws one
+    preset per game, independent of its role and reproducible from the episode seed
+    (applied on top of the role overrides). The default ``"role"`` keeps the
+    original behaviour. Unknown names are rejected.
     """
 
     schema_version: str = Field(default="formula-1.0", min_length=1)
@@ -503,173 +436,6 @@ class EmotionFormulaConfig(ConfigModel):
             self.params, self.personality_by_role, self.personality_presets, self.personality_mode
         )
         return self
-
-
-class EmotionConfig(ConfigModel):
-    """Emotion schema, baseline, and configurable DummyAgent behavior rules."""
-
-    schema_version: str = Field(default="1.0", min_length=1)
-    emotion_count: StrictInt = Field(default=1, ge=1)
-    initial_baseline: float = Field(default=0.0, ge=0.0, le=1.0)
-    emotions: tuple[EmotionDefinition, ...] = Field(default_factory=tuple)
-    # Per-opponent relation vector configuration (EmotionModule schema "1.1").
-    # ``relation_baseline`` is the neutral value every seat starts at; the
-    # relation vector is SIGNED and clamped to [-1, 1] by the module (a grudge is
-    # negative, trust is positive).  ``relation_updates`` maps a relationship
-    # kind (for example ``shot_by``, ``shot_at``, ``eliminated_by``) to a finite
-    # signed delta.  Both DEFAULT so pre-existing configs behave identically:
-    # with an empty ``relation_updates`` the relation vector never moves.
-    relation_baseline: float = Field(default=0.0, ge=-1.0, le=1.0)
-    relation_updates: dict[str, float] = Field(default_factory=dict)
-    # Public-HP control thresholds (EmotionModule schema "1.1").  The emotion
-    # module derives HP-context bucket keys (``target_low_hp`` / ``target_lethal``
-    # / ``self_low_hp`` / ``self_lethal``) from the PUBLIC per-event ``hp_after``.
-    # Both thresholds DEFAULT to ``None`` so no HP bucket key ever fires and
-    # behaviour is byte-for-byte identical to before this feature.  ``hp_after``
-    # at or below ``hp_lethal_threshold`` yields the ``*_lethal`` bucket; at or
-    # below ``hp_low_threshold`` yields the ``*_low_hp`` bucket.  Configure the
-    # matching keys in an emotion definition's ``event_updates`` to react.
-    hp_low_threshold: int | None = Field(default=None, ge=0)
-    hp_lethal_threshold: int | None = Field(default=None, ge=0)
-    # Optional emotion-formula block. DEFAULT ``None`` keeps the rule-table
-    # EmotionModule, so every existing config behaves exactly as before.
-    formula: EmotionFormulaConfig | None = None
-    encoder: Literal["GRU"] = "GRU"
-    hidden_size: Literal[128] = 128
-    num_layers: Literal[1] = 1
-    batch_first: Literal[True] = True
-    dropout: Literal[0.0] = 0.0
-    emotion_head_hidden_size: Literal[64] = 64
-    output_activation: Literal["Sigmoid"] = "Sigmoid"
-    loss: Literal["MSE"] = "MSE"
-    optimizer: FixedOptimizerConfig = Field(
-        default_factory=lambda: FixedOptimizerConfig(learning_rate=0.001)
-    )
-
-    @field_validator("emotions", mode="before")
-    @classmethod
-    def normalize_emotion_collection(cls, value: object) -> object:
-        if value is None:
-            return ()
-        if isinstance(value, dict):
-            return tuple(
-                {"name": name, **(definition if isinstance(definition, dict) else {})}
-                for name, definition in value.items()
-            )
-        if isinstance(value, (list, tuple)):
-            normalized = []
-            for index, definition in enumerate(value):
-                if isinstance(definition, str):
-                    normalized.append({"name": definition})
-                elif isinstance(definition, dict):
-                    item = dict(definition)
-                    item.setdefault("name", f"emotion_{index}")
-                    normalized.append(item)
-                else:
-                    normalized.append(definition)
-            return tuple(normalized)
-        return value
-
-    @field_validator("initial_baseline", mode="before")
-    @classmethod
-    def baseline_must_be_finite_number(cls, value: object) -> object:
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError("initial_baseline must be a finite number in [0, 1]")
-        if not isfinite(float(value)):
-            raise ValueError("initial_baseline must be a finite number in [0, 1]")
-        return value
-
-    @field_validator("relation_baseline", mode="before")
-    @classmethod
-    def relation_baseline_must_be_finite_number(cls, value: object) -> object:
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError("relation_baseline must be a finite number in [-1, 1]")
-        if not isfinite(float(value)):
-            raise ValueError("relation_baseline must be a finite number in [-1, 1]")
-        return value
-
-    @field_validator("hp_low_threshold", "hp_lethal_threshold", mode="before")
-    @classmethod
-    def hp_threshold_must_be_non_negative_int_or_none(cls, value: object) -> object:
-        # ``None`` keeps the HP buckets a strict no-op (the shipped default).  When
-        # a threshold is provided it must be a genuine non-negative integer HP
-        # value; booleans are rejected so ``True``/``False`` never masquerade as 1/0.
-        if value is None:
-            return None
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError("HP thresholds must be a non-negative integer or None")
-        return value
-
-    @field_validator("relation_updates")
-    @classmethod
-    def relation_updates_must_be_finite(cls, value: dict[str, float]) -> dict[str, float]:
-        normalized: dict[str, float] = {}
-        for key, item in value.items():
-            if not isinstance(key, str) or not key.strip():
-                raise ValueError("relation update keys must be non-empty strings")
-            if isinstance(item, bool) or not isinstance(item, (int, float)) or not isfinite(float(item)):
-                raise ValueError("relation update values must be finite numbers")
-            normalized[key] = float(item)
-        return normalized
-
-    @field_validator("schema_version")
-    @classmethod
-    def schema_version_must_not_be_blank(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("emotion.schema_version must not be blank")
-        return value
-
-    @model_validator(mode="after")
-    def normalize_default_emotions(self) -> "EmotionConfig":
-        definitions = self.emotions
-        if not definitions:
-            definitions = tuple(
-                EmotionDefinition(name=f"emotion_{index}")
-                for index in range(self.emotion_count)
-            )
-            object.__setattr__(self, "emotions", definitions)
-        else:
-            names = [item.name for item in definitions]
-            if len(names) != len(set(names)):
-                raise ValueError("emotion names must be unique")
-            object.__setattr__(self, "emotion_count", len(definitions))
-        return self
-
-    @field_validator("optimizer")
-    @classmethod
-    def require_emotion_learning_rate(cls, value: FixedOptimizerConfig) -> FixedOptimizerConfig:
-        if value.learning_rate != 0.001:
-            raise ValueError("EmotionInference optimizer learning_rate is fixed at 1e-3")
-        return value
-
-
-class PPOConfig(ConfigModel):
-    """PPO hyperparameters and the fixed PPOModule architecture contract."""
-
-    rollout_transitions_per_worker: StrictInt = Field(default=256, ge=1)
-    gamma: float = Field(default=0.99, gt=0.0, le=1.0)
-    gae_lambda: float = Field(default=0.95, gt=0.0, le=1.0)
-    ppo_epochs: StrictInt = Field(default=4, ge=1)
-    minibatch_size: StrictInt = Field(default=64, ge=1)
-    clip_epsilon: float = Field(default=0.2, gt=0.0, lt=1.0)
-    max_grad_norm: float | None = Field(default=0.5, gt=0.0)
-    value_loss_coef: float = Field(default=0.5, ge=0.0)
-    entropy_coef: float = Field(default=0.01, ge=0.0)
-    shared_trunk_hidden_size: Literal[256] = 256
-    shared_trunk_layers: Literal[2] = 2
-    policy_output_size: Literal[6] = 6
-    value_output_size: Literal[1] = 1
-    activation: Literal["ReLU"] = "ReLU"
-    optimizer: FixedOptimizerConfig = Field(
-        default_factory=lambda: FixedOptimizerConfig(learning_rate=0.0003)
-    )
-
-    @field_validator("optimizer")
-    @classmethod
-    def require_ppo_learning_rate(cls, value: FixedOptimizerConfig) -> FixedOptimizerConfig:
-        if value.learning_rate != 0.0003:
-            raise ValueError("PPOModule optimizer learning_rate is fixed at 3e-4")
-        return value
 
 
 # Tuned emotion formula shipped at the repository root. It is the same file the
@@ -714,29 +480,141 @@ def default_emotion_formula(path: str | Path | None = None) -> EmotionFormulaCon
     return cached.model_copy(deep=True) if cached is not None else EmotionFormulaConfig()
 
 
-def ensure_formula_emotion(value: EmotionConfig | Mapping[str, object] | None) -> EmotionConfig:
-    """Return the nine-emotion Formula configuration.
+def formula_label_names() -> tuple[str, ...]:
+    """The nine public emotion names: calm, confidence, aggression, anxiety, relation_0..4."""
 
-    The formula label is ``[calm, confidence, aggression, anxiety,
-    relation_0..relation_4]`` (four global values plus one relation per seat).
-    A config that already carries a ``formula`` block is returned unchanged;
-    otherwise the tuned formula from ``emotion_formula.example.json`` is used.
+    # Imported lazily: the agents package must not be imported while the
+    # config schema module itself is being imported.
+    from bang_rl.agents.dummy_agent.emotion_formula import LABEL_NAMES
+
+    return tuple(LABEL_NAMES)
+
+
+class EmotionConfig(ConfigModel):
+    """Nine-emotion DummyAgent schema plus the emotion formula that drives it.
+
+    The default is the tuned nine-value formula label ``[calm, confidence,
+    aggression, anxiety, relation_0..relation_4]``. ``emotion_count`` always equals
+    ``len(emotions)``; the fixed architecture fields describe the main agent's
+    EmotionInference network that predicts these values.
     """
 
-    resolved = EmotionConfig.model_validate(value or {})
-    if resolved.formula is not None:
-        return resolved
-    formula_names = (
-        {"name": "calm"}, {"name": "confidence"},
-        {"name": "aggression"}, {"name": "anxiety"},
-        {"name": "relation_0"}, {"name": "relation_1"}, {"name": "relation_2"},
-        {"name": "relation_3"}, {"name": "relation_4"},
+    schema_version: str = Field(default="formula-1.0+label9", min_length=1)
+    emotion_count: StrictInt = Field(default=9, ge=1)
+    initial_baseline: float = Field(default=0.0, ge=0.0, le=1.0)
+    emotions: tuple[EmotionDefinition, ...] = Field(default_factory=tuple)
+    formula: EmotionFormulaConfig = Field(default_factory=default_emotion_formula)
+    encoder: Literal["GRU"] = "GRU"
+    hidden_size: Literal[128] = 128
+    num_layers: Literal[1] = 1
+    batch_first: Literal[True] = True
+    dropout: Literal[0.0] = 0.0
+    emotion_head_hidden_size: Literal[64] = 64
+    output_activation: Literal["Sigmoid"] = "Sigmoid"
+    loss: Literal["MSE"] = "MSE"
+    optimizer: FixedOptimizerConfig = Field(
+        default_factory=lambda: FixedOptimizerConfig(learning_rate=0.001)
     )
-    return EmotionConfig(
-        schema_version="formula-1.0+label9",
-        emotions=formula_names,
-        formula=default_emotion_formula(),
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_to_nine_emotions(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        values = dict(value)
+        if values.get("formula") is None:
+            values.pop("formula", None)
+        if not values.get("emotions"):
+            count = values.get("emotion_count", 9)
+            if isinstance(count, int) and not isinstance(count, bool) and count != 9:
+                values["emotions"] = [f"emotion_{index}" for index in range(count)]
+            else:
+                values["emotions"] = list(formula_label_names())
+        return values
+
+    @field_validator("emotions", mode="before")
+    @classmethod
+    def normalize_emotion_collection(cls, value: object) -> object:
+        if value is None:
+            return ()
+        if isinstance(value, dict):
+            return tuple(
+                {"name": name, **(definition if isinstance(definition, dict) else {})}
+                for name, definition in value.items()
+            )
+        if isinstance(value, (list, tuple)):
+            normalized = []
+            for index, definition in enumerate(value):
+                if isinstance(definition, str):
+                    normalized.append({"name": definition})
+                elif isinstance(definition, dict):
+                    item = dict(definition)
+                    item.setdefault("name", f"emotion_{index}")
+                    normalized.append(item)
+                else:
+                    normalized.append(definition)
+            return tuple(normalized)
+        return value
+
+    @field_validator("initial_baseline", mode="before")
+    @classmethod
+    def baseline_must_be_finite_number(cls, value: object) -> object:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("initial_baseline must be a finite number in [0, 1]")
+        if not isfinite(float(value)):
+            raise ValueError("initial_baseline must be a finite number in [0, 1]")
+        return value
+
+    @field_validator("schema_version")
+    @classmethod
+    def schema_version_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("emotion.schema_version must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def derive_emotion_count(self) -> "EmotionConfig":
+        names = [item.name for item in self.emotions]
+        if len(names) != len(set(names)):
+            raise ValueError("emotion names must be unique")
+        object.__setattr__(self, "emotion_count", len(names))
+        return self
+
+    @field_validator("optimizer")
+    @classmethod
+    def require_emotion_learning_rate(cls, value: FixedOptimizerConfig) -> FixedOptimizerConfig:
+        if value.learning_rate != 0.001:
+            raise ValueError("EmotionInference optimizer learning_rate is fixed at 1e-3")
+        return value
+
+
+class PPOConfig(ConfigModel):
+    """PPO hyperparameters and the fixed PPOModule architecture contract."""
+
+    rollout_transitions_per_worker: StrictInt = Field(default=256, ge=1)
+    gamma: float = Field(default=0.99, gt=0.0, le=1.0)
+    gae_lambda: float = Field(default=0.95, gt=0.0, le=1.0)
+    ppo_epochs: StrictInt = Field(default=4, ge=1)
+    minibatch_size: StrictInt = Field(default=64, ge=1)
+    clip_epsilon: float = Field(default=0.2, gt=0.0, lt=1.0)
+    max_grad_norm: float | None = Field(default=0.5, gt=0.0)
+    value_loss_coef: float = Field(default=0.5, ge=0.0)
+    entropy_coef: float = Field(default=0.01, ge=0.0)
+    shared_trunk_hidden_size: Literal[256] = 256
+    shared_trunk_layers: Literal[2] = 2
+    policy_output_size: Literal[6] = 6
+    value_output_size: Literal[1] = 1
+    activation: Literal["ReLU"] = "ReLU"
+    optimizer: FixedOptimizerConfig = Field(
+        default_factory=lambda: FixedOptimizerConfig(learning_rate=0.0003)
     )
+
+    @field_validator("optimizer")
+    @classmethod
+    def require_ppo_learning_rate(cls, value: FixedOptimizerConfig) -> FixedOptimizerConfig:
+        if value.learning_rate != 0.0003:
+            raise ValueError("PPOModule optimizer learning_rate is fixed at 3e-4")
+        return value
 
 
 class PresetConfig(ConfigModel):

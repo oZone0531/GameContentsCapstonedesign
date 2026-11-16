@@ -823,8 +823,6 @@ def test_new_ai_speed_i18n_keys_exist_in_both_languages() -> None:
         "board.hit",
         "board.eliminated",
         "replay.autoplay",
-        "settings.emotion_initial_baseline",
-        "tooltip.emotion_initial_baseline_field",
     ):
         assert key in _STRINGS
         assert "en" in _STRINGS[key]

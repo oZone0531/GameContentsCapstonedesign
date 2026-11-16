@@ -18,14 +18,11 @@ through ``GameService.step`` are move-for-move identical.
 
 Emotion labels
 --------------
-With the emotion formula (a ``formula`` block) each label has 9 entries,
+Each label has 9 entries,
 ``[calm, confidence, aggression, anxiety, relation_0..relation_4]`` in [0, 1].
 These are deterministic projections of the formula's public latent state. The
 schema version is ``FORMULA_LABEL_SCHEMA``; the module-training workflow uses
 :func:`formula_label_emotion_config`.
-
-With the rule-table EmotionModule (no ``formula`` block) the label is the
-module's own value vector and its configured schema version.
 """
 
 from __future__ import annotations
@@ -70,7 +67,6 @@ __all__ = [
     "collect_games",
     "drive_game",
     "emotion_labels",
-    "emotion_mode",
     "formula_label_emotion_config",
     "game_seed",
     "load_collection_config",
@@ -131,10 +127,6 @@ def load_collection_config(
     return SystemConfig.model_validate(values)
 
 
-def emotion_mode(agent: Any) -> str:
-    return "formula" if isinstance(agent, DummyAgent) and agent.uses_emotion_formula else "rule_table"
-
-
 def personality_labels(agents: Any) -> list[str | None]:
     """Each seat's emotion personality preset for this game (None = no preset).
 
@@ -172,14 +164,6 @@ def game_seed(base_seed: int, index: int) -> int:
     return int(base_seed) + int(index)
 
 
-def _label_layout(agent: DummyAgent, config: SystemConfig) -> tuple[str, tuple[str, ...]]:
-    if agent.uses_emotion_formula:
-        return FORMULA_LABEL_SCHEMA, tuple(LABEL_NAMES)
-    module = agent.emotion_module
-    names = tuple(getattr(module, "emotion_names", ()) or ())
-    return str(config.preset.emotion.schema_version), names
-
-
 def emotion_labels(
     agents: Any, env: Any, config: SystemConfig, *, episode_id: str
 ) -> dict[str, dict[str, Any]]:
@@ -190,18 +174,14 @@ def emotion_labels(
     for index, agent in enumerate(agents):
         if not isinstance(agent, DummyAgent) or not bool(env.state.alive[index]):
             continue
-        if agent.uses_emotion_formula:
-            values = np.asarray(agent.emotion_module.label(), dtype=np.float64)
-        else:
-            values = np.asarray(agent.emotion_module.values, dtype=np.float64)
-        schema, names = _label_layout(agent, config)
+        values = np.asarray(agent.emotion_module.label(), dtype=np.float64)
         labels[str(index)] = {
             "episode_id": episode_id,
             "environment_step": step,
             "player_idx": index,
             "values": [float(item) for item in np.clip(values, 0.0, 1.0)],
-            "emotion_names": list(names),
-            "emotion_schema_version": schema,
+            "emotion_names": list(LABEL_NAMES),
+            "emotion_schema_version": FORMULA_LABEL_SCHEMA,
             "input_event_ids": [],
         }
     return labels
@@ -272,14 +252,12 @@ def drive_game(
 ) -> CanonicalEpisode:
     """Play ``env`` to the end with ``agents`` and record every valid step."""
 
-    modes = sorted({emotion_mode(agent) for agent in agents})
     collector.start_episode(
         env,
         episode_id=episode_id,
         seed=int(seed),
         metadata={
             "game_seed": int(seed),
-            "emotion_mode": ",".join(modes),
             "belief_source": belief_label(agents),
             "personalities": personality_labels(agents),
         },
@@ -298,7 +276,6 @@ def drive_game(
             if (
                 index != actor
                 and isinstance(agent, DummyAgent)
-                and agent.uses_emotion_formula
                 and bool(env.state.alive[index])
             ):
                 agent.observe_public_boundary(env.observe(index))
@@ -359,11 +336,17 @@ def collect_games(
     shard_games: int = 20,
     belief: str | None = None,
     episode_id_prefix: str | None = None,
+    info: Any | None = None,
+    created_by: str = "collect_games",
 ) -> dict[str, Any]:
     """Play ``games`` all-dummy games and write canonical Parquet shards.
 
     Writes ``collection_summary.json`` next to the shards and returns the same
     summary (plus ``episodes`` when ``keep_episodes`` is true).
+
+    The folder is described by an :class:`~bang_rl.artifact_info.ArtifactInfo`
+    (``info``; a default one is built when omitted): ``ABOUT.md`` plus the first
+    key of ``collection_summary.json``. Parquet shards are never modified.
 
     A shard is committed every ``shard_games`` games: the Parquet writer
     re-serializes its whole pending shard on every append, so one large shard
@@ -396,7 +379,6 @@ def collect_games(
     lengths: list[int] = []
     label_schemas: set[str] = set()
     label_dims: set[int] = set()
-    modes: set[str] = set()
     kept: list[CanonicalEpisode] = []
     shards: list[Path] = []
     started = time.perf_counter()
@@ -429,7 +411,6 @@ def collect_games(
             lengths.append(int(episode.environment_steps))
             result = env.state.terminal_result
             wins[result.winning_team.name if result is not None else "TRUNCATED"] += 1
-            modes.update(emotion_mode(agent) for agent in agents)
             for step in episode.steps:
                 for label in step.emotion_labels.values():
                     label_schemas.add(str(label.get("emotion_schema_version")))
@@ -446,7 +427,6 @@ def collect_games(
         "seeds": [game_seed(base_seed, 0), game_seed(base_seed, games - 1)],
         "action_mode": action_mode,
         "belief_source": metadata["belief_source"],
-        "emotion_mode": sorted(modes),
         "emotion_label_schema": sorted(label_schemas),
         "emotion_label_dimension": label_dim,
         "emotion_label_names": (
@@ -460,9 +440,27 @@ def collect_games(
         "shards": [path.name for path in shards],
         "seconds": round(time.perf_counter() - started, 1),
     }
+    from uuid import uuid4
+
+    from bang_rl.artifact_builders import dataset_info, dataset_summary
+    from bang_rl.artifact_info import dump_json_with_info, write_info
+
+    dataset_meta = info
+    if dataset_meta is None:
+        dataset_meta = dataset_info(
+            id=str(uuid4()),
+            games=games,
+            base_seed=base_seed,
+            created_by=created_by,
+            action_mode=action_mode,
+            belief=metadata["belief_source"],
+        )
+    dataset_meta.summary = dataset_summary(summary)
+    dataset_meta.name = out.name
     (out / "collection_summary.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+        dump_json_with_info(summary, dataset_meta, indent=2), encoding="utf-8"
     )
+    write_info(out, dataset_meta)
     if keep_episodes:
         summary["episodes"] = kept
     return summary

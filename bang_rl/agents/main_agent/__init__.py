@@ -59,8 +59,18 @@ from .ppo_module import (
     SHARED_TRUNK_HIDDEN_SIZE,
     VALUE_OUTPUT_SIZE,
 )
+from .policy_inputs import (
+    POLICY_FEATURE_KEYS,
+    PolicyInputs,
+    build_policy_inputs,
+    policy_emotion_dim,
+)
 
 __all__ = [
+    "POLICY_FEATURE_KEYS",
+    "PolicyInputs",
+    "build_policy_inputs",
+    "policy_emotion_dim",
     "ACTION_SPACE_VERSION",
     "EMOTION_INFERENCE_ARCHITECTURE_VERSION",
     "EMOTION_INFERENCE_FORMAT_VERSION",

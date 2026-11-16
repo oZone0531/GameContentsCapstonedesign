@@ -109,7 +109,7 @@ Environment ↛ gui
 Agents ↛ gui
 ```
 
-Environment는 `DummyAgent`, `MainAgent`, `HumanAgent`의 클래스를 import하지 않는다. 감정 상태도 Environment가 직접 제어하지 않으며, 실행 계층의 EmotionRuntime이 공개 이벤트를 Agent에 전달한다(REQ-ARCH-002, REQ-EMO-007).
+Environment는 `DummyAgent`, `MainAgent`, `HumanAgent`의 클래스를 import하지 않는다. 감정 상태도 Environment가 직접 제어하지 않으며, 각 DummyAgent가 자신의 공개 관측에서만 감정을 갱신하며 실행 계층이 모든 생존 더미에 행동 경계 호출을 보장한다(REQ-ARCH-002, REQ-EMO-007).
 
 ### 2.3 작업 단위와 실행 세션
 
@@ -232,7 +232,7 @@ class TerminalResult:
 9. 정상 Terminal Condition 평가
 10. 정상 종료가 아니면 max_episode_steps 평가
 11. terminated/truncated 또는 다음 생존 Agent 선택
-12. 다음 행동 경계에서 EmotionRuntime 처리
+12. 다음 행동 경계에서 생존 DummyAgent의 감정 갱신(`observe_public_boundary`)
 ```
 
 정상 승패가 같은 행동에서 충족되면 `terminated=True`가 `truncated=True`보다 우선한다(REQ-STEP-007~009).
@@ -352,7 +352,7 @@ ObsDict = {
 다음은 Agent Observation, 공개 Event Sequence, MainAgent 추론 입력, PPO policy/value 입력에 포함하지 않는다.
 
 - 다른 생존자의 비공개 실제 Role
-- DummyAgent의 실제 EmotionModule 내부 상태
+- DummyAgent의 실제 FormulaEmotionModule 내부 상태
 - Role Label
 - Emotion Label
 - Reward 값·Reward Breakdown
@@ -387,7 +387,7 @@ class BaseAgent(Protocol):
 DummyAgent
 ├── RoleBeliefEstimator
 ├── IntentModule
-├── EmotionModule
+├── FormulaEmotionModule (9감정 공식)
 └── ActionSelector
 ```
 
@@ -409,9 +409,9 @@ strong_faction:
 
 배신자는 역할에 따른 추가 행동 제한을 받지 않지만, 공통 Action Mask는 준수한다. 1대1이 아니면 보안관 직접 공격 가중치를 낮추고, 보안관·배신자만 생존하면 보안관 공격 가중치를 높인다.
 
-### 7.3 Dummy EmotionModule
+### 7.3 Dummy FormulaEmotionModule (9감정 공식)
 
-EmotionModule은 Config에서 정의된 N개 상태를 관리한다. 모든 값은 `[0, 1]`로 정규화한다. 감정 이름·범위·초기값·변화량·감쇠·행동 영향은 Config/Preset에 둔다. Environment는 내부 EmotionState를 직접 변경하지 않는다.
+FormulaEmotionModule은 항상 9개 값 `[calm, confidence, aggression, anxiety, relation_0..relation_4]`을 관리한다. 모든 값은 `[0, 1]`로 정규화하며 관계 값은 내부 `[-1, 1]`을 `(R + 1) / 2`로 저장한다. 값은 공개 사건·공개 체력·역할 믿음에서 `FormulaEmotionModule`이 계산하고, 공식 계수와 역할별 성격은 Config/Preset의 `formula` 블록에 둔다. Environment는 내부 EmotionState를 직접 변경하지 않는다.
 
 ---
 
@@ -501,7 +501,7 @@ PPOModule
 - 출력: 감정 변수 수 E에 따른 연속 벡터 shape `(4, E)`
 - 출력 범위: `[0.0, 1.0]`
 - 빈 History: valid mask로 구분하고 Config의 `initial_baseline`을 기준값으로 사용한다. 초기값은 `0.0`이며 Emotion Schema에 별도 baseline 값을 저장하지 않는다.
-- Target: 행동 직전 DummyAgent EmotionModule 상태
+- Target: 행동 직전 DummyAgent FormulaEmotionModule 상태
 - Loss: MSE
 - Emotion Schema Version이 출력 차원과 일치해야 한다.
 - `initial_baseline`은 Config Schema와 Job Config Snapshot으로 관리하고, GUI에서 변경할 수 있다. 변경값은 다음 Training Job부터 적용한다.
@@ -533,9 +533,9 @@ PPOModule의 고정 구현값은 다음과 같다.
 
 ## 9. 감정 실행 계층과 EmotionInference
 
-### 9.1 EmotionRuntime 책임
+### 9.1 감정 갱신 책임
 
-Environment와 DummyAgent 내부 상태 사이에는 `EmotionRuntime` 또는 실행 조정 계층을 둔다. 이 계층은 공개 이벤트를 Agent에 전달하지만 Environment에 DummyAgent 구현 의존성을 추가하지 않는다.
+Environment와 DummyAgent 내부 상태 사이에는 실행 조정 계층(GameService, 데이터 수집기)을 둔다. 이 계층은 모든 생존 DummyAgent가 자신의 공개 관측으로 `observe_public_boundary`/`act`를 호출하게 하지만 Environment에 DummyAgent 구현 의존성을 추가하지 않는다.
 
 ### 9.2 행동 전 시간 순서
 
@@ -1180,7 +1180,7 @@ bang_rl/
 │   │   ├── dummy_agent.py
 │   │   ├── role_belief.py
 │   │   ├── intent_module.py
-│   │   ├── emotion_module.py
+│   │   ├── emotion_formula.py
 │   │   └── action_selector.py
 │   └── main_agent/
 │       ├── main_agent.py
@@ -1190,7 +1190,6 @@ bang_rl/
 │       ├── emotion_inference.py
 │       └── ppo_module.py
 ├── runtime/
-│   ├── emotion_runtime.py
 │   ├── reward_runtime.py
 │   ├── transition_collector.py
 │   └── pause_coordinator.py

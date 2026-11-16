@@ -55,7 +55,7 @@ def _artifact(environment_version: str = "1.0"):
             "observation_schema_version": "1.0",
             "action_space_version": "1.0",
             "reward_config_version": "1.0",
-            "emotion_schema_version": "1.0",
+            "emotion_schema_version": "formula-1.0+label9",
             "inference_model_artifact_format_version": "1.0",
         },
         "modules": {

@@ -397,20 +397,20 @@ Implementation Phase 2 — Agent 기본 구현
 - 자기 자신/탈락자 공격이 차단됨
 - 비1대1과 Sheriff-Traitor 1대1 정책 차이 검증
 
-- [x] 18. TASK-2-4. Dummy EmotionModule 구현 (depends on TASK-2-3)
+- [x] 18. TASK-2-4. Dummy 9감정 공식 모듈 구현 (depends on TASK-2-3)
 
 **참조:** Requirements REQ-DUMMY-006~010, REQ-EMO-001~008, Design §7.3, §9
 
 **작업 내용:**
-- Config 기반 N개 감정 상태
+- 9개 감정 상태(`calm`, `confidence`, `aggression`, `anxiety`, `relation_0`~`relation_4`)
 - 값 범위 `[0,1]`
-- initial value, 변화량, 감쇠, 행동 영향 로딩
-- EmotionRuntime 호출 API 구현
+- Config의 감정 공식 계수와 역할별 성격 로딩
+- 행동 경계 호출 API(`observe_public_boundary`) 구현
 - event ID 중복 반영 방지
 - Invalid Action 시 갱신 방지
 
 **완료 조건:**
-- 감정 항목 추가/삭제가 Config만으로 가능
+- 공식 계수 변경이 Config만으로 가능
 - 환경 Step당 감쇠 최대 1회
 - 동일 Event ID 중복 반영 없음
 - Invalid Action/재시도 시 감정 변화 없음
@@ -549,9 +549,9 @@ Implementation Phase 3 — MainAgent 추론 구조
 
 ---
 
-Implementation Phase 4 — Emotion Runtime 및 Reward Runtime
+Implementation Phase 4 — 감정 경계 처리 및 Reward Runtime
 
-- [x] 26. TASK-4-1. EmotionRuntime 구현 (depends on TASK-3-6)
+- [x] 26. TASK-4-1. 감정 경계 처리 구현 (depends on TASK-3-6)
 
 **참조:** Requirements REQ-EMO-001~008, Design §9
 
@@ -568,7 +568,7 @@ Implementation Phase 4 — Emotion Runtime 및 Reward Runtime
 
 **완료 조건:**
 - 공개 Event 반영 → 감정 갱신/감쇠 → Label 기록 → 행동 선택 → 실행 → 새 Event 생성 순서 검증
-- 행동 직전 DummyAgent EmotionModule 상태가 Target인지 검증
+- 행동 직전 DummyAgent FormulaEmotionModule 상태가 Target인지 검증
 - 현재 행동·새 Event·미래 Event가 Label 입력에 포함되지 않음
 - 동일 Event ID가 한 번만 반영됨
 - 과거/미래 Event 누출 테스트
@@ -1143,7 +1143,7 @@ This section records the final evidence-based task-state reconciliation against 
 
 - **All 47 tasks are complete:** TASK-1-7, TASK-4-1, TASK-5-1, TASK-5-3, TASK-6-2, TASK-7-2, and the dependent TASK-10-3 blockers are resolved and their status markers are now `[x]`.
 - **TASK-1-7:** focused long-game diagnostics validation passed (2 tests), including threshold logging and truncated-run reconstruction data.
-- **TASK-4-1:** EmotionRuntime integration validation passed (21 tests), including event/decay/label ordering, terminal behavior, and invalid-action/retry boundaries.
+- **TASK-4-1:** emotion boundary handling is implemented in `DummyAgent.observe_public_boundary` and covered by the emotion formula and game collection tests.
 - **TASK-5-1:** collector/Parquet validation passed (11 tests), including pre-action alignment, event preservation, finalization, and canonical record handling.
 - **TASK-5-3:** Parquet read normalization for empty episodes was updated; the empty-episode split/round-trip blocker is resolved.
 - **TASK-6-2:** EmotionInference trainer validation passed (24 tests), including split-scoped metrics, early stopping, schema checks, and artifact metadata.

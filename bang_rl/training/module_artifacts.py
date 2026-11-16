@@ -17,8 +17,14 @@ from typing import Any, Mapping
 
 import torch
 
+from bang_rl.artifact_info import (
+    ArtifactInfo,
+    find_json_by_id,
+    info_from_embedded,
+    info_from_payload,
+)
 from bang_rl.exceptions import TrainingError
-from bang_rl.paths import PROJECT_ROOT, REPORTS_DIR
+from bang_rl.paths import PROJECT_ROOT, REPORTS_DIR, SAVED_MODULES_DIR, SAVED_REPORTS_DIR
 
 MODULE_MODEL_ROOT = PROJECT_ROOT / "bang_rl" / "models"
 ARTIFACT_SUFFIX = ".phase2model"
@@ -37,6 +43,13 @@ class SavedModuleRun:
     intent_path: Path | None
     emotion_path: Path | None
     modified: float
+    # Readable name (naming rule) and the user's free-text note (비고). Both are
+    # empty for a legacy file that has no embedded info.
+    name: str = ""
+    notes: str = ""
+    kind_label: str = ""
+    created_at: str = ""
+    saved: bool = False
 
     @property
     def modified_text(self) -> str:
@@ -46,32 +59,188 @@ class SavedModuleRun:
     def short_id(self) -> str:
         return self.job_id.split("-")[0]
 
+    @property
+    def display_name(self) -> str:
+        return self.name or self.job_id
 
-def list_saved_module_runs(model_root: str | Path | None = None) -> tuple[SavedModuleRun, ...]:
-    """Return saved module runs grouped by job id, newest first."""
+    @property
+    def tooltip(self) -> str:
+        lines = [self.display_name, self.created_at or self.modified_text]
+        if self.notes.strip():
+            lines += ["", self.notes.strip()]
+        return "\n".join(lines)
+
+
+@dataclass(frozen=True, slots=True)
+class _ModuleFile:
+    path: Path
+    kind: str
+    run_id: str
+    info: ArtifactInfo | None
+    mtime: float
+    saved: bool
+
+
+_identity_cache: dict[tuple[str, int, int], tuple[str | None, str, ArtifactInfo | None]] = {}
+
+
+def _legacy_identity(path: Path) -> tuple[str | None, str]:
+    """Kind/job id guessed from a legacy ``intent-<id>.phase2model`` file name."""
+
+    stem = path.name[: -len(ARTIFACT_SUFFIX)]
+    for kind, prefix in _KIND_PREFIX.items():
+        if stem.startswith(prefix) and len(stem) > len(prefix):
+            return kind, stem[len(prefix):]
+    return None, stem
+
+
+def _module_identity(path: Path) -> tuple[str | None, str, ArtifactInfo | None]:
+    """``(kind, run id, info)`` read from inside the file, never from its name.
+
+    The name is only a last resort for files that cannot be read.
+    """
+
+    stat = path.stat()
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    cached = _identity_cache.get(key)
+    if cached is not None:
+        return cached
+    legacy_kind, legacy_id = _legacy_identity(path)
+    kind: str | None = legacy_kind
+    run_id = legacy_id
+    info: ArtifactInfo | None = None
+    try:
+        payload = torch.load(path, map_location="cpu", weights_only=False)
+    except Exception:  # noqa: BLE001 - listed anyway so the summary can report the error
+        payload = None
+    if isinstance(payload, Mapping):
+        kind = _KIND_TYPE.get(str(payload.get("artifact_type")), kind)
+        info = info_from_embedded(path, info_from_payload(payload))
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+        run_meta = metadata.get("run_metadata") if isinstance(metadata.get("run_metadata"), Mapping) else {}
+        snapshot = metadata.get("job_snapshot") if isinstance(metadata.get("job_snapshot"), Mapping) else {}
+        found = (info.id if info and info.id else None) or run_meta.get("job_id") or snapshot.get("job_id")
+        if found:
+            run_id = str(found)
+    else:
+        info = info_from_embedded(path, None)
+        if info is not None and info.id:
+            run_id = info.id
+    if len(_identity_cache) > 512:
+        _identity_cache.clear()
+    result = (kind, run_id, info)
+    _identity_cache[key] = result
+    return result
+
+
+def _created_epoch(info: ArtifactInfo | None, fallback: float) -> float:
+    if info is not None and info.created_at:
+        try:
+            return datetime.fromisoformat(info.created_at).timestamp()
+        except ValueError:
+            pass
+    return fallback
+
+
+def _module_files(model_root: Path, saved_root: Path | None) -> list[_ModuleFile]:
+    """Every ``*.phase2model`` under the model folders, whatever it is called."""
+
+    candidates: list[tuple[Path, bool]] = []
+    for folder in (model_root, model_root / "intent", model_root / "emotion"):
+        if folder.is_dir():
+            candidates += [(path, False) for path in sorted(folder.glob(f"*{ARTIFACT_SUFFIX}"))]
+    if saved_root is not None and saved_root.is_dir():
+        candidates += [(path, True) for path in sorted(saved_root.rglob(f"*{ARTIFACT_SUFFIX}"))]
+    found: list[_ModuleFile] = []
+    for path, saved in candidates:
+        if not path.is_file():
+            continue
+        kind, run_id, info = _module_identity(path)
+        if kind is None or not run_id:
+            continue
+        found.append(_ModuleFile(path, kind, run_id, info, path.stat().st_mtime, saved))
+    return found
+
+
+def list_saved_module_runs(
+    model_root: str | Path | None = None,
+    *,
+    saved_root: str | Path | None = None,
+) -> tuple[SavedModuleRun, ...]:
+    """Return saved module runs grouped by run id, newest first.
+
+    Files are found by extension and paired by the run id stored *inside* them
+    (``info.id``, falling back to the training job id in the metadata), so
+    renaming a file in the file explorer changes nothing. Copies kept in
+    ``saved/modules`` are included; when the same run exists in both places the
+    local original wins.
+    """
 
     root = Path(model_root) if model_root is not None else MODULE_MODEL_ROOT
-    found: dict[str, dict[str, Path]] = {}
-    for kind, prefix in _KIND_PREFIX.items():
-        folder = root / kind
-        if not folder.is_dir():
-            continue
-        for path in folder.glob(f"{prefix}*{ARTIFACT_SUFFIX}"):
-            if not path.is_file():
-                continue
-            job_id = path.name[len(prefix) : -len(ARTIFACT_SUFFIX)]
-            if job_id:
-                found.setdefault(job_id, {})[kind] = path
-    runs = [
-        SavedModuleRun(
-            job_id=job_id,
-            intent_path=paths.get("intent"),
-            emotion_path=paths.get("emotion"),
-            modified=max(path.stat().st_mtime for path in paths.values()),
+    if saved_root is None and model_root is None:
+        saved_root = SAVED_MODULES_DIR
+    saved = Path(saved_root) if saved_root is not None else None
+    groups: dict[str, dict[str, _ModuleFile]] = {}
+    for item in _module_files(root, saved):
+        slot = groups.setdefault(item.run_id, {})
+        current = slot.get(item.kind)
+        # Prefer the local original over a saved copy, then the newest file.
+        if current is None or (item.saved, -item.mtime) < (current.saved, -current.mtime):
+            slot[item.kind] = item
+    runs: list[SavedModuleRun] = []
+    for run_id, parts in groups.items():
+        files = list(parts.values())
+        primary = parts.get("intent") or parts.get("emotion")
+        info = primary.info if primary is not None else None
+        name = info.name if info is not None else ""
+        if name:
+            name = name.replace("_intent_", "_modules_", 1).replace("_emotion_", "_modules_", 1)
+        runs.append(
+            SavedModuleRun(
+                job_id=run_id,
+                intent_path=parts["intent"].path if "intent" in parts else None,
+                emotion_path=parts["emotion"].path if "emotion" in parts else None,
+                modified=max(_created_epoch(item.info, item.mtime) for item in files),
+                name=name,
+                notes=info.notes if info is not None else "",
+                kind_label=info.kind_label if info is not None else "",
+                created_at=info.created_at if info is not None else "",
+                saved=all(item.saved for item in files),
+            )
         )
-        for job_id, paths in found.items()
-    ]
     return tuple(sorted(runs, key=lambda run: run.modified, reverse=True))
+
+
+def module_run_infos(run: SavedModuleRun) -> dict[str, ArtifactInfo | None]:
+    """Info block of each saved module of a run (cached, no second file read).
+
+    Keys are ``"intent"`` and ``"emotion"``; a missing module or a legacy file
+    without info maps to ``None``.
+    """
+
+    infos: dict[str, ArtifactInfo | None] = {"intent": None, "emotion": None}
+    for kind, path in (("intent", run.intent_path), ("emotion", run.emotion_path)):
+        if path is None:
+            continue
+        try:
+            infos[kind] = _module_identity(Path(path))[2]
+        except OSError:
+            infos[kind] = None
+    return infos
+
+
+def find_report_path(job_id: str, reports_dir: str | Path | None = None) -> Path | None:
+    """Report of a job: by ``info.id`` first, then the legacy ``<job_id>.json`` name."""
+
+    directory = Path(reports_dir if reports_dir is not None else REPORTS_DIR)
+    roots = [directory]
+    if reports_dir is None:
+        roots.append(SAVED_REPORTS_DIR)
+    found = find_json_by_id(roots, job_id)
+    if found is not None:
+        return found
+    legacy = directory / f"{job_id}.json"
+    return legacy if legacy.is_file() else None
 
 
 def _read_artifact(path: str | Path) -> tuple[str, Mapping[str, Any]]:
@@ -171,11 +340,13 @@ def summarize_module_run(
 ) -> dict[str, Any]:
     """Summarize both modules of a run. A broken file is reported, not raised."""
 
-    report = Path(reports_dir if reports_dir is not None else REPORTS_DIR) / f"{run.job_id}.json"
+    report = find_report_path(run.job_id, reports_dir)
     result: dict[str, Any] = {
         "job_id": run.job_id,
+        "name": run.display_name,
+        "notes": run.notes,
         "modified": run.modified_text,
-        "report_path": str(report) if report.is_file() else None,
+        "report_path": str(report) if report is not None else None,
     }
     for kind, path in (("intent", run.intent_path), ("emotion", run.emotion_path)):
         if path is None:
@@ -186,6 +357,81 @@ def summarize_module_run(
         except TrainingError as exc:
             result[kind] = {"kind": kind, "path": str(path), "error": str(exc)}
     return result
+
+
+MAIN_AI_INTENT_ROLE_COUNT = 4
+# Reasons returned by :func:`main_ai_compatibility` when a run cannot be used.
+MAIN_AI_REASON_MISSING = "missing_module"
+MAIN_AI_REASON_INTENT_ROLES = "intent_roles"
+MAIN_AI_REASON_EMOTION_SCHEMA = "emotion_schema"
+MAIN_AI_REASON_UNREADABLE = "unreadable"
+
+_compat_cache: dict[tuple[str, int, int], tuple[Any, ...]] = {}
+
+
+def _architecture(metadata: Mapping[str, Any]) -> Mapping[str, Any]:
+    value = metadata.get("architecture")
+    return value if isinstance(value, Mapping) else {}
+
+
+def _module_compat(path: Path, kind: str) -> tuple[Any, ...]:
+    """Cheap per-file facts for the main-AI check, cached by file stamp.
+
+    Weights are inside the same pickle as the metadata, so the file is read
+    once per (path, mtime) and the facts are kept.
+    """
+
+    stat = path.stat()
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    cached = _compat_cache.get(key)
+    if cached is not None:
+        return cached
+    try:
+        found_kind, metadata = _read_artifact(path)
+        if found_kind != kind:
+            raise TrainingError(f"{path.name} is a {found_kind} module")
+        architecture = _architecture(metadata)
+        if kind == "intent":
+            facts: tuple[Any, ...] = (True, architecture.get("role_count"))
+        else:
+            schema = metadata.get("emotion_schema") if isinstance(metadata.get("emotion_schema"), Mapping) else {}
+            version = schema.get("version") or architecture.get("emotion_schema_version") or metadata.get("emotion_schema_version")
+            count = schema.get("count") if schema.get("count") is not None else architecture.get("emotion_count")
+            facts = (True, version, count)
+    except TrainingError:
+        facts = (False,)
+    if len(_compat_cache) > 256:
+        _compat_cache.clear()
+    _compat_cache[key] = facts
+    return facts
+
+
+def main_ai_compatibility(run: SavedModuleRun) -> tuple[bool, str | None]:
+    """Whether a saved module run can feed main-AI training.
+
+    The intent module must predict 4 role classes and the emotion module must
+    use the dummies' formula label schema with 9 entries (the same contract
+    ``main_ai_training.validate_emotion_contract`` enforces after loading).
+    Returns ``(True, None)`` or ``(False, reason_code)``.
+    """
+
+    from bang_rl.agents.dummy_agent.emotion_formula import LABEL_NAMES
+    from bang_rl.data.game_collection import FORMULA_LABEL_SCHEMA
+
+    if run.intent_path is None or run.emotion_path is None:
+        return False, MAIN_AI_REASON_MISSING
+    try:
+        intent = _module_compat(Path(run.intent_path), "intent")
+        emotion = _module_compat(Path(run.emotion_path), "emotion")
+    except OSError:
+        return False, MAIN_AI_REASON_UNREADABLE
+    if not intent[0] or not emotion[0]:
+        return False, MAIN_AI_REASON_UNREADABLE
+    if intent[1] != MAIN_AI_INTENT_ROLE_COUNT:
+        return False, MAIN_AI_REASON_INTENT_ROLES
+    if str(emotion[1]) != FORMULA_LABEL_SCHEMA or emotion[2] != len(LABEL_NAMES):
+        return False, MAIN_AI_REASON_EMOTION_SCHEMA
+    return True, None
 
 
 def artifact_total_epochs(metadata: Mapping[str, Any]) -> int:
@@ -231,9 +477,16 @@ def load_emotion_for_resume(path: str | Path) -> tuple[Any, Mapping[str, Any]]:
 
 __all__ = [
     "MODULE_MODEL_ROOT",
+    "MAIN_AI_REASON_EMOTION_SCHEMA",
+    "MAIN_AI_REASON_INTENT_ROLES",
+    "MAIN_AI_REASON_MISSING",
+    "MAIN_AI_REASON_UNREADABLE",
     "SavedModuleRun",
     "artifact_total_epochs",
+    "find_report_path",
     "list_saved_module_runs",
+    "main_ai_compatibility",
+    "module_run_infos",
     "load_emotion_for_resume",
     "load_intent_for_resume",
     "summarize_module_artifact",

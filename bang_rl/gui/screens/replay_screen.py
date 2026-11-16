@@ -330,15 +330,21 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             )
             if not path:
                 return
+            self.open_path(path)
+
+        def open_path(self, path: str | Path) -> bool:
+            """Load the replay file at ``path`` and start playing it (data library, file dialog)."""
+
             try:
                 record = replay_store.load_replay(path)
                 model = ReplayModel(record)
             except (OSError, ValueError, TypeError, KeyError) as exc:
                 self.status.setText(str(exc) or tr("replay.no_episode"))
-                return
+                return False
             self._loaded_record = record
             self._loaded_path = Path(path)
             self._load_model(model)
+            return True
 
         # -- rename / delete (item 10) -----------------------------------
         def _selected_browser_path(self) -> Path | None:

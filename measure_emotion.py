@@ -146,7 +146,6 @@ def main() -> None:
     emotion = emotion_config(args.emotion_file, {})
     off = emotion_config(args.emotion_file, {"lambda_E": 0.0, "sigma": 0.0, "sigma_R": 0.0})
     results = {
-        "default_config_rule_table_module": run(args.games, None, args.mode),
         "formula_intent_only": run(args.games, off, args.mode),
         "formula_on": run(args.games, emotion, args.mode),
     }

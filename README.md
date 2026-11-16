@@ -57,7 +57,7 @@ config = load_config("config.example.yaml")
 
 Important defaults are schema-owned: `max_episode_steps=2000`, long-game thresholds `200/500`, unlimited public event history (`event_history.max_events: null`), PPO rollout/gamma/GAE/epoch/minibatch values `256/0.99/0.95/4/64`, PPO `clip_epsilon=0.2`, and EmotionInference `initial_baseline=0.0`. Reward numbers are example configuration values, not implementation constants.
 
-`config.example.yaml` is a documentation/example file and is not loaded implicitly by runtime services. Runtime DummyAgent entry points ensure that `EmotionConfig.formula` is present and use `FormulaEmotionModule`; a direct low-level `EmotionConfig()` can still construct the legacy rule-table module for compatibility tests and explicit experiments.
+`config.example.yaml` is a documentation/example file and is not loaded implicitly by runtime services. Every DummyAgent acts on exactly nine emotions (calm, confidence, aggression, anxiety, relation_0..relation_4) computed by `FormulaEmotionModule`. `EmotionConfig()` defaults to these nine emotions with the tuned formula from `emotion_formula.example.json`; its `formula` block overrides the coefficients.
 
 
 The schema accepts YAML or JSON. Environment and dataset paths are interpreted relative to the process working directory. The example uses the repository’s checked-in runtime-data locations:
@@ -84,7 +84,7 @@ from bang_rl.app import (
 ```
 
 - `GameService` creates sessions, exposes read-only `PublicGameState`, and submits actions.
-- `TrainingService` exposes three workflows: `data_collection` writes formula-labelled canonical Parquet games, `module_training` builds caches and trains the Intent/Emotion Phase-2 modules, and `main_ai_training` is the reserved Phase-3 PPO workflow placeholder. It reports progress and supports in-process pause/resume/cancel where a workflow can honor them.
+- `TrainingService` exposes three workflows: `data_collection` writes formula-labelled canonical Parquet games, `module_training` builds caches and trains the Intent/Emotion Phase-2 modules, and `main_ai_training` trains the Phase-3 PPO policy against Dummy AIs on top of frozen Intent/Emotion modules and saves only the best evaluated `.bangmodel`. It reports progress and supports in-process pause/resume/cancel where a workflow can honor them.
 - `EvaluationService` runs the primary or custom protocol and reports normal/truncated denominators separately.
 - `DatasetService` exposes canonical and cache paths and Parquet collection boundaries.
 - `ConfigService` loads, validates, saves, and snapshots `SystemConfig`.
@@ -124,4 +124,19 @@ The primary evaluation protocol is `deterministic_v1`: 500 games, 100 games per 
 
 ## Deliberate limitations
 
-This implementation does not provide the final Phase-3 PPO/reward orchestration behind `main_ai_training`, Hardware Benchmark runners, automatic Worker/Batch/Buffer tuning, OOM-based batch search, Role Count Projection/Bayesian assignment, intermediate training checkpoints, or training resume after process termination. GUI Pause/Resume only coordinates the in-memory current job; it does not create a disk checkpoint. Replays, canonical datasets, caches, reports, outputs, and generated model artifacts are Git-ignored; only directory `.gitkeep` markers are retained.
+`main_ai_training` is a single-process loop (no parallel workers yet). This implementation does not provide Hardware Benchmark runners, automatic Worker/Batch/Buffer tuning, OOM-based batch search, Role Count Projection/Bayesian assignment, intermediate training checkpoints, or training resume after process termination. GUI Pause/Resume only coordinates the in-memory current job; it does not create a disk checkpoint. Replays, canonical datasets, caches, reports, outputs, and generated model artifacts are Git-ignored; only directory `.gitkeep` markers are retained.
+
+## Artifact names, notes and `saved/`
+
+Every generated file (dataset, tensor cache, `.phase2model`, `.bangmodel`, report, baseline cache, replay,
+evaluation output) carries an info block (kind, creation time, initial conditions, result summary, sources and a
+free-text `notes` field) and is named `YYYYMMDD-HHMM_<kind>_<key conditions>_<id6>`, for example
+`20261115-1432_dataset_dummy5_50000g_3f9a1c`. Files are linked by the id stored inside them, never by name, so
+renaming them in the file explorer is safe. The info is the first key of JSON files, an `info` entry inside
+`.phase2model` / `.bangmodel` plus a readable `<file>.about.md`, and `ABOUT.md` in dataset and cache folders
+(`bang_rl/artifact_info.py`).
+
+All generated folders stay git-ignored. The training screen's "Save outputs" button copies a result into `saved/`
+(datasets, modules, main_ai, reports), which is tracked by git. There is no Git LFS: a file over 50 MB gets a warning and
+a file over 100 MB cannot be pushed to GitHub (the button asks before saving it anyway).
+`python migrate_artifact_names.py --dry-run` renames and annotates files created before this rule (see `USER_GUIDE.md`).

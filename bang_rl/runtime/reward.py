@@ -622,7 +622,7 @@ def attach_rewards(result: ActionResult, batch: RewardBatch) -> ActionResult:
     """Attach training-only per-agent rewards at the transition boundary.
 
     The public observation remains unchanged.  The returned immutable result is
-    suitable for EmotionRuntime/PPO handoff, where ``info['rewards']`` is a
+    suitable for PPO handoff, where ``info['rewards']`` is a
     separate learning signal and ``reward`` is the acting agent's scalar value.
     """
 

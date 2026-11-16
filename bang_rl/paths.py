@@ -17,6 +17,17 @@ LOCAL_SETTINGS_PATH = LOCAL_SETTINGS_DIR / "settings.json"
 REPLAYS_DIR = PROJECT_ROOT / "bang_rl" / "replays"
 
 
+# User-kept copies made with the training screen's "Save outputs" button.
+# Unlike every folder above, ``saved/`` is NOT gitignored: these copies are
+# meant to be committed and shared (no Git LFS, so keep files under 100 MB).
+SAVED_DIR = PROJECT_ROOT / "saved"
+SAVED_DATASETS_DIR = SAVED_DIR / "datasets"
+SAVED_MODULES_DIR = SAVED_DIR / "modules"
+SAVED_MAIN_AI_DIR = SAVED_DIR / "main_ai"
+SAVED_REPLAYS_DIR = SAVED_DIR / "replays"
+SAVED_REPORTS_DIR = SAVED_DIR / "reports"
+
+
 def ensure_training_directories() -> None:
     """Create the project-local training roots if they are missing."""
 
@@ -87,6 +98,12 @@ __all__ = [
     "PROJECT_ROOT",
     "REPLAYS_DIR",
     "REPORTS_DIR",
+    "SAVED_DATASETS_DIR",
+    "SAVED_DIR",
+    "SAVED_MAIN_AI_DIR",
+    "SAVED_MODULES_DIR",
+    "SAVED_REPLAYS_DIR",
+    "SAVED_REPORTS_DIR",
     "default_training_paths",
     "ensure_replays_directory",
     "ensure_training_directories",

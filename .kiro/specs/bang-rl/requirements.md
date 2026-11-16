@@ -377,7 +377,7 @@
 ## 7. 더미 AI (Dummy Agent)
 
 ### REQ-DUMMY-001
-**[Ubiquitous]** DummyAgent는 BangEnvironment와 독립된 모듈로 구현되어야 하며, IntentModule, EmotionModule, ActionSelector의 세 하위 모듈로 구성되어야 한다.
+**[Ubiquitous]** DummyAgent는 BangEnvironment와 독립된 모듈로 구현되어야 하며, IntentModule, FormulaEmotionModule, ActionSelector의 세 하위 모듈로 구성되어야 한다.
 
 ### REQ-DUMMY-002 — IntentModule
 **[Ubiquitous]** IntentModule은 자신의 역할별 승리 목표를 최우선으로 하는 기본 행동 정책을 생성해야 한다.
@@ -420,24 +420,24 @@
 ### REQ-DUMMY-005
 **[When]** 일반 게임 실행 중 사용자가 GUI 또는 Config 파일을 통해 IntentModule의 비구조 설정을 변경할 때, 시스템은 변경된 설정을 다음 행동 선택 경계부터 반영해야 한다(REQ-CFG-005). 진행 중인 수집·학습 작업에는 즉시 적용하지 않는다(REQ-CFG-006).
 
-### REQ-DUMMY-006 — EmotionModule
-**[Ubiquitous]** EmotionModule은 감정 상태를 N개의 독립적인 수치형 변수로 관리해야 한다.
+### REQ-DUMMY-006 — FormulaEmotionModule(9감정 공식)
+**[Ubiquitous]** DummyAgent의 FormulaEmotionModule은 항상 9개의 감정 값(`calm`, `confidence`, `aggression`, `anxiety`, `relation_0`~`relation_4`)으로만 감정 상태를 관리해야 하며, 이 값은 감정 공식(`FormulaEmotionModule`)이 공개 정보에서 계산한다. 감정 항목은 사용자가 추가·삭제하는 대상이 아니다.
 
 ### REQ-DUMMY-007
-**[Ubiquitous]** EmotionModule의 감정 항목(이름, 값의 범위, 초기값, 변화량, 감쇠/회복 설정)은 코드에 하드코딩되어서는 안 되며, Config를 통해 동적으로 추가·삭제·수정할 수 있어야 한다.
+**[Ubiquitous]** 감정 공식의 계수(`formula.params`)와 역할별 성격 값(`formula.personality_by_role`)은 코드에 하드코딩되어서는 안 되며, Config를 통해 수정할 수 있어야 한다. 감정 항목의 이름·개수·순서는 9감정 스키마로 고정한다.
 
 ### REQ-DUMMY-008
-**[Ubiquitous]** 각 감정이 실제 행동에 미치는 영향(영향 방향, 영향 크기, 적용 조건)은 코드에 하드코딩되어서는 안 되며, 별도의 Config로 관리되어야 한다.
+**[Ubiquitous]** 각 감정이 실제 행동에 미치는 영향(감정별 기여 크기 `kappa_*`, 전체 배율 `lambda_E`)은 코드에 하드코딩되어서는 안 되며, 감정 공식 Config로 관리되어야 한다.
 
 ### REQ-DUMMY-009
-**[When]** 사용자가 EmotionModule 설정을 편집할 때, 시스템은 변경 유형에 따라 다르게 적용해야 한다:
-- 감정 변화량·감쇠 등 비구조 동작 파라미터 변경: 일반 게임에서는 다음 행동 경계부터 적용(REQ-CFG-005), 진행 중 학습 작업에는 다음 작업부터 적용(REQ-CFG-006). Preset 버전으로 추적한다(REQ-CFG-008).
-- 감정 이름·개수·순서·값 범위·정규화 등 구조 변경: 새 Emotion Schema Version을 요구한다(REQ-CFG-007).
+**[When]** 사용자가 FormulaEmotionModule 설정을 편집할 때, 시스템은 변경 유형에 따라 다르게 적용해야 한다:
+- 감정 공식 계수(변화량·감쇠·민감도 등) 변경: 일반 게임에서는 다음 행동 경계부터 적용(REQ-CFG-005), 진행 중 학습 작업에는 다음 작업부터 적용(REQ-CFG-006). Preset 버전으로 추적한다(REQ-CFG-008).
+- 감정 이름·개수·순서·값 범위·정규화 등 구조 변경(9감정 스키마 자체의 변경): 새 Emotion Schema Version을 요구한다(REQ-CFG-007).
 
 ### REQ-DUMMY-010 — Intent + Emotion 결합
 **[Ubiquitous]** DummyAgent는 다음 순서로 행동을 결정해야 한다:
 1. Observation → IntentModule → 기본 행동 우선순위/분포 생성
-2. EmotionModule → 감정에 따른 행동 확률/우선순위 변형
+2. FormulaEmotionModule → 감정에 따른 행동 확률/우선순위 변형
 3. ActionSelector → 최종 Action 선택
 
 ---
@@ -463,7 +463,7 @@
 **[Ubiquitous]** EmotionInferenceModule은 감정을 범주형 class가 아닌 연속적인 실수값 벡터로 예측해야 하며, 감정 변수가 N개이면 출력은 `[e1, e2, ..., eN]` 형태여야 한다. 모든 `ei`는 `0.0 <= ei <= 1.0` 범위에 있어야 한다.
 
 ### REQ-MAIN-004-C — EmotionInference Loss
-**[Ubiquitous]** EmotionInferenceModule의 기본 지도학습 Loss는 예측 벡터와 DummyAgent의 실제 EmotionModule 상태 벡터 사이의 MSE(Mean Squared Error)로 정의해야 한다.
+**[Ubiquitous]** EmotionInferenceModule의 기본 지도학습 Loss는 예측 벡터와 DummyAgent의 실제 FormulaEmotionModule 상태 벡터 사이의 MSE(Mean Squared Error)로 정의해야 한다.
 
 ### REQ-MAIN-005 — 최종 판단 모듈 (PPOModule)
 **[Ubiquitous]** 최종 판단 모듈은 현재 게임 상태(Self + Board State)와 의도 추론 모듈 및 감정 추론 모듈의 출력 벡터를 결합(Concatenate)한 입력으로부터 최종 행동을 결정해야 한다.
@@ -707,7 +707,7 @@
 모든 discrete 값을 무조건 8비트로 제한해서는 안 된다.
 
 ### REQ-DATA-002
-**[Ubiquitous]** 연속형 Feature 및 감정값은 정밀도 검증 후 `float16` 또는 `float32`를 사용해야 하며, EmotionModule 상태와 EmotionInference Target/Output은 `0.0~1.0` 범위로 정규화해야 한다.
+**[Ubiquitous]** 연속형 Feature 및 감정값은 정밀도 검증 후 `float16` 또는 `float32`를 사용해야 하며, FormulaEmotionModule 상태와 EmotionInference Target/Output은 `0.0~1.0` 범위로 정규화해야 한다.
 
 ### REQ-DATA-003
 **[Ubiquitous]** Role Label은 `uint8` dtype으로 저장해야 한다.
@@ -727,10 +727,10 @@
 > Parquet 원본과 NPZ 캐시의 "동일 데이터 절대 중복 금지" 문구는 v0.5에서 제거되었다. NPZ는 원본에서 파생된 재생성 가능한 캐시로서 파생 표현의 중복은 허용된다.
 
 ### REQ-DATA-005 — Emotion Schema Version
-**[Ubiquitous]** EmotionModule의 감정 항목 구성 및 해석(이름, 수, 순서, 값 범위, 정규화 방식)은 별도의 Emotion Schema Version으로 관리되어야 한다. Schema가 변경되면 새 Schema에 대응하는 Dataset 생성과 추론 모델 재학습이 필요하며, 기존 데이터·모델과 자동 호환되어서는 안 된다.
+**[Ubiquitous]** FormulaEmotionModule의 감정 항목 구성 및 해석(이름, 수, 순서, 값 범위, 정규화 방식)은 별도의 Emotion Schema Version으로 관리되어야 한다. Schema가 변경되면 새 Schema에 대응하는 Dataset 생성과 추론 모델 재학습이 필요하며, 기존 데이터·모델과 자동 호환되어서는 안 된다.
 
 ### REQ-DATA-006
-**[Ubiquitous]** Phase 1 데이터 수집 시 각 스텝에서 해당 DummyAgent의 실제 EmotionModule 상태 벡터를 Emotion Label로 기록해야 한다. 단, Emotion Label은 관찰 불가 정보이므로 MainAgent의 Observation에는 포함하지 않는다.
+**[Ubiquitous]** Phase 1 데이터 수집 시 각 스텝에서 해당 DummyAgent의 실제 FormulaEmotionModule 상태 벡터를 Emotion Label로 기록해야 한다. 단, Emotion Label은 관찰 불가 정보이므로 MainAgent의 Observation에는 포함하지 않는다.
 
 ### REQ-DATA-007 — 감정 레이블 시간 정렬
 **[Ubiquitous]** 감정 레이블은 REQ-EMO-001의 행동 결정 순서에 따라, "행동 직전에 기록된 감정 상태"를 예측 대상 행동의 Label로 사용해야 한다. 예측 대상 행동과 그 이후에 생성된 이벤트는 해당 Label의 입력 Feature에 포함되어서는 안 된다.
@@ -974,7 +974,7 @@ v0.3~v0.6에서 확정된 주요 결정 사항이다. 결정 내용은 각 요�
 | D-006 | Parquet 원본 + NPZ 재생성 가능 캐시. 역할 분리, 파생 표현 중복 허용 | REQ-DATA-004~004-C, REQ-DATA-008 |
 | D-007 | GUI: PyQt6, 실시간 그래프: pyqtgraph. Headless 학습 중 모니터링 GUI는 허용 | REQ-GUI-013, REQ-GUI-014, REQ-HW-004 |
 | D-008 | 시퀀스 인코더 GRU 기본, SequenceEncoder 인터페이스로 교체 가능 | REQ-MAIN-003 |
-| D-009 | 감정 Label: DummyAgent 실제 EmotionModule 수치. Emotion Schema Version 관리. 관측 순서 기반 정렬. 값은 0~1 연속값이며 기본 Loss는 MSE | REQ-MAIN-004~004-C, REQ-DATA-002, REQ-DATA-005~007, REQ-EMO-001~008 |
+| D-009 | 감정 Label: DummyAgent 실제 FormulaEmotionModule 수치. Emotion Schema Version 관리. 관측 순서 기반 정렬. 값은 0~1 연속값이며 기본 Loss는 MSE | REQ-MAIN-004~004-C, REQ-DATA-002, REQ-DATA-005~007, REQ-EMO-001~008 |
 | D-010 | 디버그 HUD: 타 플레이어 4명 대상, 자신 제외, 감정은 추정 감정 표기 | REQ-MAIN-009, REQ-EVAL-008 |
 | D-011 | 탈락 시 역할 공개. 확정 역할 우선, 미공개 역할만 추론 | REQ-OBS-009~018 |
 | D-012 | 실제 비공개 역할은 판정·Label·Reward·평가·특권 로그에만 사용, 행동 입력 금지 | REQ-OBS-016~018, REQ-PPO-015~018 |

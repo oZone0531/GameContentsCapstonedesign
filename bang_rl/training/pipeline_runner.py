@@ -1,16 +1,25 @@
 """Application-facing training workflows.
 
 The GUI only selects a workflow.  This module keeps dataset collection and
-Phase-2 supervised training out of the Qt layer.  Main-Agent PPO orchestration
-is intentionally a named stub until its reward/rollout contract is finalized.
+Phase-2 supervised training out of the Qt layer.  Main-Agent PPO training lives
+in :mod:`bang_rl.training.main_ai_training`.
 """
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Mapping
 
-from bang_rl.config import SystemConfig, ensure_formula_emotion
+from bang_rl.artifact_builders import (
+    cache_info,
+    dataset_info,
+    info_ref,
+    module_infos,
+    run_created_at,
+)
+from bang_rl.artifact_info import KIND_DATASET, KIND_EMOTION, KIND_INTENT, write_info
+from bang_rl.config import SystemConfig
 from bang_rl.data.game_collection import (
     FORMULA_LABEL_SCHEMA,
     collect_games,
@@ -21,7 +30,7 @@ from bang_rl.data.parquet_writer import ParquetCanonicalShardWriter
 from bang_rl.data.splitter import EpisodeSplitter
 from bang_rl.data.tensor_cache import NPZTensorCacheLoader, NPZTensorCacheWriter
 from bang_rl.exceptions import DataError, TrainingError
-from bang_rl.paths import PROJECT_ROOT
+from bang_rl.paths import PROJECT_ROOT, SAVED_DATASETS_DIR
 from bang_rl.training.emotion_sl_trainer import EmotionInferenceSLTrainer, EmotionSLConfig
 from bang_rl.training.sl_trainer import IntentInferenceSLTrainer, IntentSLConfig, ROLE_TARGET_NAMES
 from bang_rl.agents.main_agent.intent_inference import IntentInferenceModule
@@ -31,26 +40,22 @@ from bang_rl.training.module_artifacts import (
     load_intent_for_resume,
 )
 
+DEFAULT_CANONICAL_PATH = "datasets/canonical"
 TRAINING_MODE_DATA_COLLECTION = "data_collection"
 TRAINING_MODE_MODULE_TRAINING = "module_training"
 TRAINING_MODE_MAIN_AI = "main_ai_training"
+TRAINING_MODE_INFERENCE_REFINEMENT = "inference_refinement"
 TRAINING_MODES = (
     TRAINING_MODE_DATA_COLLECTION,
     TRAINING_MODE_MODULE_TRAINING,
     TRAINING_MODE_MAIN_AI,
+    TRAINING_MODE_INFERENCE_REFINEMENT,
 )
 
 
 def _project_path(value: str | Path) -> Path:
     path = Path(value).expanduser()
     return path if path.is_absolute() else PROJECT_ROOT / path
-
-
-def _formula_config(config: SystemConfig) -> SystemConfig:
-    preset = config.preset.model_copy(
-        update={"emotion": ensure_formula_emotion(config.preset.emotion)}
-    )
-    return config.model_copy(update={"preset": preset})
 
 
 def _canonical_shards(root: Path) -> tuple[Path, ...]:
@@ -93,19 +98,49 @@ def _episode_emotion_contract(episode: Any) -> str:
     return f"{schema_text}/{dimension_text}"
 
 
-def _read_canonical_dataset(root: Path):
+def _read_canonical_dataset(
+    root: Path,
+    extra_roots: Sequence[Path] = (),
+    only_folders: Sequence[Path] | None = None,
+):
     """Read only nine-emotion formula episodes from a canonical root.
+
+    ``only_folders`` (explicitly chosen dataset folders) replaces the scan of
+    ``root`` and ``extra_roots``: only shards inside those folders are read.
+    Dummy-only and main1+dummy4 datasets can be mixed freely; the union is
+    deduplicated by episode id.
+
 
     A canonical parent can contain historical collection-job directories. Jobs
     with an incompatible emotion contract are excluded from module training;
     mixing different label layouts would create an invalid supervised task.
     The returned selection diagnostics make that exclusion visible in reports.
+
+    ``extra_roots`` (the user-kept ``saved/datasets`` folder) are scanned too.
+    Shards are found by file pattern, so renamed dataset folders work, and an
+    episode that exists in two places is used once (deduplicated by episode id).
     """
 
-    shards = _canonical_shards(root)
-    if not shards:
-        raise DataError(f"no canonical Parquet shards found under {root}")
+    def relative(path: Path) -> str:
+        return _shard_id(path, root, extra_roots)
+
+    if only_folders is not None:
+        shards = ()
+        for folder in only_folders:
+            if not Path(folder).is_dir():
+                raise DataError(f"selected dataset folder does not exist: {folder}")
+            shards = tuple(sorted({*shards, *_canonical_shards(Path(folder))}))
+        if not shards:
+            raise DataError("no canonical Parquet shards found in the selected datasets")
+    else:
+        shards = _canonical_shards(root)
+        for extra in extra_roots:
+            if extra.is_dir():
+                shards = tuple(sorted({*shards, *_canonical_shards(extra)}))
+        if not shards:
+            raise DataError(f"no canonical Parquet shards found under {root}")
     episodes_by_id: dict[str, Any] = {}
+    players_count: dict[str, int] = {}
     selected_shards: set[Path] = set()
     duplicate_count = 0
     excluded_count = 0
@@ -122,6 +157,8 @@ def _read_canonical_dataset(root: Path):
             prior = episodes_by_id.get(episode_id)
             if prior is None:
                 episodes_by_id[episode_id] = episode
+                players = str((getattr(episode, "metadata", None) or {}).get("players") or "dummy5")
+                players_count[players] = players_count.get(players, 0) + 1
                 continue
             if prior.to_dict(include_private=True) != episode.to_dict(include_private=True):
                 raise DataError(
@@ -145,12 +182,49 @@ def _read_canonical_dataset(root: Path):
         "requested_emotion_schema": FORMULA_LABEL_SCHEMA,
         "requested_emotion_dimension": 9,
         "selected_episode_count": len(episodes_by_id),
+        "selected_episodes_by_players": dict(sorted(players_count.items())),
         "excluded_incompatible_episode_count": excluded_count,
         "excluded_incompatible_contracts": dict(sorted(excluded_contracts.items())),
-        "selected_source_shard_ids": [str(path.relative_to(root)) for path in sorted(selected_shards)],
+        "selected_source_shard_ids": [relative(path) for path in sorted(selected_shards)],
         "scanned_source_shard_count": len(shards),
     }
     return tuple(episodes_by_id.values()), tuple(sorted(selected_shards)), duplicate_count, selection
+
+
+SAVED_SHARD_PREFIX = "saved:"
+
+
+def _shard_id(path: Path, root: Path, extra_roots: Sequence[Path] = ()) -> str:
+    """Portable shard id: relative to ``root``, or ``saved:<relative>`` for an extra root."""
+
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        pass
+    for extra in extra_roots:
+        try:
+            return SAVED_SHARD_PREFIX + str(path.relative_to(extra))
+        except ValueError:
+            continue
+    return str(path)
+
+
+def _dataset_source_refs(root: Path, selection: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Datasets (folders under ``root``) that contributed shards, as info references."""
+
+    folders: dict[str, Path] = {}
+    for shard_id in selection.get("selected_source_shard_ids", ()):
+        text = str(shard_id)
+        if text.startswith(SAVED_SHARD_PREFIX):
+            shard = SAVED_DATASETS_DIR / text[len(SAVED_SHARD_PREFIX):]
+            folder = shard.parent
+        elif Path(text).is_absolute():
+            folder = Path(text).parent
+        else:
+            shard = Path(text)
+            folder = root / shard.parts[0] if len(shard.parts) > 1 else root
+        folders.setdefault(str(folder), folder)
+    return [info_ref(folder, KIND_DATASET) for folder in folders.values()]
 
 
 def _training_seed(run: Any) -> int:
@@ -180,9 +254,23 @@ def run_data_collection(handle: Any, run: Any) -> Mapping[str, Any]:
     games = int(run.config.episodes)
     if games < 1:
         raise ValueError("data collection requires at least one game")
-    config = _formula_config(run.system_config)
+    config = run.system_config
     root = _project_path(config.dataset.canonical_path)
-    output = root / str(handle.job_id)
+    players = str(getattr(run.config, "collection_players", "dummy5") or "dummy5")
+    if players == "main1-dummy4":
+        return _run_main_ai_data_collection(handle, run, games, config, root)
+    if players != "dummy5":
+        raise TrainingError(f"unsupported collection players: {players!r} (dummy5 or main1-dummy4)")
+    # The folder is named by the naming rule (time, kind, players, games, id).
+    info = dataset_info(
+        id=str(handle.job_id),
+        games=games,
+        base_seed=_training_seed(run),
+        created_by=TRAINING_MODE_DATA_COLLECTION,
+        created_at=run_created_at(run),
+        extra_conditions={"workers": getattr(getattr(config, "hardware", None), "workers", None)},
+    )
+    output = root / info.name
     summary = collect_games(
         config,
         games,
@@ -191,6 +279,7 @@ def run_data_collection(handle: Any, run: Any) -> Mapping[str, Any]:
         action_mode="deterministic",
         episode_id_prefix=f"job-{handle.job_id}",
         progress=lambda done, total: _publish_collection_progress(run, done, total),
+        info=info,
     )
     status = summary.get("termination_status", {})
     normal = int(status.get("normal", 0))
@@ -213,6 +302,97 @@ def run_data_collection(handle: Any, run: Any) -> Mapping[str, Any]:
             "termination_status": status,
         },
         "logs": ({"message": f"dataset collected: {output}"},),
+    }
+
+
+def _base_model_file(run: Any) -> Path:
+    """The explicitly chosen ``.bangmodel`` (a folder would silently pick the newest one)."""
+
+    value = getattr(run.config, "base_model_path", None)
+    path = Path(str(value)).expanduser() if value else None
+    if path is None or not path.is_file():
+        raise TrainingError(
+            "메인 AI 모델(.bangmodel) 파일을 선택하세요. "
+            "Choose a main AI model (.bangmodel) file."
+        )
+    return path
+
+
+def _run_main_ai_data_collection(handle: Any, run: Any, games: int, config: SystemConfig, root: Path) -> Mapping[str, Any]:
+    """Collect "main1+dummy4" games: the chosen model plays among four dummies."""
+
+    from bang_rl.training.final_inference_artifact import load_final_inference_artifact
+    from bang_rl.training.main_ai_collection import (
+        MAIN_ACTION_MODES,
+        collect_main_ai_games,
+        main_ai_dataset_info,
+        policy_from_artifact,
+    )
+
+    model_path = _base_model_file(run)
+    action_mode = str(getattr(run.config, "main_action_mode", "deterministic") or "deterministic")
+    if action_mode not in MAIN_ACTION_MODES:
+        raise TrainingError(f"main_action_mode must be one of {MAIN_ACTION_MODES}")
+    policy = policy_from_artifact(load_final_inference_artifact(model_path))
+    info = main_ai_dataset_info(
+        games=games,
+        base_seed=_training_seed(run),
+        created_by=TRAINING_MODE_DATA_COLLECTION,
+        created_at=run_created_at(run),
+        action_mode=action_mode,
+        model_path=model_path,
+        identifier=str(handle.job_id),
+        extra_conditions={"workers": getattr(getattr(config, "hardware", None), "workers", None)},
+    )
+    output = root / info.name
+    controller = _TrainingStopController(run)
+    summary = collect_main_ai_games(
+        config,
+        policy,
+        games,
+        output,
+        base_seed=_training_seed(run),
+        action_mode=action_mode,
+        progress=lambda done, total: _publish_collection_progress(run, done, total),
+        should_stop=controller.should_stop,
+        info=info,
+        source_model_path=model_path,
+        episode_id_prefix=f"job-{handle.job_id}-main1",
+    )
+    status = summary.get("termination_status", {})
+    return {
+        "output_path": str(output),
+        "environment_steps": int(summary.get("total_steps", 0)),
+        "episodes_completed": int(summary.get("games", 0)),
+        "normal_episodes": int(status.get("normal", 0)),
+        "truncated_episodes": int(status.get("truncated", 0)),
+        "win_rate": summary.get("main_win_rate"),
+        "metrics": {
+            "workflow": TRAINING_MODE_DATA_COLLECTION,
+            "dataset_path": str(output),
+            "players": "main1-dummy4",
+            "viewpoint": summary.get("viewpoint"),
+            "main_action_mode": action_mode,
+            "collection_rows": summary.get("rows"),
+            "collection_main_decisions": summary.get("main_decisions"),
+            "main_win_rate": summary.get("main_win_rate"),
+            "emotion_label_schema": summary.get("emotion_label_schema"),
+            "emotion_label_dimension": summary.get("emotion_label_dimension"),
+            "role_class_count": 4,
+            "raw_role_count": 5,
+            "emotion_dimension": 9,
+            "termination_status": status,
+            "source_model": str(model_path),
+        },
+        "logs": (
+            {
+                "message": (
+                    f"main1+dummy4 dataset collected: {output} "
+                    f"(games {summary.get('games')}, rows {summary.get('rows')}, "
+                    f"main decisions {summary.get('main_decisions')})"
+                )
+            },
+        ),
     }
 
 
@@ -367,7 +547,7 @@ def _cache_diagnostics(loaders: Mapping[str, NPZTensorCacheLoader]) -> dict[str,
 def run_module_training(handle: Any, run: Any) -> Mapping[str, Any]:
     """Split the canonical dataset, build caches, and train both Phase-2 modules."""
 
-    config = _formula_config(run.system_config)
+    config = run.system_config
     canonical_root = _project_path(config.dataset.canonical_path)
     _publish_module_stage(
         run,
@@ -375,7 +555,20 @@ def run_module_training(handle: Any, run: Any) -> Mapping[str, Any]:
         f"Reading canonical dataset from {canonical_root}",
         canonical_path=str(canonical_root),
     )
-    episodes, shards, duplicate_count, dataset_selection = _read_canonical_dataset(canonical_root)
+    # With the default dataset location the user-kept saved/datasets copies
+    # (for example datasets a teammate committed) are used as well.
+    # ``dataset_paths`` (chosen dataset folders, dummy5 and/or main1-dummy4,
+    # local or saved) replaces the scan of everything; the union is
+    # deduplicated by episode id and split by episode.
+    chosen = [_project_path(item) for item in (getattr(run.config, "dataset_paths", None) or ())]
+    extra_roots: list[Path] = []
+    if (chosen or canonical_root == _project_path(DEFAULT_CANONICAL_PATH)) and SAVED_DATASETS_DIR.is_dir():
+        extra_roots.append(SAVED_DATASETS_DIR)
+    episodes, shards, duplicate_count, dataset_selection = _read_canonical_dataset(
+        canonical_root, extra_roots, only_folders=chosen or None
+    )
+    if chosen:
+        dataset_selection["chosen_dataset_folders"] = [str(item) for item in chosen]
     _publish_module_stage(
         run,
         "selected_canonical_dataset",
@@ -391,7 +584,9 @@ def run_module_training(handle: Any, run: Any) -> Mapping[str, Any]:
         ),
         deduplicated_episode_count=int(duplicate_count),
     )
-    cache_root = _project_path(config.dataset.cache_path) / str(handle.job_id)
+    source_refs = _dataset_source_refs(canonical_root, dataset_selection)
+    cache_meta = cache_info(run, handle, sources=source_refs, summary={})
+    cache_root = _project_path(config.dataset.cache_path) / cache_meta.name
     _publish_module_stage(
         run,
         "splitting_dataset",
@@ -403,7 +598,7 @@ def run_module_training(handle: Any, run: Any) -> Mapping[str, Any]:
         manifest_path=cache_root / "split_manifest.json",
     ).split(
         episodes,
-        source_metadata={"source_shard_ids": [str(path.relative_to(canonical_root)) for path in shards]},
+        source_metadata={"source_shard_ids": [_shard_id(path, canonical_root, extra_roots) for path in shards]},
     )
     _publish_module_stage(
         run,
@@ -418,6 +613,13 @@ def run_module_training(handle: Any, run: Any) -> Mapping[str, Any]:
         split_manifest=split.manifest,
         config=config,
     ).write_all(split)
+    # ABOUT.md only: the cache's npz/manifest files are hash verified and stay untouched.
+    cache_meta.summary = {
+        "episodes": len(episodes),
+        "splits": {name: len(artifact.manifest.get("episode_ids", ())) for name, artifact in cache_artifacts.items()},
+        "deduplicated_episodes": int(duplicate_count),
+    }
+    write_info(cache_root, cache_meta)
     _publish_module_stage(
         run,
         "cache_ready",
@@ -532,12 +734,52 @@ def run_module_training(handle: Any, run: Any) -> Mapping[str, Any]:
     model_root = PROJECT_ROOT / "bang_rl" / "models"
     intent_path: Path | None = None
     emotion_path: Path | None = None
+    intent_test = intent_result.test_metrics or {}
+    emotion_test = emotion_result.test_metrics or {}
+    try:
+        intent_meta, emotion_meta = module_infos(
+            run,
+            handle,
+            sources=source_refs,
+            intent_total_epochs=intent_prior + len(intent_result.history),
+            emotion_total_epochs=emotion_prior + len(emotion_result.history),
+            intent_summary={
+                "epochs_trained": len(intent_result.history),
+                "best_epoch": intent_result.best_epoch,
+                "validation_accuracy": _last_history_metric(intent_result.history, "validation_accuracy"),
+                "test_accuracy": intent_test.get("accuracy"),
+            },
+            emotion_summary={
+                "epochs_trained": len(emotion_result.history),
+                "best_epoch": emotion_result.best_epoch,
+                "validation_accuracy": _last_history_metric(emotion_result.history, "validation_emotion_accuracy"),
+                "validation_mse": _last_history_metric(emotion_result.history, "validation_mse"),
+                "test_mse": emotion_test.get("mse"),
+            },
+            extra_conditions={
+                "emotion_schema": FORMULA_LABEL_SCHEMA,
+                "batch_size": sl_batch,
+                "dataset_episodes": len(episodes),
+                "dataset_episodes_by_players": dataset_selection.get("selected_episodes_by_players"),
+            },
+            resumed_from={
+                **({"intent": info_ref(resume_intent, KIND_INTENT)} if resume_intent is not None else {}),
+                **({"emotion": info_ref(resume_emotion, KIND_EMOTION)} if resume_emotion is not None else {}),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - never lose trained models over their description
+        run.logger.event("module_info_failed", error=str(exc))
+        intent_meta = emotion_meta = None
     if intent_result.history:
-        intent_path = model_root / "intent" / f"intent-{handle.job_id}.phase2model"
-        intent_trainer.save_artifact(intent_path, test_metrics=intent_result.test_metrics)
+        intent_path = model_root / "intent" / (
+            f"{intent_meta.name}.phase2model" if intent_meta is not None else f"intent-{handle.job_id}.phase2model"
+        )
+        intent_trainer.save_artifact(intent_path, test_metrics=intent_result.test_metrics, info=intent_meta)
     if emotion_result.history:
-        emotion_path = model_root / "emotion" / f"emotion-{handle.job_id}.phase2model"
-        emotion_trainer.save_artifact(emotion_path, test_metrics=emotion_result.test_metrics)
+        emotion_path = model_root / "emotion" / (
+            f"{emotion_meta.name}.phase2model" if emotion_meta is not None else f"emotion-{handle.job_id}.phase2model"
+        )
+        emotion_trainer.save_artifact(emotion_path, test_metrics=emotion_result.test_metrics, info=emotion_meta)
     return {
         "output_path": str(cache_root),
         "environment_steps": int(sum(len(ep.steps) for ep in episodes)),
@@ -588,12 +830,21 @@ def run_module_training(handle: Any, run: Any) -> Mapping[str, Any]:
 
 
 def run_main_ai_training(handle: Any, run: Any) -> Mapping[str, Any]:
-    """Placeholder for Phase-3 PPO/main-agent optimization."""
+    """Phase-3 PPO training of the main agent against DummyAgents."""
 
-    raise TrainingError(
-        "main AI training workflow is reserved for the PPO/reward orchestration design; "
-        "dataset collection and Phase-2 module training are available"
-    )
+    # Imported here because main_ai_training reuses this module's stop
+    # controller and progress helpers.
+    from bang_rl.training.main_ai_training import train_main_ai
+
+    return train_main_ai(handle, run)
+
+
+def run_inference_refinement_training(handle: Any, run: Any) -> Mapping[str, Any]:
+    """Refine the inference modules under a fixed PPO (see inference_refinement)."""
+
+    from bang_rl.training.inference_refinement import run_inference_refinement
+
+    return run_inference_refinement(handle, run)
 
 
 def run_training_workflow(handle: Any, run: Any) -> Mapping[str, Any]:
@@ -604,6 +855,8 @@ def run_training_workflow(handle: Any, run: Any) -> Mapping[str, Any]:
         return run_module_training(handle, run)
     if mode == TRAINING_MODE_MAIN_AI:
         return run_main_ai_training(handle, run)
+    if mode == TRAINING_MODE_INFERENCE_REFINEMENT:
+        return run_inference_refinement_training(handle, run)
     raise TrainingError(f"unsupported training workflow: {mode!r}")
 
 
@@ -611,6 +864,7 @@ __all__ = [
     "TRAINING_MODE_DATA_COLLECTION",
     "TRAINING_MODE_MODULE_TRAINING",
     "TRAINING_MODE_MAIN_AI",
+    "TRAINING_MODE_INFERENCE_REFINEMENT",
     "TRAINING_MODES",
     "run_training_workflow",
 ]

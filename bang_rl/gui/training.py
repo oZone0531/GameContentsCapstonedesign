@@ -28,10 +28,12 @@ else:
 TRAINING_MODE_DATA_COLLECTION = "data_collection"
 TRAINING_MODE_MODULE_TRAINING = "module_training"
 TRAINING_MODE_MAIN_AI = "main_ai_training"
+TRAINING_MODE_INFERENCE_REFINEMENT = "inference_refinement"
 TRAINING_MODE_OPTIONS = (
     TRAINING_MODE_DATA_COLLECTION,
     TRAINING_MODE_MODULE_TRAINING,
     TRAINING_MODE_MAIN_AI,
+    TRAINING_MODE_INFERENCE_REFINEMENT,
 )
 
 
@@ -67,11 +69,9 @@ def _public_value(value: Any, key: str | None = None) -> Any:
                 result[str(item_key)] = cleaned
         return result
     if isinstance(value, (list, tuple)):
-        return tuple(
-            cleaned
-            for cleaned in (_public_value(item) for item in value)
-            if cleaned is not None
-        )
+        # A None entry stays in place: per-round series use it for "not measured"
+        # and dropping it would shift every later point.
+        return tuple(_public_value(item) for item in value)
     if hasattr(value, "item"):
         try:
             return value.item()
@@ -150,6 +150,14 @@ class TrainingSetup:
     graph_point_interval: int = 1
     resume_intent_artifact_path: str | Path | None = None
     resume_emotion_artifact_path: str | Path | None = None
+    collection_players: str = "dummy5"
+    main_action_mode: str = "deterministic"
+    base_model_path: str | Path | None = None
+    dataset_paths: tuple[str, ...] | None = None
+    refine_rounds: int = 5
+    refine_epochs: int = 5
+    refine_patience: int = 1
+    refine_eval_games: int = 250
 
     def to_request(self) -> TrainingConfig:
         from bang_rl.app import TrainingConfig as ConcreteTrainingConfig
@@ -170,7 +178,68 @@ class TrainingSetup:
             graph_point_interval=self.graph_point_interval,
             resume_intent_artifact_path=self.resume_intent_artifact_path,
             resume_emotion_artifact_path=self.resume_emotion_artifact_path,
+            collection_players=self.collection_players,
+            main_action_mode=self.main_action_mode,
+            base_model_path=self.base_model_path,
+            dataset_paths=self.dataset_paths,
+            refine_rounds=self.refine_rounds,
+            refine_epochs=self.refine_epochs,
+            refine_patience=self.refine_patience,
+            refine_eval_games=self.refine_eval_games,
         )
+
+
+ACTIVE_TRAINING_STATUSES = frozenset({"running", "paused", "pause_failed", "cancelling"})
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingPreset:
+    """What the data library asks the training setup form to select.
+
+    ``dataset_paths`` is the exact set of datasets to check (``None`` leaves the
+    checks alone). ``module_run_id`` names a saved module pair. ``bangmodel_path``
+    is the model to continue from (main AI training), the base model
+    (inference refinement) or the playing model (main1 + dummy4 collection).
+    ``players`` only applies to data collection.
+    """
+
+    mode: str
+    dataset_paths: tuple[str, ...] | None = None
+    module_run_id: str | None = None
+    bangmodel_path: str | None = None
+    players: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PresetResult:
+    """Outcome of applying a :class:`TrainingPreset`; ``message`` is ready to show."""
+
+    ok: bool
+    message: str
+    problems: tuple[str, ...] = ()
+
+
+def controller_status(controller: Any) -> str | None:
+    """Current job status straight from the service, without publishing a snapshot.
+
+    Safe to call while no training screen exists (nothing is rendered). ``None``
+    means there is no job.
+    """
+
+    handle = getattr(controller, "handle", None)
+    service = getattr(controller, "service", None)
+    if handle is None or service is None:
+        return None
+    try:
+        return str(service.progress(handle).status)
+    except Exception:  # noqa: BLE001 - a status probe must never raise into the GUI
+        return None
+
+
+def training_is_active(controller: Any) -> bool:
+    """True while a job is running, paused, or stopping."""
+
+    return controller_status(controller) in ACTIVE_TRAINING_STATUSES
 
 
 class TrainingMonitorController:
@@ -361,8 +430,14 @@ class TrainingMonitorController:
 
 
 __all__ = [
+    "ACTIVE_TRAINING_STATUSES",
+    "PresetResult",
+    "TrainingPreset",
+    "controller_status",
+    "training_is_active",
     "TRAINING_MODE_DATA_COLLECTION",
     "TRAINING_MODE_MODULE_TRAINING",
+    "TRAINING_MODE_INFERENCE_REFINEMENT",
     "TRAINING_MODE_MAIN_AI",
     "TRAINING_MODE_OPTIONS",
     "TrainingMonitorController",

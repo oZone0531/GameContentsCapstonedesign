@@ -957,9 +957,16 @@ class EmotionInferenceSLTrainer:
         })
 
     def save_artifact(
-        self, path: str | os.PathLike[str], *, test_metrics: Mapping[str, Any] | None = None
+        self,
+        path: str | os.PathLike[str],
+        *,
+        test_metrics: Mapping[str, Any] | None = None,
+        info: Any | None = None,
     ) -> Path:
-        """Save only the phase-2 module weights and metadata, never optimizer state."""
+        """Save only the phase-2 module weights and metadata, never optimizer state.
+
+        ``info`` (an ``ArtifactInfo``) is stored as the first payload key.
+        """
 
         destination = Path(path)
         payload = {
@@ -970,7 +977,13 @@ class EmotionInferenceSLTrainer:
             "state_dict": _clone_state_dict(self.model),
             "training_mode": False,
         }
+        if info is not None:
+            payload = {"info": info.to_dict(), **payload}
         _atomic_torch_save(payload, destination)
+        if info is not None:
+            from bang_rl.artifact_info import write_sidecar
+
+            write_sidecar(destination, info)
         self._write_metric({"phase": self.phase, "event": "artifact_saved", "path": str(destination)})
         return destination
 

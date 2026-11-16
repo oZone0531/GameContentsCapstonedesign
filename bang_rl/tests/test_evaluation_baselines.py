@@ -70,12 +70,10 @@ def test_formula_opponents_are_scored_on_their_label(config):
     assert values.shape == (9,) and len(names) == 9 and names[4] == "relation_0"
 
 
-def test_boundaries_reach_only_living_non_acting_formula_dummies():
+def test_boundaries_reach_only_living_non_acting_dummies():
     calls = []
 
     class Formula:
-        uses_emotion_formula = True
-
         def __init__(self, index):
             self.index = index
 
@@ -83,9 +81,9 @@ def test_boundaries_reach_only_living_non_acting_formula_dummies():
             calls.append(self.index)
 
     env = SimpleNamespace(state=SimpleNamespace(alive=[True, True, False, True, True]), observe=lambda i: {"i": i})
-    agents = {0: Formula(0), 1: Formula(1), 2: Formula(2), 3: SimpleNamespace(uses_emotion_formula=False)}
+    agents = {0: Formula(0), 1: Formula(1), 2: Formula(2), 3: SimpleNamespace()}
     observe_boundaries(agents, env, actor=1)
-    assert calls == [0]  # 1 acts, 2 is dead, 3 is not a formula dummy
+    assert calls == [0]  # 1 acts, 2 is dead, 3 is not a dummy
 
 
 def test_baselines_are_reproducible_and_ordered(config):

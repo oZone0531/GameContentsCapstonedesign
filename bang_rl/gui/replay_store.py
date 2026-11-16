@@ -330,8 +330,13 @@ def save_replay(
     filename: str | None = None,
     session: str | None = None,
     mode: str | None = None,
+    info: Any | None = None,
 ) -> Path:
     """Write ``record`` as JSON into ``directory`` and return the file path.
+
+    ``info`` (an :class:`bang_rl.artifact_info.ArtifactInfo`) is written as the
+    first key ``"info"`` and, when no ``filename`` is given, names the file by
+    the artifact naming rule. Without ``info`` the record is written unchanged.
 
     ``directory`` defaults to :data:`bang_rl.paths.REPLAYS_DIR`. The directory
     is created if missing. When ``filename`` is not given the name is generated:
@@ -349,12 +354,19 @@ def save_replay(
     target_dir.mkdir(parents=True, exist_ok=True)
     if filename:
         name = filename
+    elif info is not None:
+        name = f"{info.name}.json"
     else:
         effective_mode = mode if mode is not None else record.get("mode")
         name = build_replay_filename(effective_mode, session=session)
     path = target_dir / name
+    if info is not None:
+        info.name = path.stem
+        document: Mapping[str, Any] = {"info": info.to_dict(), **{k: v for k, v in record.items() if k != "info"}}
+    else:
+        document = record
     with path.open("w", encoding="utf-8") as handle:
-        json.dump(record, handle, ensure_ascii=False, indent=2)
+        json.dump(document, handle, ensure_ascii=False, indent=2)
     return path
 
 

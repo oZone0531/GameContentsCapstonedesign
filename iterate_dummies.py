@@ -182,6 +182,28 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
     (out / "rounds.json").write_text(json.dumps(rounds, ensure_ascii=False, indent=2, default=float), encoding="utf-8")
+    # Describe the whole iteration folder (ABOUT.md); rounds.json stays a plain list.
+    from uuid import uuid4
+
+    from bang_rl.artifact_info import KIND_EVALUATION, new_info, write_info
+
+    write_info(
+        out,
+        new_info(
+            KIND_EVALUATION,
+            id=uuid4().hex,
+            created_by="cli:iterate_dummies",
+            conditions={
+                "rounds": args.rounds,
+                "games_per_round": args.games,
+                "epochs": args.epochs,
+                "start_beliefs": args.start,
+                "seed": args.seed,
+                "label": "iterate",
+            },
+            summary={"final_belief": belief, "start_belief_accuracy": start["belief_accuracy"]},
+        ),
+    )
     print(f"start beliefs {args.start!r}: accuracy {start['belief_accuracy']:.3f}, win {start['win_rate']}")
     return 0
 

@@ -90,7 +90,7 @@ def build_trace_lines(record: Mapping[str, Any], *, only_changed: bool = False,
     for seat in range(5):
         state = _seat_state(internals[0], seat)
         module = (state or {}).get("emotion_module") or {}
-        kinds.append(module.get("kind", "rule_table") if state else "-")
+        kinds.append(module.get("kind", "emotion_formula") if state else "-")
     out("Emotion module per seat: " + ", ".join(f"seat{i}={k}" for i, k in enumerate(kinds)))
     out("")
 
