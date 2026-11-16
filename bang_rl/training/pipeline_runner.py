@@ -102,6 +102,10 @@ def _read_canonical_dataset(
     root: Path,
     extra_roots: Sequence[Path] = (),
     only_folders: Sequence[Path] | None = None,
+    *,
+    limited_folders: Sequence[Path] = (),
+    limit_episodes: int | None = None,
+    limit_seed: int = 0,
 ):
     """Read only nine-emotion formula episodes from a canonical root.
 
@@ -119,6 +123,11 @@ def _read_canonical_dataset(
     ``extra_roots`` (the user-kept ``saved/datasets`` folder) are scanned too.
     Shards are found by file pattern, so renamed dataset folders work, and an
     episode that exists in two places is used once (deduplicated by episode id).
+
+    ``limit_episodes`` caps how many episodes are taken from the shards inside
+    ``limited_folders`` (together). Those shards are read in an order shuffled
+    by ``limit_seed`` and reading stops at the cap, so a huge dataset is never
+    loaded whole into memory; other folders are read completely.
     """
 
     def relative(path: Path) -> str:
@@ -145,8 +154,31 @@ def _read_canonical_dataset(
     duplicate_count = 0
     excluded_count = 0
     excluded_contracts: dict[str, int] = {}
+    limited_roots = [Path(folder).resolve() for folder in limited_folders]
+
+    def is_limited(shard: Path) -> bool:
+        resolved = shard.resolve()
+        return any(folder in resolved.parents for folder in limited_roots)
+
+    limited_taken = 0
+    skipped_limited = 0
+    if limit_episodes is not None and limited_roots:
+        import random
+
+        free = [shard for shard in shards if not is_limited(shard)]
+        capped = [shard for shard in shards if is_limited(shard)]
+        random.Random(int(limit_seed)).shuffle(capped)
+        shards = (*free, *capped)
     for shard in shards:
+        limited_shard = limit_episodes is not None and is_limited(shard)
+        if limited_shard and limited_taken >= limit_episodes:
+            skipped_limited += 1
+            continue
         for episode in ParquetCanonicalShardWriter.read_shard(shard):
+            if limited_shard:
+                if limited_taken >= limit_episodes:
+                    break
+                limited_taken += 1
             contract = _episode_emotion_contract(episode)
             if contract != f"{FORMULA_LABEL_SCHEMA}/9":
                 excluded_count += 1
@@ -188,6 +220,10 @@ def _read_canonical_dataset(
         "selected_source_shard_ids": [relative(path) for path in sorted(selected_shards)],
         "scanned_source_shard_count": len(shards),
     }
+    if limit_episodes is not None and limited_roots:
+        selection["limited_episode_cap"] = int(limit_episodes)
+        selection["limited_episodes_taken"] = limited_taken
+        selection["limited_shards_skipped"] = skipped_limited
     return tuple(episodes_by_id.values()), tuple(sorted(selected_shards)), duplicate_count, selection
 
 
@@ -544,6 +580,30 @@ def _cache_diagnostics(loaders: Mapping[str, NPZTensorCacheLoader]) -> dict[str,
     }
 
 
+def _module_max_games(run: Any) -> int | None:
+    """Configured cap on games read for module training (None or 0 = no limit)."""
+
+    value = getattr(run.config, "max_games", None)
+    if value is None or int(value) <= 0:
+        return None
+    return int(value)
+
+
+def _module_subset_seed(run: Any, handle: Any) -> int:
+    """Seed for the random game subset: explicit ``subset_seed`` or derived from the job id.
+
+    Different job ids give different subsets, so repeated continue-training
+    runs cover the whole dataset over time.
+    """
+
+    explicit = getattr(run.config, "subset_seed", None)
+    if explicit is not None:
+        return int(explicit)
+    import hashlib
+
+    return int(hashlib.sha256(str(handle.job_id).encode("utf-8")).hexdigest()[:8], 16)
+
+
 def run_module_training(handle: Any, run: Any) -> Mapping[str, Any]:
     """Split the canonical dataset, build caches, and train both Phase-2 modules."""
 
@@ -564,9 +624,22 @@ def run_module_training(handle: Any, run: Any) -> Mapping[str, Any]:
     extra_roots: list[Path] = []
     if (chosen or canonical_root == _project_path(DEFAULT_CANONICAL_PATH)) and SAVED_DATASETS_DIR.is_dir():
         extra_roots.append(SAVED_DATASETS_DIR)
+    max_games = _module_max_games(run)
+    subset_seed = _module_subset_seed(run, handle) if max_games is not None else None
+    limit_kwargs: dict[str, Any] = {}
+    if max_games is not None:
+        limit_kwargs = {
+            "limited_folders": tuple(chosen) if chosen else (canonical_root, *extra_roots),
+            "limit_episodes": max_games,
+            "limit_seed": subset_seed,
+        }
     episodes, shards, duplicate_count, dataset_selection = _read_canonical_dataset(
-        canonical_root, extra_roots, only_folders=chosen or None
+        canonical_root, extra_roots, only_folders=chosen or None, **limit_kwargs
     )
+    games_used = int(dataset_selection.get("limited_episodes_taken", len(episodes))) if max_games is not None else None
+    dataset_selection["max_games"] = max_games
+    dataset_selection["subset_seed"] = subset_seed
+    dataset_selection["games_used"] = games_used
     if chosen:
         dataset_selection["chosen_dataset_folders"] = [str(item) for item in chosen]
     _publish_module_stage(
@@ -760,6 +833,9 @@ def run_module_training(handle: Any, run: Any) -> Mapping[str, Any]:
                 "emotion_schema": FORMULA_LABEL_SCHEMA,
                 "batch_size": sl_batch,
                 "dataset_episodes": len(episodes),
+                "max_games": max_games,
+                "subset_seed": subset_seed,
+                "games_used": games_used,
                 "dataset_episodes_by_players": dataset_selection.get("selected_episodes_by_players"),
             },
             resumed_from={
@@ -792,6 +868,9 @@ def run_module_training(handle: Any, run: Any) -> Mapping[str, Any]:
             "cache_path": str(cache_root),
             "deduplicated_episode_count": duplicate_count,
             "dataset_selection": dataset_selection,
+            "max_games": max_games,
+            "subset_seed": subset_seed,
+            "games_used": games_used,
             "intent_artifact_path": None if intent_path is None else str(intent_path),
             "emotion_artifact_path": None if emotion_path is None else str(emotion_path),
             "train_by_time": train_by_time,

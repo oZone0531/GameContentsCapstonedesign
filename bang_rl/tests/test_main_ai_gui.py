@@ -1,4 +1,4 @@
-"""Main-AI training GUI: setup panel, module compatibility, monitor and saved-model views."""
+﻿"""Main-AI training GUI: setup panel, module compatibility, monitor and saved-model views."""
 
 from __future__ import annotations
 
@@ -399,18 +399,37 @@ def test_each_mode_shows_only_the_inputs_it_reads(qapp) -> None:
     panel = TrainingSetupPanel(config=SystemConfig())
     expected = {
         TRAINING_MODE_DATA_COLLECTION: {"episodes", "players"},
-        TRAINING_MODE_MODULE_TRAINING: {"epochs", "max_minutes", "graph_interval", "resume_row", "datasets_row"},
+        TRAINING_MODE_MODULE_TRAINING: {"epochs", "max_minutes", "graph_interval", "resume_row", "datasets_row", "max_games"},
         TRAINING_MODE_MAIN_AI: {"games", "max_minutes", "graph_interval", "resume_row", "resume_artifact", "artifact"},
     }
     fields = (
         "episodes", "players", "epochs", "games", "max_minutes", "graph_interval",
-        "resume_row", "resume_artifact", "artifact", "datasets_row", "target", "output",
+        "resume_row", "resume_artifact", "artifact", "datasets_row", "target", "output", "max_games",
     )
     for mode, visible in expected.items():
         panel.mode.setCurrentIndex(panel.mode.findData(mode))
         shown = {name for name in fields if not getattr(panel, name).isHidden()}
         assert shown == visible, mode
         assert panel.clip.isHidden() is (mode != TRAINING_MODE_MAIN_AI)
+
+
+@pytest.mark.skipif(not QT_AVAILABLE, reason="PyQt6 is not installed")
+def test_max_games_is_module_training_only_and_reaches_the_request(qapp) -> None:
+    from bang_rl.gui.screens.training_monitor import TrainingSetupPanel
+    from bang_rl.gui.training import TRAINING_MODE_DATA_COLLECTION
+
+    panel = TrainingSetupPanel(config=SystemConfig())
+    panel.mode.setCurrentIndex(panel.mode.findData(TRAINING_MODE_DATA_COLLECTION))
+    assert panel.max_games.isHidden()
+    panel.mode.setCurrentIndex(panel.mode.findData(TRAINING_MODE_MODULE_TRAINING))
+    assert not panel.max_games.isHidden()
+    assert panel.max_games.value() == 10_000
+    panel.max_games.setValue(2000)
+    setup = panel.setup()
+    assert setup.max_games == 2000
+    assert setup.to_request().max_games == 2000
+    panel.max_games.setValue(0)
+    assert panel.setup().max_games is None
 
 
 # --- monitor ------------------------------------------------------------------

@@ -616,3 +616,83 @@ def test_module_training_trains_on_selected_mixed_datasets(
     assert intent_info is not None
     assert intent_info.conditions["dataset_episodes_by_players"] == {"dummy5": 12, "main1-dummy4": 10}
     assert len([ref for ref in intent_info.sources if ref["kind"] == KIND_DATASET]) == 2
+
+
+def test_dummy_episode_cap_scales_with_main_games() -> None:
+    from bang_rl.training.inference_refinement import REFINE_MIN_DUMMY_EPISODES, refine_dummy_episode_cap
+
+    assert refine_dummy_episode_cap(1000) == 4000
+    assert refine_dummy_episode_cap(2000, 2.0) == 4000
+    assert refine_dummy_episode_cap(10) == REFINE_MIN_DUMMY_EPISODES
+
+
+def test_limited_folders_are_read_only_up_to_the_cap(tmp_path) -> None:
+    from bang_rl.config import SystemConfig
+    from bang_rl.data.game_collection import collect_games
+    from bang_rl.training.pipeline_runner import _read_canonical_dataset
+
+    big, small = tmp_path / "big", tmp_path / "small"
+    collect_games(SystemConfig(), 45, big, base_seed=0, episode_id_prefix="big")
+    collect_games(SystemConfig(), 5, small, base_seed=100, episode_id_prefix="small")
+    episodes, _shards, _dup, selection = _read_canonical_dataset(
+        tmp_path, only_folders=[big, small], limited_folders=[big], limit_episodes=12, limit_seed=3
+    )
+    from_big = [item for item in episodes if str(item.episode_id).startswith("big")]
+    assert len(from_big) == 12
+    assert len(episodes) == 12 + 5  # the uncapped folder is read completely
+    assert selection["limited_episodes_taken"] == 12
+    again, *_ = _read_canonical_dataset(
+        tmp_path, only_folders=[big, small], limited_folders=[big], limit_episodes=12, limit_seed=4
+    )
+    assert {item.episode_id for item in again} != {item.episode_id for item in episodes}
+
+
+def test_module_training_max_games_caps_episodes_and_records_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dummy_dataset: Path, main_dataset: tuple[Path, dict]
+) -> None:
+    monkeypatch.setattr(pipeline_runner, "PROJECT_ROOT", tmp_path)
+    config = SystemConfig.model_validate(
+        {
+            "dataset": {"canonical_path": str(tmp_path / "empty-canonical"), "cache_path": str(tmp_path / "cache")},
+            "sl_training": {"epochs": 1, "batch_size": 32},
+        }
+    )
+    service = TrainingService()
+    report = service.wait(
+        service.start(
+            TrainingConfig(
+                config=config,
+                mode="module_training",
+                episodes=1,
+                dataset_paths=[dummy_dataset, main_dataset[0]],
+                max_games=8,
+                subset_seed=5,
+                report_path=tmp_path / "modules.json",
+                output_path=tmp_path / "out",
+                resume_artifact_path=None,
+            )
+        ),
+        timeout=600,
+    )
+    assert report.status == "finished", report.progress.error
+    metrics = report.progress.metrics
+    assert metrics["max_games"] == 8 and metrics["subset_seed"] == 5 and metrics["games_used"] == 8
+    assert sum(metrics["dataset_selection"]["selected_episodes_by_players"].values()) <= 8
+    info = read_info(Path(metrics["intent_artifact_path"]))
+    assert info is not None
+    assert info.conditions["max_games"] == 8 and info.conditions["games_used"] == 8
+
+
+def test_module_subset_seed_differs_per_job_and_honors_explicit_seed() -> None:
+    from types import SimpleNamespace
+
+    def seed(job_id: str, subset_seed=None) -> int:
+        run = SimpleNamespace(config=SimpleNamespace(subset_seed=subset_seed))
+        return pipeline_runner._module_subset_seed(run, SimpleNamespace(job_id=job_id))
+
+    assert seed("job-a") != seed("job-b")
+    assert seed("job-a") == seed("job-a")
+    assert seed("job-a", 42) == 42
+    for value, expected in ((None, None), (0, None), (-1, None), (7, 7)):
+        run = SimpleNamespace(config=SimpleNamespace(max_games=value))
+        assert pipeline_runner._module_max_games(run) == expected

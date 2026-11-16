@@ -158,6 +158,8 @@ class TrainingSetup:
     refine_epochs: int = 5
     refine_patience: int = 1
     refine_eval_games: int = 250
+    max_games: int | None = 10000
+    subset_seed: int | None = None
 
     def to_request(self) -> TrainingConfig:
         from bang_rl.app import TrainingConfig as ConcreteTrainingConfig
@@ -186,6 +188,8 @@ class TrainingSetup:
             refine_epochs=self.refine_epochs,
             refine_patience=self.refine_patience,
             refine_eval_games=self.refine_eval_games,
+            max_games=self.max_games,
+            subset_seed=self.subset_seed,
         )
 
 

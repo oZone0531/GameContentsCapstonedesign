@@ -443,6 +443,12 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Games of the fixed evaluation deals used to compare modules under the fixed PPO. More games make the comparison steadier. The same deals are used every round.",
         "ko": "고정된 PPO로 모듈을 비교할 때 쓰는 평가 판(고정된 deal)의 게임 수입니다. 많을수록 비교가 안정적입니다. 매 라운드 같은 deal을 씁니다.",
     },
+    "training.max_games": {"en": "Max games to use", "ko": "사용할 최대 게임 수"},
+    "training.max_games_unlimited": {"en": "No limit", "ko": "제한 없음"},
+    "tooltip.training_max_games": {
+        "en": "Reads only a random subset of this many games from the selected datasets, so a huge dataset is never loaded whole. The subset is different on every run, so repeated continue-training runs cover more of the data. Roughly 0.3 GB of RAM per 1000 games. 0 loads everything and may run out of memory with large datasets.",
+        "ko": "선택한 데이터셋에서 이 수만큼의 게임만 무작위로 읽어서, 매우 큰 데이터셋도 통째로 불러오지 않습니다. 실행할 때마다 다른 부분 집합을 고르므로 이어서 학습을 반복하면 더 많은 데이터를 다룹니다. 1000게임당 RAM 약 0.3GB가 필요합니다. 0은 전부 불러오며, 큰 데이터셋에서는 메모리가 부족할 수 있습니다.",
+    },
     "tooltip.training_max_minutes_refine": {
         "en": "Optional time limit in minutes for the whole refinement. Blank means no limit. The best model found so far is saved when it ends. Pausing does not use up the time.",
         "ko": "개선 전체의 선택적 시간 제한(분)입니다. 비우면 제한이 없습니다. 끝나면 그때까지의 최고 모델이 저장됩니다. 일시정지한 시간은 포함되지 않습니다.",
