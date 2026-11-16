@@ -90,6 +90,21 @@ def main(argv: list[str] | None = None) -> int:
         print(_row(result))
     if args.out:
         Path(args.out).write_text(json.dumps(results, ensure_ascii=False, indent=2, default=float), encoding="utf-8")
+        # The file is a JSON list, so its metadata goes to <file>.about.md.
+        from uuid import uuid4
+
+        from bang_rl.artifact_info import KIND_EVALUATION, new_info, write_info
+
+        write_info(
+            args.out,
+            new_info(
+                KIND_EVALUATION,
+                id=uuid4().hex,
+                created_by="cli:evaluate_baselines",
+                conditions={"games": getattr(args, "games", None), "baselines": getattr(args, "baselines", None)},
+                summary={"agents": [str(item.get("label", "")) for item in results if isinstance(item, dict)]},
+            ),
+        )
         print(f"\nsaved {args.out}")
     return 0
 

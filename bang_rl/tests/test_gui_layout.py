@@ -33,7 +33,6 @@ TOOLTIP_KEYS = (
     "tooltip.buffer",
     "tooltip.gpu",
     "tooltip.reward_json",
-    "tooltip.emotion_initial_values",
     "tooltip.dummy_ai",
     # AI-training settings menu (TrainingSetupPanel) labels + fields
     "tooltip.training_mode",
@@ -45,16 +44,8 @@ TOOLTIP_KEYS = (
     "tooltip.training_artifact_path",
     "tooltip.training_resume_artifact_path",
     # Dummy-AI emotion settings menu (DummyAISettingsDialog) labels + fields
-    "tooltip.emotion_schema_version",
-    "tooltip.emotion_count",
-    "tooltip.emotion_name",
-    "tooltip.emotion_change_rate",
-    "tooltip.emotion_decay_rate",
-    "tooltip.emotion_event_updates",
-    "tooltip.emotion_action_updates",
-    "tooltip.emotion_reward_updates",
-    "tooltip.emotion_terminal_updates",
-    "tooltip.emotion_effects",
+    "tooltip.emotion_description",
+    "tooltip.emotion_formula",
 )
 
 

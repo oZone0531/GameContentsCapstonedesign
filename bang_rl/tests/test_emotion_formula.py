@@ -13,10 +13,10 @@ from bang_rl.agents import DummyAgent
 from bang_rl.agents.dummy_agent.emotion_formula import (
     EMOTION_NAMES,
     EmotionParams,
+    LABEL_NAMES,
     EmotionState,
     FormulaEmotionModule,
 )
-from bang_rl.agents.dummy_agent.emotion_module import EmotionModule
 from bang_rl.app import GameService, SessionConfig
 from bang_rl.config import EmotionConfig, SystemConfig
 from bang_rl.gui.widgets.spectator_overlay import emotion_bars_for_seat
@@ -78,11 +78,24 @@ def test_spec_example_one_hit_by_seat_three():
 
 
 # -- config selection ---------------------------------------------------------
-def test_default_config_keeps_rule_table_module():
-    agent = DummyAgent("player_1", seed=1, player_idx=1, emotion_config=EmotionConfig())
-    assert isinstance(agent.emotion_module, EmotionModule)
-    assert not agent.uses_emotion_formula
-    agent.observe_public_boundary({"environment_step": [0]})  # no-op, must not raise
+def test_default_config_is_the_nine_emotion_formula():
+    tuned = json.loads(EXAMPLE.read_text(encoding="utf-8"))["formula"]
+    config = EmotionConfig()
+    assert config.schema_version == "formula-1.0+label9"
+    assert config.emotion_count == 9
+    assert [item.name for item in config.emotions] == list(LABEL_NAMES)
+    assert config.formula.params == tuned["params"]
+    for agent in (
+        DummyAgent("player_1", seed=1, player_idx=1, emotion_config=config),
+        DummyAgent("player_1", seed=1, player_idx=1),
+    ):
+        assert isinstance(agent.emotion_module, FormulaEmotionModule)
+        assert agent.emotion_module.base_params == tuned["params"]
+
+
+def test_dummy_agent_rejects_a_non_formula_emotion_module():
+    with pytest.raises(TypeError):
+        DummyAgent("player_1", seed=1, player_idx=1, emotion_module=object())
 
 
 def test_formula_block_selects_formula_module():
@@ -112,7 +125,7 @@ def test_personality_by_role_is_applied_from_own_role():
 # -- integration ----------------------------------------------------------------
 def test_default_game_service_uses_formula_emotion():
     service, handle, session = _session(_config(None), env_seed=0)
-    assert all(agent.uses_emotion_formula for agent in session.agents)
+    assert all(isinstance(agent.emotion_module, FormulaEmotionModule) for agent in session.agents)
     assert service.get_state(handle).environment_step == 0
     service.close_session(handle)
 
@@ -158,31 +171,33 @@ def test_gui_bars_and_label_fields_are_exported():
     np.testing.assert_allclose(rel01[active], (rel[active] + 1.0) / 2.0)
 
 
-# --- ensure_formula_emotion uses the tuned JSON formula -------------------
+# --- the default EmotionConfig carries the tuned JSON formula ---------------
 
 
-def test_ensure_formula_emotion_uses_tuned_json_when_no_formula_configured() -> None:
-    from bang_rl.config import ensure_formula_emotion
-
+def test_emotion_config_always_has_a_formula_and_nine_emotions() -> None:
     tuned = json.loads(EXAMPLE.read_text(encoding="utf-8"))["formula"]
-    for value in (None, {}, EmotionConfig()):
-        resolved = ensure_formula_emotion(value)
-        assert resolved.formula is not None
+    for value in ({}, {"formula": None}, {"emotions": []}):
+        resolved = EmotionConfig.model_validate(value)
         assert resolved.formula.params == tuned["params"]
         assert resolved.schema_version == "formula-1.0+label9"
         assert len(resolved.emotions) == 9
     # The tuned values, not the code defaults, reach the formula parameters.
-    params = EmotionParams.from_mapping(ensure_formula_emotion(None).formula.params)
+    params = EmotionParams.from_mapping(EmotionConfig().formula.params)
     assert params.theta == pytest.approx(0.8) != EmotionParams().theta
     assert params.kappa_F == pytest.approx(3.0) != EmotionParams().kappa_F
 
 
-def test_ensure_formula_emotion_keeps_an_explicit_formula() -> None:
-    from bang_rl.config import ensure_formula_emotion
-
+def test_emotion_config_keeps_an_explicit_formula() -> None:
     explicit = EmotionConfig.model_validate(_example(theta=0.3))
-    resolved = ensure_formula_emotion(explicit)
-    assert resolved.formula.params["theta"] == pytest.approx(0.3)
+    assert explicit.formula.params["theta"] == pytest.approx(0.3)
+
+
+def test_removed_emotion_rule_fields_are_rejected() -> None:
+    for field in ("relation_updates", "relation_baseline", "hp_low_threshold", "hp_lethal_threshold"):
+        with pytest.raises(ValidationError):
+            EmotionConfig.model_validate({field: 0})
+    with pytest.raises(ValidationError):
+        EmotionConfig.model_validate({"emotions": [{"name": "calm", "initial_value": 0.5}]})
 
 
 def test_default_formula_falls_back_to_code_defaults_without_a_file(tmp_path) -> None:

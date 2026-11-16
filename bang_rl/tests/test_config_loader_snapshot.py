@@ -97,7 +97,7 @@ def test_snapshot_records_contracts_compatibility_and_persists_json(tmp_path) ->
     assert snapshot.optimizers["ppo"]["learning_rate"] == 0.0003
     assert snapshot.preset_snapshot["version"] == "1.0"
     assert snapshot.reward_snapshot["version"] == "1.0"
-    assert snapshot.emotion_schema_snapshot["schema_version"] == "1.0"
+    assert snapshot.emotion_schema_snapshot["schema_version"] == "formula-1.0+label9"
     assert snapshot.artifact_compatibility["action_space_version"] == "1.0"
     assert snapshot.versions["dataset_split_seed"] == 13
 

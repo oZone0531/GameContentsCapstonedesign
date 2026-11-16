@@ -494,8 +494,13 @@ def save_final_inference_artifact(
     training_metadata: Mapping[str, Any] | None = None,
     metadata: Mapping[str, Any] | None = None,
     logger: Any | None = None,
+    info: Any | None = None,
 ) -> Path:
     """Atomically save a final inference-only ``.bangmodel`` bundle.
+
+    ``info`` is an optional :class:`bang_rl.artifact_info.ArtifactInfo`. It is
+    stored as the first key of ``metadata.json`` (covered by the manifest
+    ``metadata_sha256``) and mirrored in a ``<file>.about.md`` sidecar.
 
     Phase-2 modules may be supplied as a loaded artifact or by path.  Direct
     ``intent``/``emotion`` arguments are supported for integrations that have
@@ -524,7 +529,12 @@ def save_final_inference_artifact(
         weights = save_safetensors(_state_dict(intent, emotion, ppo_module))
         bundle_metadata = _build_metadata(intent, emotion, ppo_module, role_fusion=role_fusion, preprocessor=preprocessor, phase2_metadata=phase2_metadata, phase2_path=source, job_snapshot=job_snapshot, config_snapshot=config_snapshot, trainer=trainer, training_metadata=training_metadata, metadata=metadata)
         _validate_metadata(bundle_metadata, destination)
-        metadata_bytes = _canonical_json(bundle_metadata)
+        if info is not None:
+            from bang_rl.artifact_info import metadata_bytes_with_info
+
+            metadata_bytes = metadata_bytes_with_info(json.loads(_canonical_json(bundle_metadata)), info)
+        else:
+            metadata_bytes = _canonical_json(bundle_metadata)
         manifest = {
             "artifact_type": FINAL_ARTIFACT_TYPE,
             "inference_model_artifact_format_version": FINAL_ARTIFACT_FORMAT_VERSION,
@@ -537,6 +547,10 @@ def save_final_inference_artifact(
             "files": [_MANIFEST_FILE, _METADATA_FILE, _WEIGHTS_FILE],
         }
         _atomic_write(destination, {_MANIFEST_FILE: _canonical_json(manifest), _METADATA_FILE: metadata_bytes, _WEIGHTS_FILE: weights})
+        if info is not None:
+            from bang_rl.artifact_info import write_sidecar
+
+            write_sidecar(destination, info)
         _log(logger, "inference_artifact_saved", path=str(destination), artifact_type=FINAL_ARTIFACT_TYPE)
         return destination
     except Exception as exc:

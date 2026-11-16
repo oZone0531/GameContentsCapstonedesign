@@ -112,112 +112,60 @@ def test_settings_snapshot_exposes_dummy_emotion_state() -> None:
     )
 
 
-def test_settings_editor_applies_per_emotion_initial_values() -> None:
+def test_settings_editor_defaults_to_the_nine_formula_emotions() -> None:
+    editor = SettingsEditor(SystemConfig())
+    emotion = editor.snapshot.config.preset.emotion
+    assert [item.name for item in emotion.emotions] == [
+        "calm", "confidence", "aggression", "anxiety",
+        "relation_0", "relation_1", "relation_2", "relation_3", "relation_4",
+    ]
+    assert emotion.formula.params["theta"] == pytest.approx(0.8)
+
+
+def test_settings_editor_applies_emotion_descriptions_and_formula_params() -> None:
     editor = SettingsEditor(SystemConfig())
     emotion = dict(editor.snapshot.dummy_emotion)
     definitions = [dict(item) for item in emotion["emotions"]]
-    definitions[0]["initial_value"] = 0.42
+    definitions[1]["description"] = "자신감 설명"
     emotion["emotions"] = definitions
+    emotion["formula"] = {"params": {"theta": 0.3}, "personality_by_role": {"outlaw": {"b_A": 0.3}}}
     state = editor.apply_dummy_emotion(emotion)
-    assert state.config.preset.emotion.emotions[0].initial_value == pytest.approx(0.42)
+    applied = state.config.preset.emotion
+    assert applied.emotions[1].description == "자신감 설명"
+    assert applied.formula.params == {"theta": 0.3}
+    assert applied.formula.personality_by_role == {"outlaw": {"b_A": 0.3}}
 
 
-def test_settings_editor_applies_named_dummy_emotions() -> None:
+def test_settings_editor_rejects_unknown_formula_names() -> None:
     editor = SettingsEditor(SystemConfig())
-    emotion = {
-        "schema_version": "2.0",
-        "emotion_count": 3,
-        "emotions": [
-            {"name": "fear", "initial_value": 0.1, "change_rate": 0.2},
-            {"name": "anger", "initial_value": 0.5, "action_updates": {"bang": 0.3}},
-            {"name": "calm", "initial_value": 0.9, "effects": {"aggression": -0.2}},
-        ],
-    }
-    state = editor.apply_dummy_emotion(emotion)
-    names = [item.name for item in state.config.preset.emotion.emotions]
-    assert names == ["fear", "anger", "calm"]
-    assert state.config.preset.emotion.emotion_count == 3
-    assert state.config.preset.emotion.schema_version == "2.0"
-
-
-def test_settings_editor_preserves_reward_and_terminal_updates() -> None:
-    # A preset that supplies reward_updates/terminal_updates must survive a
-    # dialog round-trip; editing one emotion must never silently wipe them.
-    editor = SettingsEditor(SystemConfig())
-    emotion = {
-        "schema_version": "2.0",
-        "emotion_count": 1,
-        "emotions": [
-            {
-                "name": "fear",
-                "initial_value": 0.3,
-                "change_rate": 0.1,
-                "decay_rate": 0.05,
-                "event_updates": {"hit": 0.2},
-                "action_updates": {"bang": 0.1},
-                "reward_updates": {"win": -0.4},
-                "terminal_updates": {"eliminated": 0.6},
-                "effects": {"aggression": 0.2},
-            }
-        ],
-    }
-    staged = editor.apply_dummy_emotion(emotion)
-
-    # Simulate the dialog reading the staged config back out, serializing each
-    # row, and re-applying (the destructive path the review flagged).
-    reloaded = dict(staged.dummy_emotion)
-    definitions = [dict(item) for item in reloaded["emotions"]]
-    round_tripped = editor.apply_dummy_emotion({**reloaded, "emotions": definitions})
-
-    definition = round_tripped.config.preset.emotion.emotions[0]
-    assert definition.reward_updates == {"win": -0.4}
-    assert definition.terminal_updates == {"eliminated": 0.6}
-    assert definition.event_updates == {"hit": 0.2}
-    assert definition.action_updates == {"bang": 0.1}
-    assert definition.effects == {"aggression": 0.2}
+    before = editor.snapshot.config
+    with pytest.raises(SettingsValidationError):
+        editor.apply_dummy_emotion({"formula": {"params": {"beta_bangg": 0.1}}})
+    with pytest.raises(SettingsValidationError):
+        editor.apply_dummy_emotion({"formula": {"personality_by_role": {"cowboy": {"b_A": 0.3}}}})
+    assert editor.snapshot.config == before
 
 
 def test_dialog_apply_preserves_non_zero_initial_baseline() -> None:
-    # The dummy-AI dialog's _collect_emotion now carries initial_baseline, so a
-    # non-zero baseline must survive an Apply (previously it was silently reset
-    # to EmotionConfig's 0.0 default because the collected dict omitted it).
+    # The dummy-AI dialog's _collect_emotion starts from the staged config, so a
+    # non-zero baseline must survive an Apply instead of resetting to 0.0.
     editor = SettingsEditor(SystemConfig())
-    # Stage a config that carries a non-zero baseline (as if loaded from a file).
-    editor.apply_dummy_emotion(
-        {
-            "schema_version": "1.0",
-            "emotion_count": 1,
-            "initial_baseline": 0.6,
-            "emotions": [{"name": "fear", "initial_value": 0.2}],
-        }
-    )
+    editor.apply_dummy_emotion({"initial_baseline": 0.6})
     assert editor.snapshot.config.preset.emotion.initial_baseline == pytest.approx(0.6)
 
-    # Reproduce exactly what DummyAISettingsDialog._collect_emotion builds: the
-    # header fields + per-row definitions + the baseline read from its spin.
-    snapshot = editor.snapshot
-    emotion = dict(snapshot.dummy_emotion)
-    collected = {
-        "schema_version": str(emotion.get("schema_version", "1.0")),
-        "emotion_count": int(emotion.get("emotion_count", 1)),
-        "initial_baseline": float(emotion.get("initial_baseline", 0.0)),
-        "emotions": [dict(item) for item in emotion["emotions"]],
-    }
-    applied = editor.apply_dummy_emotion(collected)
-    # The baseline is preserved rather than reset to 0.0.
+    emotion = dict(editor.snapshot.dummy_emotion)
+    emotion["emotions"] = [
+        {"name": item["name"], "description": "edited"} for item in emotion["emotions"]
+    ]
+    emotion["formula"] = dict(emotion["formula"])
+    applied = editor.apply_dummy_emotion(emotion)
     assert applied.config.preset.emotion.initial_baseline == pytest.approx(0.6)
+    assert applied.config.preset.emotion.emotions[0].description == "edited"
 
 
 def test_non_zero_initial_baseline_survives_save_load_round_trip(tmp_path: Path) -> None:
     source = SettingsEditor(SystemConfig())
-    source.apply_dummy_emotion(
-        {
-            "schema_version": "1.0",
-            "emotion_count": 1,
-            "initial_baseline": 0.35,
-            "emotions": [{"name": "fear", "initial_value": 0.2}],
-        }
-    )
+    source.apply_dummy_emotion({"initial_baseline": 0.35})
     path = tmp_path / "emotions.json"
     source.export_dummy_emotion(path)
 
@@ -228,36 +176,27 @@ def test_non_zero_initial_baseline_survives_save_load_round_trip(tmp_path: Path)
 
 def test_settings_editor_rejects_duplicate_emotion_names() -> None:
     editor = SettingsEditor(SystemConfig())
-    emotion = {
-        "emotions": [
-            {"name": "fear", "initial_value": 0.1},
-            {"name": "fear", "initial_value": 0.2},
-        ],
-    }
+    emotion = {"emotions": [{"name": "calm"}, {"name": "calm"}]}
     with pytest.raises(SettingsValidationError, match="unique"):
         editor.apply_dummy_emotion(emotion)
 
 
-def test_settings_editor_rejects_out_of_range_emotion_initial_value() -> None:
+def test_settings_editor_rejects_removed_per_emotion_rule_fields() -> None:
     editor = SettingsEditor(SystemConfig())
-    emotion = {"emotions": [{"name": "fear", "initial_value": 1.5}]}
-    with pytest.raises(SettingsValidationError, match=r"initial_value|\[0, 1\]"):
+    emotion = {"emotions": [{"name": "calm", "initial_value": 0.5}]}
+    with pytest.raises(SettingsValidationError, match="initial_value"):
         editor.apply_dummy_emotion(emotion)
 
 
 @pytest.mark.parametrize("suffix", [".json", ".yaml", ".yml"])
 def test_export_import_dummy_emotion_round_trips(tmp_path: Path, suffix: str) -> None:
     source = SettingsEditor(SystemConfig())
-    source.apply_dummy_emotion(
-        {
-            "schema_version": "2.0",
-            "emotion_count": 2,
-            "emotions": [
-                {"name": "fear", "initial_value": 0.25, "change_rate": 0.1},
-                {"name": "anger", "initial_value": 0.75, "action_updates": {"bang": 0.3}},
-            ],
-        }
-    )
+    emotion = dict(source.snapshot.dummy_emotion)
+    emotion["emotions"] = [
+        {**item, "description": f"{item['name']} 설명"} for item in emotion["emotions"]
+    ]
+    emotion["formula"] = {"params": {"theta": 0.25, "kappa_F": 2.0}, "personality_by_role": {}}
+    source.apply_dummy_emotion(emotion)
     original = source.snapshot.dummy_emotion
 
     path = tmp_path / f"emotions{suffix}"
@@ -272,37 +211,33 @@ def test_export_import_dummy_emotion_round_trips(tmp_path: Path, suffix: str) ->
     staged = target.import_dummy_emotion(path)
 
     assert staged.dummy_emotion == original
-    names = [item.name for item in staged.config.preset.emotion.emotions]
-    assert names == ["fear", "anger"]
-    assert staged.config.preset.emotion.emotion_count == 2
-    initial_values = [item.initial_value for item in staged.config.preset.emotion.emotions]
-    assert initial_values == pytest.approx([0.25, 0.75])
+    assert staged.config.preset.emotion.emotion_count == 9
+    assert staged.config.preset.emotion.emotions[0].description == "calm 설명"
+    assert staged.config.preset.emotion.formula.params == {"theta": 0.25, "kappa_F": 2.0}
 
 
 def test_import_dummy_emotion_rejects_invalid_file(tmp_path: Path) -> None:
     editor = SettingsEditor(SystemConfig())
     path = tmp_path / "bad.json"
     path.write_text(
-        '{"schema_version": "1.0", "emotion_count": 2, "emotions": '
-        '[{"name": "fear", "initial_value": 0.1}, {"name": "fear", "initial_value": 0.2}]}',
+        '{"schema_version": "formula-1.0+label9", "emotions": [{"name": "calm"}, {"name": "calm"}]}',
         encoding="utf-8",
     )
     with pytest.raises(SettingsValidationError, match="unique"):
         editor.import_dummy_emotion(path)
 
 
-def test_import_dummy_emotion_rejects_out_of_range_initial_value(tmp_path: Path) -> None:
+def test_import_dummy_emotion_rejects_removed_rule_fields(tmp_path: Path) -> None:
     editor = SettingsEditor(SystemConfig())
     path = tmp_path / "bad.yaml"
     path.write_text(
         "schema_version: '1.0'\n"
-        "emotion_count: 1\n"
         "emotions:\n"
         "  - name: fear\n"
-        "    initial_value: 1.5\n",
+        "    initial_value: 0.5\n",
         encoding="utf-8",
     )
-    with pytest.raises(SettingsValidationError, match=r"initial_value|\[0, 1\]"):
+    with pytest.raises(SettingsValidationError, match="initial_value"):
         editor.import_dummy_emotion(path)
 
 

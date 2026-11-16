@@ -6,6 +6,11 @@ creates transitions for cleanup/faults, and keeps rollout/optimizer state in
 memory only.  Normal terminal transitions are trainable without a bootstrap;
 truncated transitions are retained by the ledger for diagnostics but are
 excluded from every PPO calculation.
+
+Two opt-in trainer options serve main-AI training: ``bootstrap_truncated``
+trains a game cut by the step limit (a ``PPOTransition`` marked
+``time_limit_bootstrap``) with a critic bootstrap instead of excluding it, and
+``normalize_advantages`` standardizes advantages over each update's batch.
 """
 
 from __future__ import annotations
@@ -183,6 +188,10 @@ class PPOTransition:
     rollout_id: str = ""
     main_agent_eliminated: bool = False
     environment_steps_spanned: int = 1
+    # Opt-in for a game cut by the step limit: the record stays trainable and a
+    # trainer created with ``bootstrap_truncated=True`` bootstraps it from
+    # ``next_value`` (standard time-limit handling) instead of excluding it.
+    time_limit_bootstrap: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "features", _as_features(self.features, name="features"))
@@ -198,7 +207,9 @@ class PPOTransition:
             object.__setattr__(self, "next_value", _finite(self.next_value, "next_value"))
         if self.terminated and self.truncated:
             raise ValueError("terminated and truncated cannot both be true")
-        if self.truncated and self.trainable:
+        if self.time_limit_bootstrap and not self.truncated:
+            raise ValueError("time_limit_bootstrap requires a truncated transition")
+        if self.truncated and self.trainable and not self.time_limit_bootstrap:
             object.__setattr__(self, "trainable", False)
 
     @property
@@ -286,7 +297,10 @@ class RolloutBuffer:
 
     @property
     def trainable(self) -> tuple[PPOTransition, ...]:
-        return tuple(item for item in self.ordered() if item.trainable and not item.truncated)
+        return tuple(
+            item for item in self.ordered()
+            if item.trainable and (not item.truncated or item.time_limit_bootstrap)
+        )
 
     def add(self, item: PPOTransition | MainAgentTransition) -> None:
         transition = item if isinstance(item, PPOTransition) else PPOTransition.from_committed(item)
@@ -341,6 +355,7 @@ def compute_gae(
     gamma: float = 0.99,
     gae_lambda: float = 0.95,
     trainable: Sequence[bool] | Tensor | None = None,
+    bootstrap_truncated: bool = False,
 ) -> tuple[Tensor, Tensor]:
     """Compute transition-unit GAE and returns.
 
@@ -349,6 +364,11 @@ def compute_gae(
     this makes accidental inclusion visible while keeping the function safe
     for mixed diagnostic batches.  ``next_values`` is supplied explicitly so
     rollout boundaries can bootstrap from the actual next MainAgent state.
+
+    With ``bootstrap_truncated=True`` a truncated transition is treated as a
+    time-limit cut instead: it ends the GAE chain (nothing follows it) but
+    bootstraps its own return from ``next_values``, and is trained when
+    ``trainable`` allows it.
     """
 
     gamma = float(gamma)
@@ -370,16 +390,18 @@ def compute_gae(
     advantages = torch.zeros_like(reward)
     running = torch.zeros((), dtype=reward.dtype, device=reward.device)
     for index in range(reward.numel() - 1, -1, -1):
-        if not bool(eligible[index]) or bool(limited[index]):
+        if not bool(eligible[index]) or (bool(limited[index]) and not bootstrap_truncated):
             running = torch.zeros_like(running)
             continue
         continuation = not bool(done[index]) and not bool(limited[index])
-        bootstrap = following[index] if continuation else torch.zeros_like(following[index])
+        bootstraps = continuation or (bootstrap_truncated and bool(limited[index]))
+        bootstrap = following[index] if bootstraps else torch.zeros_like(following[index])
         delta = reward[index] + gamma * bootstrap - value[index]
         running = delta + (gamma * gae_lambda * running if continuation else torch.zeros_like(running))
         advantages[index] = running
     returns = advantages + value
-    returns = torch.where(eligible & ~limited, returns, torch.zeros_like(returns))
+    usable = eligible if bootstrap_truncated else eligible & ~limited
+    returns = torch.where(usable, returns, torch.zeros_like(returns))
     return advantages, returns
 
 
@@ -467,7 +489,15 @@ class PPOTrainer:
         phase2_artifact: Any | None = None,
         intent_module: torch.nn.Module | None = None,
         emotion_module: torch.nn.Module | None = None,
+        normalize_advantages: bool = False,
+        bootstrap_truncated: bool = False,
     ) -> None:
+        # ``normalize_advantages`` standardizes advantages (mean 0, std 1) over
+        # each update's batch.  ``bootstrap_truncated`` trains time-limit
+        # transitions (``PPOTransition.time_limit_bootstrap``) with a critic
+        # bootstrap instead of excluding them.  Both are off by default.
+        self.normalize_advantages = bool(normalize_advantages)
+        self.bootstrap_truncated = bool(bootstrap_truncated)
         self.module = module
         self.phase2_artifact = phase2_artifact
         if phase2_artifact is not None:
@@ -549,7 +579,7 @@ class PPOTrainer:
             else:
                 transitions = (item for ledger in ledgers or () for item in ledger.committed)
         converted = [item if isinstance(item, PPOTransition) else PPOTransition.from_committed(item) for item in transitions]
-        converted = [item for item in converted if item.trainable and not item.truncated]
+        converted = [item for item in converted if self._eligible(item)]
         converted.sort(key=lambda item: (item.worker_id, item.episode_id, item.environment_step, item.transition_id))
         limit = self.config.rollout_transitions_per_worker * self.worker_count if max_transitions is None else int(max_transitions)
         if limit < 1:
@@ -578,6 +608,7 @@ class PPOTrainer:
                 rollout_id=rollout_id,
                 main_agent_eliminated=item.main_agent_eliminated,
                 environment_steps_spanned=item.environment_steps_spanned,
+                time_limit_bootstrap=item.time_limit_bootstrap,
             )
             for item in selected
         )
@@ -620,10 +651,17 @@ class PPOTrainer:
     # Backward-compatible name for callers that pass a worker/ledger source.
     collect_from_workers = collect_from_vector_workers
 
+    def _eligible(self, item: PPOTransition) -> bool:
+        """Whether ``item`` takes part in an update with this trainer's options."""
+
+        if not item.trainable:
+            return False
+        return not item.truncated or (self.bootstrap_truncated and item.time_limit_bootstrap)
+
     def _next_values(self, items: Sequence[PPOTransition]) -> Tensor:
         values: list[float] = []
         for item in items:
-            if item.terminated or item.truncated:
+            if item.terminated or (item.truncated and not self.bootstrap_truncated):
                 values.append(0.0)
             elif item.next_value is not None:
                 values.append(item.next_value)
@@ -685,6 +723,7 @@ class PPOTrainer:
                 gamma=self.config.gamma,
                 gae_lambda=self.config.gae_lambda,
                 trainable=[item.trainable for item in items[start:end]],
+                bootstrap_truncated=self.bootstrap_truncated,
             )
             advantages[start:end] = segment_advantages
             returns[start:end] = segment_returns
@@ -699,13 +738,16 @@ class PPOTrainer:
             items = list(self.buffer.trainable)
         else:
             items = [item if isinstance(item, PPOTransition) else PPOTransition.from_committed(item) for item in transitions]
-            items = [item for item in items if item.trainable and not item.truncated]
         items.sort(key=lambda item: (item.worker_id, item.episode_id, item.rollout_id, item.environment_step, item.transition_id))
+        items = [item for item in items if self._eligible(item)]
         if not items:
             return PPOUpdateMetrics(ppo_update=self.ppo_updates, metadata=self.metadata())
         next_values = self._next_values(items)
         old_values = torch.tensor([item.value for item in items], dtype=torch.float32)
         advantages, returns = self._segmented_gae(items, old_values, next_values)
+        if self.normalize_advantages and advantages.numel() > 1:
+            # Returns keep the raw (unnormalized) scale for the value loss.
+            advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
         features = self._stack([item.features for item in items])
         masks = torch.tensor(np.stack([item.action_mask for item in items]), dtype=torch.uint8)
         actions = torch.tensor([item.action for item in items], dtype=torch.long)

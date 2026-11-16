@@ -154,8 +154,7 @@ class SettingsEditor:
         The full preset dict is rebuilt from the current draft and only its
         ``emotion`` entry is replaced, so the edit flows through the existing
         ``preset`` key in :meth:`_payload` and is validated by Pydantic exactly
-        like every other staged change (unique names, ``initial_value`` in
-        ``[0, 1]``, finite rules, ``emotion_count >= 1``).
+        like every other staged change (unique names, known formula parameters).
         """
 
         preset = self._config.preset.model_dump(mode="python")
@@ -166,7 +165,7 @@ class SettingsEditor:
         """Write the staged ``config.preset.emotion`` to a standalone file.
 
         The file contains ONLY the emotion config (``schema_version``,
-        ``emotion_count``, ``initial_baseline``, ``emotions[...]``) as YAML or
+        ``emotions[...]``, ``formula``) as YAML or
         JSON (dispatched on the path suffix by :class:`ConfigService`), so it
         can be edited by hand outside the GUI and re-loaded with
         :meth:`import_dummy_emotion`.
@@ -186,8 +185,7 @@ class SettingsEditor:
 
         The document is validated into an :class:`EmotionConfig` and staged
         through :meth:`apply_dummy_emotion`, so Pydantic rules (unique names,
-        ``initial_value`` in ``[0, 1]``, finite rules, ``emotion_count >= 1``)
-        surface as a readable :class:`SettingsValidationError` rather than a raw
+        known formula parameters) surface as a readable :class:`SettingsValidationError` rather than a raw
         traceback.
         """
 

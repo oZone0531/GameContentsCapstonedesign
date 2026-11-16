@@ -55,3 +55,20 @@ outputs/*
 artifacts/*
 !artifacts/.gitkeep
 
+
+# Output folders of the command line tools (iterate_dummies.py, ...) when the
+# examples in the docs are followed. Generated, never committed.
+runs/*
+!runs/.gitkeep
+
+# ---------------------------------------------------------------------------
+# saved/ is DELIBERATELY NOT IGNORED.
+# The training screen's "Save outputs" button copies datasets, inference
+# modules, main-AI models and their reports here so they can be committed and
+# shared. There is no Git LFS: GitHub rejects files above 100 MB (warns above
+# 50 MB), so the button warns before saving such files. Do not add any rule
+# above that matches saved/ or its contents; the explicit lines below keep it
+# visible to git even if a broader rule is added later.
+# ---------------------------------------------------------------------------
+!/saved/
+!/saved/**

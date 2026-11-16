@@ -101,11 +101,9 @@ def test_worker_agent_graphs_are_isolated_and_replayable() -> None:
             assert left.emotion_module is not right.emotion_module
             assert left.rng is not right.rng
 
-        first.workers[0].agents[0].emotion_module.apply_event(
-            {"event_id": 999, "event_type": "bang", "actor_idx": 0, "target_idx": 1}
-        )
-        assert 999 in first.workers[0].agents[0].emotion_module.processed_event_ids
-        assert 999 not in first.workers[1].agents[0].emotion_module.processed_event_ids
+        first.workers[0].agents[0].emotion_module._state.processed.add(999)
+        assert 999 in first.workers[0].agents[0].emotion_module._state.processed
+        assert 999 not in first.workers[1].agents[0].emotion_module._state.processed
 
         first_records = first.run_episodes(2)
         second_records = second.run_episodes(2)

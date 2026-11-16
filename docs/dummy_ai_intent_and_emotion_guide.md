@@ -1,6 +1,6 @@
 # 더미 AI 의도 모듈 / 감정 모듈 설명 및 의도 모듈 수정 가이드
 
-이 문서는 더미 AI(`DummyAgent`)가 **어떻게 행동을 고르는지**를 설명하고, 그중에서도 **의도 모듈(INTENT module, 역할에 따른 행동 판단)** 을 어떻게 수정하는지를 구체적으로 안내합니다. 감정(emotion) 쪽은 요점만 정리하고, JSON 작성 상세는 기존 문서 [`dummy_ai_emotion_guide.md`](./dummy_ai_emotion_guide.md)로 연결합니다.
+이 문서는 더미 AI(`DummyAgent`)가 **어떻게 행동을 고르는지**를 설명하고, 그중에서도 **의도 모듈(INTENT module, 역할에 따른 행동 판단)** 을 어떻게 수정하는지를 구체적으로 안내합니다. 감정(emotion) 쪽은 요점만 정리하고, 9감정 공식 설정 상세는 기존 문서 [`dummy_ai_emotion_guide.md`](./dummy_ai_emotion_guide.md)로 연결합니다.
 
 필드 이름, 클래스 이름, JSON/YAML 키는 코드가 인식하는 리터럴이므로 영어 그대로 씁니다. 설명은 한국어로 작성합니다.
 
@@ -14,13 +14,13 @@
 | --- | --- | --- |
 | 역할 추정 (role_belief) | `bang_rl/agents/dummy_agent/role_belief.py` | 공개 정보만으로 각 좌석의 역할 분포(`(5, 5)` 믿음 행렬)를 추정 |
 | 의도 모듈 (INTENT) | `bang_rl/agents/dummy_agent/intent_policy.py` | 자기 역할 + 공개 관측 + 역할 믿음으로 **합법 행동마다 점수를 매기고 하나를 고름** |
-| 감정 모듈 (EMOTION) | `bang_rl/agents/dummy_agent/emotion_module.py` | 공개 사건에 따라 감정/관계 상태를 갱신하고, 행동 선택에 더해질 보정값을 제공 |
+| 감정 모듈 (EMOTION) | `bang_rl/agents/dummy_agent/emotion_formula.py` | 공개 사건에 따라 9개 감정 값(평온·자신감·공격성·불안·좌석별 관계 5개)을 공식으로 갱신하고, 행동 선택에 더해질 보정값을 제공 |
 
 이들을 하나로 묶는 것이 `bang_rl/agents/dummy_agent/dummy_agent.py`의 `DummyAgent`입니다. 흐름은 다음과 같습니다.
 
 1. `RoleBeliefEstimator`가 공개 관측으로 역할 믿음 행렬을 갱신한다.
 2. `IntentModule`이 그 믿음과 공개 관측으로 **의도 점수(intent scores)** 길이 6 벡터를 만든다.
-3. `EmotionModule`(그리고 관계 벡터)이 **감정 기여분(emotion contribution)** 길이 6 벡터를 만든다.
+3. `FormulaEmotionModule`이 **감정 기여분(emotion contribution)** 길이 6 벡터를 만든다.
 4. 둘을 더한 결합 점수에 **공개 행동 마스크(action mask)** 를 적용해 `ActionSelector`가 최종 행동을 고른다.
 
 **행동 공간 계약(action space contract, GUI와 공유):** 길이 6. 인덱스 `0` = PASS, 인덱스 `1..5` = `player_0..player_4`를 쏘는 BANG. 즉 좌석 `s`를 쏘는 행동 인덱스는 `s + 1`입니다.
@@ -71,32 +71,28 @@
 | `sheriff_role_bonus` | 실수 | `1.0` | 대상이 보안관(역할 0)일 확률에 더해지는 보너스. 보안관 팀/무법자 점수화에서 사용. |
 | `deputy_role_bonus` | 실수 | `0.25` | 대상이 보안관보(역할 1)일 확률에 더해지는 보너스. |
 | `target_health_weight` | 실수 | `0.0` | 대상의 공개 체력에 곱해 모든 대상 점수에 더하는 가중. 양수면 체력 높은 좌석을, 음수면 체력 낮은 좌석을 선호. 기본 `0.0`이면 체력은 점수에 영향 없음. |
-| `relation_target_weight` | 실수 | `0.0` | 감정 모듈의 **상대별 관계 벡터**를 행동 점수에 반영하는 가중(아래 2.4 절). 기본 `0.0`이면 관계 항이 전혀 더해지지 않아 기존 동작과 동일. 이 항은 의도 점수가 아니라 `DummyAgent._emotion_contribution`에서 더해진다. |
 | `role_target_weights` | `{문자열: 유한숫자}` | `{}`(빈 매핑) | 좌석의 **가장 유력한 역할 이름**(`sheriff`, `deputy`, `outlaw_a`, `outlaw_b`, `traitor`)에 설정한 가중치를 그 좌석의 공격 점수에 더한다. 특정 역할을 선호/기피하도록 조절. 비워 두면 영향 없음. |
 
 > 참고: 조회용 역할 이름은 `IntentModule._role_name`이 쓰는 `("sheriff", "deputy", "outlaw_a", "outlaw_b", "traitor")` 순서(역할 인덱스 0..4)와 같습니다. `role_target_weights`의 키는 반드시 이 다섯 이름 중 하나여야 효과가 있습니다(없는 이름은 무시됨).
 
-### 2.4 `role_target_weights`와 `relation_target_weight` 자세히
+### 2.4 `role_target_weights` 자세히
 
-이 두 노브는 "어느 좌석을 쏠지"를 역할/관계 관점에서 직접 조절하므로 특히 중요합니다.
+이 노브는 "어느 좌석을 쏠지"를 역할 관점에서 직접 조절하므로 특히 중요합니다.
 
 - **`role_target_weights`(역할 기준):** 각 생존 좌석의 역할 믿음 중 **가장 유력한 역할 이름**을 뽑아, 그 이름에 설정된 가중치를 그 좌석의 공격 점수에 **더합니다.** 예를 들어 `{"outlaw_a": 1.0}`이면, 가장 유력 역할이 `outlaw_a`로 추정되는 좌석의 공격 점수가 `+1.0`만큼 올라 그 좌석을 더 자주 쏘게 됩니다. 음수를 주면 그 역할로 보이는 좌석을 **기피**합니다.
-- **`relation_target_weight`(관계 기준):** 감정 모듈이 쌓은 **좌석별 관계 벡터**(부호 있는 값, 음수 = 원한 / 양수 = 신뢰)를 행동 점수에 반영합니다. 좌석 `s`를 쏘는 행동(인덱스 `s + 1`)에 더해지는 항은 `-relation_target_weight * relation[s]`입니다. 앞의 마이너스 때문에, 가중치가 양수일 때 **원한(음수 관계)** 은 그 좌석을 쏘는 점수를 **올리고**, **신뢰(양수 관계)** 는 낮춥니다. 즉 "원한을 품은 상대를 쏘도록" 유도합니다. 관계 벡터를 어떻게 쌓는지는 감정 가이드 3.4/3.7 절을 참고하세요.
-
-두 신호는 서로를 대체하지 않고 최종 결합 점수 단계에서 **가산적으로** 누적됩니다.
+의도 점수와 감정 기여분은 서로를 대체하지 않고 최종 결합 점수 단계에서 **가산적으로** 누적됩니다.
 
 ---
 
 ## 3. 감정 모듈 (EMOTION): 요약과 상세 가이드 연결
 
-감정 모듈(`emotion_module.py`, `EmotionModule`)은 공개 사건만으로 **설정 가능한 N개 감정**과 **좌석별 관계 벡터**를 갱신하는 결정적 모듈입니다. 핵심만 요약하면 다음과 같습니다.
+감정 모듈(`emotion_formula.py`, `FormulaEmotionModule`)은 공개 사건만으로 **항상 9개 감정 값**을 갱신하는 모듈입니다. 핵심만 요약하면 다음과 같습니다.
 
-- **설정 가능한 감정:** 이름/초기값/변화율/회복율과 네 개의 갱신 규칙 맵(`event_updates`, `action_updates`, `reward_updates`, `terminal_updates`) 및 행동 선택 참고용 `effects` 맵을 가진다. 모든 감정 값은 항상 `[0, 1]`로 잘린다.
-- **관계로 한정된(relationship-qualified) 키:** `bang_at_me`, `bang_by_me`, `player_eliminated_at_other` 등 "누가 누구에게"를 공개 `actor_idx`/`target_idx`로 구분하는 이벤트 키를 인식한다.
-- **상대별 관계 벡터:** 감정 값과 **별개로** 저장되는 부호 있는 `[-1, 1]` 길이 5 벡터. `relation_updates`로 좌석별 원한/신뢰를 누적한다. 2.4 절의 `relation_target_weight`가 이 벡터를 행동 점수에 연결한다.
-- **HP 버킷(bucket) 키:** `hp_low_threshold`/`hp_lethal_threshold`를 기준으로 공개 `hp_after`를 비교해 `self_low_hp`, `target_lethal` 같은 키를 발동한다.
+- **9개 감정:** `calm`, `confidence`, `aggression`, `anxiety`, `relation_0`~`relation_4`(좌석별 관계). 모든 값은 `[0, 1]`이며 관계는 내부 `[-1, 1]` 값을 `(R + 1) / 2`로 저장한다.
+- **공식 계수:** 감정이 어떻게 오르내리고 행동에 얼마나 영향을 주는지는 `EmotionParams`의 계수(`formula.params`, 역할별 `personality_by_role`)로 정해진다.
+- **의도와의 결합:** 감정 기여분(길이 6)은 의도 점수에 더해진다. 전체 배율은 `lambda_E`이며 0이면 의도 점수만으로 행동한다.
 
-> JSON/YAML로 감정을 **직접 작성/편집**하는 전체 규칙(필드 표, 키 조회 순서, 완성 예시)은 **[`dummy_ai_emotion_guide.md`](./dummy_ai_emotion_guide.md)** 를 참고하세요. 이 문서는 그 내용을 중복하지 않고 요약만 둡니다.
+> 감정 설정 파일의 **필드 표, 공식 계수 표, 사용법**은 **[`dummy_ai_emotion_guide.md`](./dummy_ai_emotion_guide.md)** 를 참고하세요. 이 문서는 그 내용을 중복하지 않고 요약만 둡니다.
 
 ---
 
@@ -115,17 +111,13 @@
 `dummy_agent.py`의 `DummyAgent.act(observation, action_mask, ...)`가 세 모듈을 묶습니다. 순서는 다음과 같습니다.
 
 1. `self.role_estimator.update(observation)` -- 공개 관측으로 역할 믿음을 갱신.
-2. `self._prepare_emotion_values(...)` -- 공개 이벤트/스텝/보드 체력으로 감정·관계 상태를 갱신.
+2. `self.emotion_module.observe(observation, self.role_beliefs)` -- 공개 이벤트/스텝/보드 체력으로 감정 상태를 갱신(이미 관찰한 경계는 건너뜀).
 3. `intent = self.intent_module.decision(observation, self.role_beliefs)` -- 의도 점수(길이 6) 생성.
-4. `ActionSelector.select_with_info(intent.scores, mask, emotion_contribution=self._emotion_contribution(), ...)` -- 결합 후 선택.
+4. `ActionSelector.select_with_info(intent.scores, mask, emotion_contribution=self.emotion_module.action_contribution(), ...)` -- 결합 후 선택.
 
-**`_emotion_contribution`의 구성.** `DummyAgent._emotion_contribution()`는 길이 6 벡터를 만들어 반환합니다.
+**감정 기여분.** `FormulaEmotionModule.action_contribution()`은 길이 6 벡터(인덱스 0 = pass, 1..5 = 좌석 `s = action - 1`을 쏘는 BANG)를 반환합니다. 현재 감정 값과 관계 값을 `kappa_*`/`lambda_E` 계수로 환산한 값입니다.
 
-- 먼저 각 행동에 대해 감정 모듈의 `effects_for_action(action)`을 조회해, 현재 감정 값과 효과(effect)의 곱을 합산합니다(감정 `effects` 기여분).
-- 그다음 `relation_target_weight`가 `0.0`이 아니면, 모듈 수준 헬퍼 `_relation_target_contribution(relation, weight, player_idx)`로 **좌석별 관계 항**을 더합니다. 이 헬퍼는 행동 공간(인덱스 0 = pass, 1..5 = 좌석 `s = action - 1`)을 알고 있어, 각 BANG 행동에 `-weight * relation[s]`를 넣습니다. `weight == 0.0`이면 모든 항이 정확히 `0.0`이라 기존 동작과 완전히 동일합니다.
-
-**마스크의 권위(authoritative).** 감정/관계 항은 어디까지나 **점수 보정**일 뿐이며, 어떤 행동이 합법인지는 전적으로 공통 **행동 마스크(action mask)** 가 정합니다. `ActionSelector`는 결합 점수에 마스크를 적용해 불법 행동을 완전히 배제한 뒤 선택하므로, 가중치를 아무리 크게 줘도 마스크로 금지된 행동은 선택되지 않습니다. 또한 관계 항은 관계 벡터를 **읽기만** 하고(감정/관계 상태를 바꾸지 않음) 결정성과 직렬화 스키마를 유지합니다.
-
+**마스크의 권위(authoritative).** 감정/관계 항은 어디까지나 **점수 보정**일 뿐이며, 어떤 행동이 합법인지는 전적으로 공통 **행동 마스크(action mask)** 가 정합니다. `ActionSelector`는 결합 점수에 마스크를 적용해 불법 행동을 완전히 배제한 뒤 선택하므로, 가중치를 아무리 크게 줘도 마스크로 금지된 행동은 선택되지 않습니다. 
 **설정은 어디서 오는가.** `DummyAgent`를 만드는 애플리케이션 계층(`bang_rl/app/services.py`의 `_dummy` 헬퍼)은 `policy_config=config.preset.intent_policy`를 넘깁니다. 즉 런타임 의도 정책은 `SystemConfig.preset.intent_policy`(= `config.example.yaml`의 `preset.intent_policy` 키)에서 비롯됩니다.
 
 ---
@@ -158,32 +150,7 @@ preset:
 
 의미: 가장 유력 역할이 `outlaw_a`/`outlaw_b`로 추정되는 좌석은 공격 점수 `+1.5`, `sheriff`로 추정되는 좌석은 `-1.0`. 키는 반드시 `sheriff`, `deputy`, `outlaw_a`, `outlaw_b`, `traitor` 중 하나여야 합니다(2.3 절). 값은 유한 숫자여야 합니다.
 
-### 예시 B: 원한을 품은 좌석을 더 쏘게 하기 (`relation_target_weight`)
-
-"나를 쏜 좌석에 원한을 쌓고, 그 좌석을 더 겨냥"하게 하려면 (1) 감정 설정에서 관계 벡터를 쌓고 (2) 의도 정책의 `relation_target_weight`를 `0`보다 크게 둡니다.
-
-`config.example.yaml`:
-
-```yaml
-preset:
-  preset_id: default
-  version: "1.0"
-  intent_policy:
-    relation_target_weight: 1.5
-  emotion:
-    schema_version: "1.1"
-    emotion_count: 1
-    initial_baseline: 0.0
-    relation_updates:
-      shot_by: -0.6
-    emotions:
-      - name: calm
-        initial_value: 0.0
-```
-
-의미: 어떤 좌석이 나를 쏘면(`shot_by`) 그 좌석에 대한 관계가 `-0.6`(원한)만큼 이동하고, `relation_target_weight = 1.5`이므로 그 좌석(인덱스 `s + 1`)을 쏘는 점수가 `-1.5 * (-0.6) = +0.9`만큼 올라갑니다. `relation_target_weight`를 기본값 `0.0`으로 두면 관계 항이 전혀 더해지지 않아 기존 동작과 동일합니다. 관계 벡터 작성 규칙은 [`dummy_ai_emotion_guide.md`](./dummy_ai_emotion_guide.md) 3.4/3.7 절을 보세요.
-
-### 예시 C(코드 수정): 새 점수화 항 추가하기
+### 예시 B(코드 수정): 새 점수화 항 추가하기
 
 표에 없는 새 성향을 만들려면 `intent_policy.py`를 편집해 **새 노브**를 추가해야 합니다. 예로 "생존 좌석이 적을수록(막판일수록) 공격을 더 공격적으로" 만드는 가상의 노브 `late_game_attack_weight`를 추가한다고 합시다. 세 곳을 함께 손봐야 합니다.
 
@@ -194,7 +161,6 @@ preset:
 class IntentPolicyConfig:
     ...
     target_health_weight: float = 0.0
-    relation_target_weight: float = 0.0
     late_game_attack_weight: float = 0.0  # 새 노브, 기본 0.0으로 하위 호환
     role_target_weights: Mapping[str, float] = field(default_factory=dict)
 ```
@@ -206,7 +172,6 @@ class IntentPolicyConfig:
             "pass_score",
             ...
             "target_health_weight",
-            "relation_target_weight",
             "late_game_attack_weight",  # 새 노브도 유한성 검증
         ):
             value = getattr(self, name)
@@ -236,7 +201,6 @@ class IntentPolicyConfig:
 
 - [ ] 성향 조절이 2.3 절 표의 **기존 노브**로 가능한가? 그렇다면 `config.preset.intent_policy`(= `config.example.yaml`의 `preset.intent_policy`) 값만 바꾼다(코드 수정 불필요).
 - [ ] 특정 역할을 선호/기피하려면 `role_target_weights`에 `sheriff`/`deputy`/`outlaw_a`/`outlaw_b`/`traitor` 키로 가중치를 넣었는가?
-- [ ] 원한 좌석을 겨냥하려면 `relation_target_weight`를 `0`보다 크게 두고, 감정 설정의 `relation_updates`로 관계를 쌓았는가? (기본 `0.0`이면 기존 동작과 동일)
 - [ ] 새 점수화 항이 필요하면 `intent_policy.py`에서 (1) `IntentPolicyConfig` 필드 추가, (2) `__post_init__` 유한성 검증 등록, (3) `IntentModule.decision` 점수화 반영을 모두 했는가?
 - [ ] 새 노브의 기본값을 중립값으로 두어 하위 호환과 결정성을 지켰는가?
 - [ ] 모든 가중치가 유한 숫자인가? (무한대/NaN은 생성 시 거부됨)

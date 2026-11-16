@@ -81,7 +81,7 @@ def test_architecture_and_optimizer_metadata_use_fixed_literals() -> None:
     metadata = module.metadata()
 
     assert metadata["module_type"] == "EmotionInferenceModule"
-    assert metadata["emotion_schema_version"] == "1.0"
+    assert metadata["emotion_schema_version"] == "formula-1.0+label9"
     assert metadata["emotion_count"] == 3
     assert metadata["encoder"]["hidden_size"] == 128
     assert metadata["encoder"]["num_layers"] == 1
@@ -190,3 +190,22 @@ def test_config_schema_changes_are_reflected_in_model_contract() -> None:
     assert second.emotion_schema_version == "2.0"
     assert first.output_dim == 1
     assert second.output_dim == 4
+
+
+def test_saved_module_with_obsolete_dummy_emotion_fields_still_loads() -> None:
+    """Modules saved before the formula-only dummies embed removed config keys."""
+
+    from bang_rl.agents.main_agent import EmotionInferenceModule as _Module
+
+    module = _Module(seed=3)
+    payload = module.to_dict()
+    architecture = payload.get("architecture", payload)
+    config = dict(architecture["emotion_config"])
+    config.update(relation_baseline=0.0, relation_updates={}, hp_low_threshold=None, hp_lethal_threshold=None)
+    config["emotions"] = [
+        {**dict(entry), "initial_value": 0.0, "event_updates": {}} for entry in config["emotions"]
+    ]
+    architecture["emotion_config"] = config
+    restored = _Module.from_dict(payload)
+    assert restored.emotion_count == module.emotion_count
+    assert restored.emotion_schema_version == module.emotion_schema_version

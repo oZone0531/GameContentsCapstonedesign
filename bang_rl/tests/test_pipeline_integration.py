@@ -19,7 +19,6 @@ import pytest
 import torch
 
 from bang_rl.agents import DummyAgent, RandomAgent
-from bang_rl.agents.dummy_agent.emotion_module import EmotionModule as DummyEmotionModule
 from bang_rl.agents.main_agent import EmotionInferenceModule, IntentInferenceModule, PPOModule, RoleFusion
 from bang_rl.app import EvaluationRunConfig, EvaluationService, GameService, SessionConfig, TrainingConfig, TrainingService
 from bang_rl.config import EmotionConfig, EvaluationConfig, PPOConfig, RewardConfig, SystemConfig
@@ -34,7 +33,7 @@ from bang_rl.data import (
 from bang_rl.env import BangEnvironment, EnvironmentState, Role
 from bang_rl.exceptions import InvalidActionError
 from bang_rl.gui import GameMode, GameSessionController
-from bang_rl.runtime import EmotionRuntime, RewardCalculator, RewardRuntime, attach_rewards
+from bang_rl.runtime import RewardCalculator, RewardRuntime, attach_rewards
 from bang_rl.runtime.logging import LogChannel, StructuredLogger
 from bang_rl.runtime.pause_coordinator import PauseCoordinator, PauseState, WorkerControl
 from bang_rl.training import (
@@ -255,41 +254,22 @@ def test_role_reveal_role_fusion_and_privileged_separation() -> None:
     env.close()
 
 
-def test_emotion_reward_and_transition_records_share_the_pre_action_boundary() -> None:
-    emotion_config = EmotionConfig(
-        schema_version="emotion-v1",
-        emotions=[{"name": "fear", "initial_value": 0.4, "decay_rate": 0.1}],
-    )
-    modules = {idx: DummyEmotionModule(emotion_config, player_idx=idx) for idx in range(5)}
-    emotion = EmotionRuntime(emotion_modules=modules)
+def test_reward_records_share_the_pre_action_boundary() -> None:
     reward = RewardRuntime(RewardCalculator(RewardConfig(version="reward-v1")))
     env = BangEnvironment(episode_id="alignment", seed=8, max_episode_steps=20, warn_turn_threshold=5, critical_turn_threshold=10)
-    emotion.reset({"episode_id": env.state.episode_id, "seed": env.state.seed})
     reward.reset(episode_id=env.state.episode_id)
     # The Sheriff acts first, so the opening actor is the Sheriff's seat (not
     # necessarily seat 0).
     actor = int(env.state.agent_selection)
-    labels = emotion.before_action(0, actor_idx=actor, observation=env.observe())
-    assert labels[actor].environment_step == 0
-    assert labels[actor].input_event_ids == ()
-    before_invalid = (emotion.records, emotion.processed_event_ids, emotion.environment_step)
     with pytest.raises(InvalidActionError):
         env.step(actor + 1)  # bang at the actor's own seat
-    assert (emotion.records, emotion.processed_event_ids, emotion.environment_step) == before_invalid
     env.step(0)
     result = env.last_result
     assert result is not None
     batch = reward.on_action_result(result, roles=env.state.roles)
     attached = attach_rewards(result, batch)
-    record = emotion.on_action_result(attached)
-    assert record is not None
-    assert record.label_step == 0
-    assert record.post_action_event_ids == (1,)
+    assert attached is not None
     assert batch is reward.on_action_result(result, roles=env.state.roles)
-    next_actor = int(env.state.agent_selection)
-    next_labels = emotion.before_action(1, events=result.events, actor_idx=next_actor, observation=env.observe())
-    assert next_labels[next_actor].environment_step == 1
-    assert next_labels[next_actor].input_event_ids == (1,)
     assert all("emotion" not in key.lower() for key in env.observe().keys())
     env.close()
 

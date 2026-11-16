@@ -7,6 +7,7 @@ import json
 import numpy as np
 import pytest
 
+from bang_rl.agents.dummy_agent.emotion_formula import FormulaEmotionModule
 from bang_rl.agents.main_agent.preprocessor import ObservationPreprocessor
 from bang_rl.app.services import GameService, SessionHandle, _Session
 from bang_rl.data import (
@@ -105,13 +106,13 @@ def test_pre_observation_is_flat_and_accepted_by_the_preprocessor(formula_config
         assert processed.action_mask.tolist() == list(step.action_mask)
 
 
-def test_rule_table_mode_keeps_the_config_emotion_schema():
+def test_default_config_collects_nine_formula_emotions_without_an_emotion_file():
     config = load_collection_config(emotion_file=None)
     episode, _, agents = play_and_collect_game(config, EpisodeCollector(), seed=2)
-    assert not any(agent.uses_emotion_formula for agent in agents)
+    assert all(isinstance(agent.emotion_module, FormulaEmotionModule) for agent in agents)
     label = next(iter(episode.steps[0].emotion_labels.values()))
-    assert label["emotion_schema_version"] == config.preset.emotion.schema_version
-    assert len(label["values"]) == config.preset.emotion.emotion_count
+    assert label["emotion_schema_version"] == FORMULA_LABEL_SCHEMA
+    assert len(label["values"]) == LABEL_DIM
 
 
 def test_label_without_public_observation_round_trips_through_parquet(tmp_path):
@@ -152,9 +153,11 @@ def test_collect_games_writes_shards_and_summary(formula_config, tmp_path):
     summary = collect_games(formula_config, 4, out, base_seed=100, keep_episodes=True)
     episodes = summary.pop("episodes")
     saved = json.loads((out / "collection_summary.json").read_text(encoding="utf-8"))
+    # The summary file starts with the artifact info block (kind, time, conditions, notes).
+    assert next(iter(saved)) == "info" and saved.pop("info")["kind"] == "dataset"
+    assert (out / "ABOUT.md").is_file()
     assert saved == summary
     assert summary["games"] == 4 and summary["seeds"] == [100, 103]
-    assert summary["emotion_mode"] == ["formula"]
     assert summary["emotion_label_schema"] == [FORMULA_LABEL_SCHEMA]
     assert summary["emotion_label_dimension"] == LABEL_DIM
     assert sum(summary["termination_status"].values()) == 4

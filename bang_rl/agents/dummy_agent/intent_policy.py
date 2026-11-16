@@ -86,7 +86,6 @@ class IntentPolicyConfig:
     sheriff_role_bonus: float = 1.0
     deputy_role_bonus: float = 0.25
     target_health_weight: float = 0.0
-    relation_target_weight: float = 0.0
     role_target_weights: Mapping[str, float] = field(default_factory=dict)
     # v1 role-intent rules.  These are policy settings, not game rules.
     pass_confidence_score: float = 0.45
@@ -146,7 +145,6 @@ class IntentPolicyConfig:
             "sheriff_role_bonus",
             "deputy_role_bonus",
             "target_health_weight",
-            "relation_target_weight",
             "pass_confidence_score",
             "outlaw_target_threshold",
             "deputy_target_threshold",
@@ -254,7 +252,6 @@ class IntentPolicyConfig:
             "sheriff_role_bonus": float(self.sheriff_role_bonus),
             "deputy_role_bonus": float(self.deputy_role_bonus),
             "target_health_weight": float(self.target_health_weight),
-            "relation_target_weight": float(self.relation_target_weight),
             "role_target_weights": dict(sorted(self.role_target_weights.items())),
             "pass_confidence_score": float(self.pass_confidence_score),
             "outlaw_target_threshold": float(self.outlaw_target_threshold),
