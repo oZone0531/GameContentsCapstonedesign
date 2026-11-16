@@ -42,6 +42,15 @@ TEAM_ROLES: dict[int, tuple[int, ...]] = {
 ROLE_KEYS = {SHERIFF: "sheriff", DEPUTY: "deputy", OUTLAW_A: "outlaw", OUTLAW_B: "outlaw", TRAITOR: "traitor"}
 PERSONALITY_KEYS = ("sheriff", "deputy", "outlaw", "traitor")
 
+# How a dummy gets its personality preset ("personality_mode" in the formula block):
+#   "role"   - no preset; only personality_by_role applies (the original behaviour)
+#   "random" - each dummy draws one preset per game from personality_presets,
+#              independent of its role, reproducible from the episode seed
+PERSONALITY_MODES = ("role", "random")
+# Salt for the preset draw: a separate stream from the emotion noise, so turning
+# presets on never shifts the noise sequence of the existing formula.
+_PERSONALITY_SALT = 0x50455253
+
 # Only these events move global / relation emotions.
 HARM_EVENTS = ("bang", "player_eliminated")
 
@@ -130,23 +139,50 @@ class EmotionParams:
         params: Mapping[str, Any] | None,
         personality_by_role: Mapping[str, Mapping[str, Any]] | None,
         role: int | None,
+        preset: Mapping[str, Any] | None = None,
     ) -> "EmotionParams":
-        """Base params with the role's personality overrides applied on top."""
+        """Base params, then the role's overrides, then the personality preset's overrides."""
 
         values = dict(params or {})
         if role is not None and personality_by_role:
             values.update(personality_by_role.get(ROLE_KEYS[int(role)], {}) or {})
+        if preset:
+            values.update(preset)
         return cls.from_mapping(values)
 
 
-def validate_formula_block(params: Mapping[str, Any], personality_by_role: Mapping[str, Any]) -> None:
-    """Raise ValueError for unknown parameter names or role keys (used by config validation)."""
+def validate_formula_block(
+    params: Mapping[str, Any],
+    personality_by_role: Mapping[str, Any],
+    personality_presets: Mapping[str, Any] | None = None,
+    personality_mode: str = "role",
+) -> None:
+    """Raise ValueError for unknown parameter names, role keys, presets or modes."""
 
     EmotionParams.from_mapping(params)
     for role_key, overrides in (personality_by_role or {}).items():
         if role_key not in PERSONALITY_KEYS:
             raise ValueError(f"unknown personality role {role_key!r}; expected one of {PERSONALITY_KEYS}")
         EmotionParams.from_mapping({**dict(params), **dict(overrides or {})})
+    for name, overrides in (personality_presets or {}).items():
+        if not str(name).strip():
+            raise ValueError("personality preset names must be non-empty")
+        EmotionParams.from_mapping({**dict(params), **dict(overrides or {})})
+    if personality_mode not in PERSONALITY_MODES:
+        raise ValueError(f"personality_mode must be one of {PERSONALITY_MODES}, got {personality_mode!r}")
+    if personality_mode == "random" and not personality_presets:
+        raise ValueError('personality_mode "random" needs at least one entry in personality_presets')
+
+
+def draw_personality(presets: Mapping[str, Any], seed: int | None) -> str | None:
+    """Pick one preset name, reproducibly from ``seed`` (None -> nondeterministic)."""
+
+    names = sorted(str(name) for name in presets)
+    if not names:
+        return None
+    entropy = None if seed is None else [int(seed) & 0xFFFFFFFFFFFFFFFF, _PERSONALITY_SALT]
+    rng = np.random.default_rng(entropy)
+    return names[int(rng.integers(len(names)))]
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +506,16 @@ class FormulaEmotionModule:
             str(role): {k: float(v) for k, v in dict(values or {}).items()}
             for role, values in dict(block.get("personality_by_role", {}) or {}).items()
         }
-        validate_formula_block(self.base_params, self.personality_by_role)
+        self.personality_presets: dict[str, dict[str, float]] = {
+            str(name): {k: float(v) for k, v in dict(values or {}).items()}
+            for name, values in dict(block.get("personality_presets", {}) or {}).items()
+        }
+        self.personality_mode = str(block.get("personality_mode", "role") or "role")
+        validate_formula_block(
+            self.base_params, self.personality_by_role, self.personality_presets, self.personality_mode
+        )
+        # Name of this game's personality preset (None in "role" mode).
+        self.personality: str | None = None
         self.self_role: int | None = None
         self.episode_id: str | None = None
         self.episode_seed: int | None = None
@@ -479,7 +524,7 @@ class FormulaEmotionModule:
         self._seed = seed
         self._state = EmotionState(
             self.player_idx,
-            EmotionParams.for_role(self.base_params, self.personality_by_role, None),
+            self._params_for(None),
             np.random.default_rng(seed),
         )
 
@@ -506,6 +551,10 @@ class FormulaEmotionModule:
     @property
     def params(self) -> EmotionParams:
         return self._state.p
+
+    def _params_for(self, role: int | None) -> EmotionParams:
+        preset = self.personality_presets.get(self.personality) if self.personality else None
+        return EmotionParams.for_role(self.base_params, self.personality_by_role, role, preset)
 
     # -- read-only views ---------------------------------------------------
     @property
@@ -552,7 +601,7 @@ class FormulaEmotionModule:
         self.self_role = role
         st = self._state
         untouched = not st.processed and st.last_step is None
-        st.p = EmotionParams.for_role(self.base_params, self.personality_by_role, role)
+        st.p = self._params_for(role)
         if untouched:
             rng = st.rng
             st.reset()
@@ -571,9 +620,14 @@ class FormulaEmotionModule:
         if seed is not None:
             self._seed = int(seed)
         self.self_role = None
+        self.personality = (
+            draw_personality(self.personality_presets, self._seed)
+            if self.personality_mode == "random"
+            else None
+        )
         self._state = EmotionState(
             self.player_idx,
-            EmotionParams.for_role(self.base_params, self.personality_by_role, None),
+            self._params_for(None),
             np.random.default_rng(self._seed),
         )
         if observation is not None:
@@ -622,6 +676,7 @@ class FormulaEmotionModule:
             "episode_id": self.episode_id,
             "episode_seed": self.episode_seed,
             "self_role": self.self_role,
+            "personality": self.personality,
             "config": config,
             # GUI emotion bars read these three keys.
             "emotion_names": list(self._emotion_names),
@@ -637,6 +692,8 @@ class FormulaEmotionModule:
                 "schema_version": self.formula_schema_version,
                 "params": dict(self.base_params),
                 "personality_by_role": {k: dict(v) for k, v in self.personality_by_role.items()},
+                "personality_presets": {k: dict(v) for k, v in self.personality_presets.items()},
+                "personality_mode": self.personality_mode,
             },
             "internal": {
                 "S": float(st.S),
@@ -675,10 +732,12 @@ class FormulaEmotionModule:
         module.terminated = bool(state.get("terminated", False))
         module.truncated = bool(state.get("truncated", False))
         role = state.get("self_role")
+        personality = state.get("personality")
+        module.personality = None if personality is None else str(personality)
         st = module._state
+        st.p = module._params_for(None if role is None else int(role))
         if role is not None:
             module.self_role = int(role)
-            st.p = EmotionParams.for_role(module.base_params, module.personality_by_role, int(role))
         internal = dict(state.get("internal") or {})
         st.S = float(internal.get("S", st.S))
         st.A = float(internal.get("A", st.A))
@@ -702,11 +761,13 @@ class FormulaEmotionModule:
 __all__ = [
     "EMOTION_NAMES",
     "LABEL_NAMES",
+    "PERSONALITY_MODES",
     "EmotionParams",
     "EmotionState",
     "FormulaEmotionModule",
     "ally_prob",
     "control",
+    "draw_personality",
     "formula_block",
     "max_health",
     "validate_formula_block",

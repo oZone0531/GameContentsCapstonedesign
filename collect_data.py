@@ -36,9 +36,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bang_rl.data.game_collection import (  # noqa: E402
     ACTION_MODES,
     DEFAULT_EMOTION_FILE,
-    collect_games,
     load_collection_config,
 )
+from bang_rl.data.parallel_collection import collect_games_parallel
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -68,6 +68,9 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="do not apply an emotion file; keep the config's own emotion block",
     )
+    parser.add_argument("--workers", type=int, default=1, help="CPU processes (1=original serial collector)")
+    parser.add_argument("--batch-games", type=int, default=None, help="games per worker task (default: auto)")
+    parser.add_argument("--shard-games", type=int, default=20, help="flush Parquet every N games (default 20)")
     args = parser.parse_args(argv)
 
     emotion_file = None if args.rule_table else args.emotion_file
@@ -84,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"collecting {args.games} games -> {args.out}", flush=True)
     try:
-        summary = collect_games(
+        summary = collect_games_parallel(
             config,
             args.games,
             args.out,
@@ -92,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
             action_mode=args.mode,
             progress=progress,
             belief=args.belief,
+            workers=args.workers, batch_games=args.batch_games, shard_games=args.shard_games,
         )
     except FileExistsError as exc:
         print(f"error: {exc}", file=sys.stderr)

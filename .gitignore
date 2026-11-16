@@ -55,3 +55,4 @@ outputs/*
 artifacts/*
 !artifacts/.gitkeep
 
+config.json

@@ -131,3 +131,37 @@ def test_cli_writes_comparison(tmp_path, untrained_model, capsys):
     rows = json.loads(out.read_text(encoding="utf-8"))
     assert [row["agent"] for row in rows] == ["random", "dummy", "main"]
     assert "role acc" in capsys.readouterr().out
+
+
+def test_ablations_replace_only_the_selected_inputs(config, untrained_model):
+    import torch
+
+    from bang_rl.evaluation.ablation import ablated_protocol, neutral_emotion, uniform_roles
+
+    full = ablated_protocol(untrained_model, "full", config=config)
+    none = ablated_protocol(untrained_model, "no_inference", config=config)
+    only_emotion = ablated_protocol(untrained_model, "no_emotion", config=config)
+    probe = torch.rand(5, 9)
+    np.testing.assert_allclose(neutral_emotion(probe)[0].numpy(), [0.9, 0.1, 0.1, 0.1, 0.5, 0.5, 0.5, 0.5, 0.5])
+    np.testing.assert_allclose(uniform_roles(torch.rand(5, 4)).numpy(), 0.25)
+    # Same deals; ablated rows still run and keep the same seat/role schedule.
+    evaluation = EvaluationConfig(protocol_id="custom_v1", games=5, games_per_seat=1, base_seed=3)
+    rows_full = full.run(evaluation).to_dict()["game_results"]
+    rows_none = none.run(evaluation).to_dict()["game_results"]
+    assert [(r["seed"], r["main_agent_seat"]) for r in rows_full] == [(r["seed"], r["main_agent_seat"]) for r in rows_none]
+    with pytest.raises(ValueError):
+        ablated_protocol(untrained_model, "nope", config=config)
+
+
+def test_cli_ablations_add_rows(tmp_path, untrained_model):
+    script = Path(__file__).resolve().parents[2] / "evaluate_baselines.py"
+    spec = importlib.util.spec_from_file_location("evaluate_baselines_cli_ablation", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    out = tmp_path / "ablation.json"
+    assert module.main([
+        "--games", "5", "--baselines", "dummy", "--artifact", str(untrained_model),
+        "--ablations", "no_intent,no_emotion,no_inference", "--out", str(out),
+    ]) == 0
+    rows = json.loads(out.read_text(encoding="utf-8"))
+    assert [row["agent"] for row in rows] == ["dummy", "main", "main:no_intent", "main:no_emotion", "main:no_inference"]

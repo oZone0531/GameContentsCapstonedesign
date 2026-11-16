@@ -12,6 +12,16 @@ deals the same roles to every row. Rows:
     dummy     the rule-based dummy itself (what the main agent has to beat)
     hint:Q    a dummy with a privileged role hint (reference ceiling, cheats)
     main      the --artifact model (role accuracy and emotion error included)
+
+With --ablations (needs --artifact) the main agent is replayed on the same
+games with an inferred input replaced by a constant "no information" value:
+    no_intent     role inference -> uniform
+    no_emotion    emotion inference -> resting state
+    no_inference  both
+The win-rate drop from "main" shows how much that inference helps the policy
+(see bang_rl/evaluation/ablation.py).
+
+    python evaluate_baselines.py --games 500 --artifact outputs/final.bangmodel --ablations no_intent,no_emotion,no_inference
 """
 
 from __future__ import annotations
@@ -31,6 +41,7 @@ from bang_rl.evaluation import (  # noqa: E402
     summarize_protocol_report,
 )
 from bang_rl.config import EvaluationConfig  # noqa: E402
+from bang_rl.evaluation.ablation import ABLATIONS, ablated_protocol  # noqa: E402
 
 ROLE_ORDER = ("sheriff", "deputy", "outlaw", "traitor")
 
@@ -62,7 +73,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=None, help="optional SystemConfig file (.yaml/.json)")
     parser.add_argument("--emotion-file", default=DEFAULT_EMOTION_FILE, help="dummy emotion formula file")
     parser.add_argument("--out", default=None, help="write all results as JSON here")
+    parser.add_argument(
+        "--ablations",
+        default="",
+        help="with --artifact: comma list of no_intent, no_emotion, no_inference",
+    )
     args = parser.parse_args(argv)
+    ablations = [item.strip() for item in args.ablations.split(",") if item.strip()]
+    for name in ablations:
+        if name not in ABLATIONS or name == "full":
+            parser.error(f"unknown ablation {name!r}; use no_intent, no_emotion, no_inference")
+    if ablations and not args.artifact:
+        parser.error("--ablations needs --artifact")
 
     config = load_collection_config(args.config, emotion_file=args.emotion_file)
     results = []
@@ -83,6 +105,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         report = CustomEvaluationProtocol(args.artifact, config=config).run(evaluation)
         results.append(summarize_protocol_report(report, label="main"))
+        for name in ablations:
+            print(f"evaluating main agent with {name} ({args.games} games)...", flush=True)
+            report = ablated_protocol(args.artifact, name, config=config).run(evaluation)
+            results.append(summarize_protocol_report(report, label=f"main:{name}"))
 
     print()
     print(f"{'agent':<12} {'win%':>5} {'95% CI':<16} " + " ".join(f"{name[:5]:>5}" for name in ROLE_ORDER))

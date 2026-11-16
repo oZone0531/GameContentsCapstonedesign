@@ -135,6 +135,20 @@ def emotion_mode(agent: Any) -> str:
     return "formula" if isinstance(agent, DummyAgent) and agent.uses_emotion_formula else "rule_table"
 
 
+def personality_labels(agents: Any) -> list[str | None]:
+    """Each seat's emotion personality preset for this game (None = no preset).
+
+    Stored in episode metadata only, for analysis; it is never part of any
+    observation the main agent sees.
+    """
+
+    out: list[str | None] = []
+    for agent in agents:
+        module = getattr(agent, "emotion_module", None)
+        out.append(getattr(module, "personality", None) if module is not None else None)
+    return out
+
+
 def belief_label(agents: Any) -> str:
     """Short description of the dummies' belief source, e.g. 'rule' or 'oracle:0.3'."""
 
@@ -267,6 +281,7 @@ def drive_game(
             "game_seed": int(seed),
             "emotion_mode": ",".join(modes),
             "belief_source": belief_label(agents),
+            "personalities": personality_labels(agents),
         },
     )
     guard = 0
@@ -438,6 +453,7 @@ def collect_games(
             list(LABEL_NAMES) if FORMULA_LABEL_SCHEMA in label_schemas else None
         ),
         "termination_status": dict(sorted(status.items())),
+        "win_counts": dict(sorted(wins.items())),
         "win_rate": {key: round(value / games, 4) for key, value in sorted(wins.items())},
         "mean_steps": round(float(np.mean(lengths)), 2),
         "total_steps": int(sum(lengths)),
