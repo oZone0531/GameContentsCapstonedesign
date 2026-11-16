@@ -67,6 +67,8 @@ class _GuiSessionConfig:
     config: Any = None
     seed: int | None = None
     artifact_path: str | None = None
+    intent_selections: tuple[str, ...] | None = None
+    intent_model_path: str | None = None
 
 
 class GameGuiError(RuntimeError):
@@ -176,6 +178,8 @@ class GameSessionController:
         # one-save-per-episode rule.
         self.ai_metadata: Mapping[str, Any] | None = None
         self.mode_ai_versions: dict[str, Any] = {}
+        self.intent_selections: tuple[str, ...] | None = None
+        self.intent_model_path: str | None = None
         self._replay_observations: list[dict[str, Any]] = []
         # Item 5: authoritative per-turn EnvironmentState dicts captured from the
         # service (when it exposes them) so a moment can be restored to a live,
@@ -249,6 +253,8 @@ class GameSessionController:
             config=self.config,
             seed=self.seed,
             artifact_path=artifact_path,
+            intent_selections=self.intent_selections,
+            intent_model_path=self.intent_model_path,
         )
         try:
             if self.service is None:

@@ -149,6 +149,8 @@ class SessionConfig:
     artifact_path: str | Path | None = None
     agents: Sequence[Any] | Mapping[Any, Any] | None = None
     action_mode: str = "deterministic"
+    intent_selections: tuple[str, ...] | None = None
+    intent_model_path: str | Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -606,7 +608,23 @@ class GameService:
                 "random_five, dummy_five, or main_one_dummy_four"
             )
 
+        selections = options.intent_selections or ("rule",) * 5
+        if len(selections) != 5 or any(item not in ("rule", "learned") for item in selections):
+            raise ValueError("intent_selections must have five entries: rule/learned")
+        learned_policy = None
+
         def _dummy(index: int) -> Any:
+            nonlocal learned_policy
+            if selections[index] == "learned":
+                from bang_rl.intent_training import LearnedIntentAgent, LearnedIntentPolicy
+                if not options.intent_model_path:
+                    raise ValueError("Learned intent selected without a .intentmodel file")
+                if learned_policy is None:
+                    learned_policy = LearnedIntentPolicy.load(options.intent_model_path)
+                return LearnedIntentAgent(
+                    learned_policy, player_idx=index, seed=seeds.agent_seed(f"player_{index}"),
+                    stochastic=options.action_mode == "stochastic",
+                )
             return DummyAgent(
                 f"player_{index}", seed=seeds.agent_seed(f"player_{index}"), player_idx=index,
                 policy_config=config.preset.intent_policy,

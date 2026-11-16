@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .i18n import tr
+from .intent_preferences import IntentSeatPreferences
 from .qt_compat import (
     Qt,
     QApplication,
@@ -23,6 +24,7 @@ from .dialogs.model_select import ModelSelection, ModelSelectionDialog
 from .game import GameGuiError, GameMode, GameSessionController
 from .replay import ReplayModel
 from .screens.game_mode import GameModeSelect
+from .screens.intent_training import IntentTrainingScreen
 from .screens.game_screen import GameScreen
 from .screens.replay_screen import ReplayScreen
 from .screens.settings import SettingsScreen
@@ -121,6 +123,7 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             self.settings_editor = SettingsEditor(config)
             self._game_screen: GameScreen | None = None
             self._training_monitor: TrainingMonitor | None = None
+            self._intent_training_screen: IntentTrainingScreen | None = None
             self._settings_screen: SettingsScreen | None = None
             self._replay_screen: ReplayScreen | None = None
             self._selection: ModelSelection | None = None
@@ -187,6 +190,10 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             layout.addWidget(library_button)
             self._style_menu_button(library_button, layout)
             self._library_button = library_button
+            intent_button = QPushButton(tr("menu.intent_training"), menu)
+            intent_button.clicked.connect(self._show_intent_training)
+            layout.addWidget(intent_button)
+            self._style_menu_button(intent_button, layout)
             settings_button = QPushButton(tr("menu.settings"), menu)
             settings_button.clicked.connect(self._show_settings)
             layout.addWidget(settings_button)
@@ -227,6 +234,14 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             layout.setAlignment(label, Qt.AlignmentFlag.AlignHCenter)
             layout.addStretch(1)
             self._set_screen(loading)
+
+        def _show_intent_training(self) -> None:
+            self._intent_training_screen = IntentTrainingScreen(
+                on_back=self._show_menu,
+                rule_policy_config=self.settings_editor.snapshot.config.preset.intent_policy,
+                parent=self,
+            )
+            self._set_screen(self._intent_training_screen)
 
         def _show_training(self) -> None:
             # Building the training screen (saved-model scan, plot widgets) can
@@ -450,13 +465,34 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             # config given at window construction (the default SystemConfig).
             self.config = self.settings_editor.snapshot.config
             self.controller.config = self.config
-            # Item 1 (FEAT-003): for a HUMAN mode whose first turn is an AI
-            # (Sheriff-first), let the GameScreen animate the AI run-up one turn
-            # at a time instead of the controller silently fast-forwarding it.
-            # advance_ai=False keeps the controller on the AI turn so the screen
-            # drives the cadence via _maybe_start_ai_sequence. Spectator modes
-            # already never fast-forward (their _advance_to_human_turn early-
-            # returns), so the default is fine there.
+
+
+
+            try:
+                intent_preferences = IntentSeatPreferences.load()
+                self.controller.intent_selections = intent_preferences.resolved
+                self.controller.intent_model_path = intent_preferences.model_path
+
+                from .game import GameMode as _Mode
+                dummy_seats = {
+                    _Mode.DUMMY_FIVE: range(5),
+                    _Mode.HUMAN_DUMMY: range(1, 5),
+                    _Mode.HUMAN_MAIN_DUMMY: range(2, 5),
+                    _Mode.MAIN_ONE_DUMMY_FOUR: range(1, 5),
+                }.get(mode, ())
+                if any(intent_preferences.resolved[i] == "learned" for i in dummy_seats):
+                    intent_preferences.validate_model()
+            except Exception as exc:
+                self.statusBar().showMessage(str(exc), 0)
+                self._show_menu()
+                return
+
+
+
+
+
+
+
             advance_ai = not bool(getattr(mode, "is_human", False))
             try:
                 self.controller.start(
