@@ -28,18 +28,20 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             # Deferred import avoids a circular import at module load time
             # (main_window imports this screen); the shared helper sizes each
             # mode button to about half the window width with a larger font.
-            from ..main_window import style_menu_button
+            from ..main_window import style_menu_button, style_menu_column
             layout = QVBoxLayout(self)
+            # Same gap and margins as the main menu's other column, so the
+            # button rows of both columns line up.
+            style_menu_column(layout)
             self.buttons: dict[GameMode, QPushButton] = {}
             for mode in GameMode:
                 button = QPushButton(tr(f"mode.{mode.value}"), self)
                 button.clicked.connect(lambda _checked=False, choice=mode: self._select(choice))
-                # Apply the same half-width + large-font sizing as the main-menu
-                # buttons so the whole menu is visually consistent (user item 1).
+                # Same size and font as the main-menu buttons.
                 style_menu_button(button)
                 layout.addWidget(button)
-                layout.setAlignment(button, Qt.AlignmentFlag.AlignHCenter)
                 self.buttons[mode] = button
+            layout.addStretch(1)
 
         def _select(self, mode: GameMode) -> None:
             if self.on_selected is not None:

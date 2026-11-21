@@ -12,6 +12,7 @@ from ..qt_compat import (
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,

@@ -294,14 +294,14 @@ def test_panel_switches_labels_and_visible_inputs_per_mode(qapp, tmp_path: Path)
     assert panel.episodes.isHidden() and panel.epochs.isHidden() and panel.target.isHidden()
     assert _row_label(panel, panel.graph_interval) == tr("training.graph_interval_main")
     assert panel.resume_module.itemText(0) == tr("training.resume_module_auto")
-    assert panel.resume_artifact.toolTip() == tr("tooltip.training_resume_artifact_path_main")
+    assert panel.resume_main_ai_row.toolTip() == tr("tooltip.training_resume_artifact_path_main")
     assert "—" not in panel.resume_module.toolTip()
 
     panel.mode.setCurrentIndex(panel.mode.findData(TRAINING_MODE_MODULE_TRAINING))
     assert _row_label(panel, panel.resume_row) == tr("training.resume_module")
     # Module training reads epochs (not episodes, games or the legacy target).
     assert panel.games.isHidden() and not panel.epochs.isHidden() and panel.episodes.isHidden()
-    assert panel.target.isHidden() and panel.resume_artifact.isHidden() and panel.artifact.isHidden()
+    assert panel.target.isHidden() and panel.resume_main_ai_row.isHidden() and panel.artifact.isHidden()
     assert _row_label(panel, panel.graph_interval) == tr("training.graph_interval")
     assert panel.resume_module.itemText(0) == tr("training.resume_module_none")
     assert panel.resume_module.currentData() is None  # module training starts from scratch by default
@@ -369,7 +369,7 @@ def test_bangmodel_takes_precedence_over_the_module_pair(qapp, tmp_path: Path) -
     model = tmp_path / "continue.bangmodel"
     model.write_bytes(b"x")
 
-    panel.resume_artifact.setText(str(model))
+    panel.set_resume_main_ai(str(model))
     setup = panel.setup()
     assert setup.resume_artifact_path == str(model)
     assert setup.resume_intent_artifact_path is None and setup.resume_emotion_artifact_path is None
@@ -378,7 +378,7 @@ def test_bangmodel_takes_precedence_over_the_module_pair(qapp, tmp_path: Path) -
 
     # A folder or a missing file is not a continue source.
     for value in (str(tmp_path), str(tmp_path / "missing.bangmodel"), ""):
-        panel.resume_artifact.setText(value)
+        panel.set_resume_main_ai(value)
         setup = panel.setup()
         assert setup.resume_artifact_path is None
         assert setup.resume_intent_artifact_path is not None
@@ -386,7 +386,7 @@ def test_bangmodel_takes_precedence_over_the_module_pair(qapp, tmp_path: Path) -
 
     # Module training never continues from a .bangmodel: the (hidden) field is not sent.
     panel.mode.setCurrentIndex(panel.mode.findData(TRAINING_MODE_MODULE_TRAINING))
-    panel.resume_artifact.setText(str(tmp_path))
+    panel.set_resume_main_ai(str(model))
     assert panel.setup().resume_artifact_path is None
     assert panel.resume_module.isEnabled()
 
@@ -400,11 +400,11 @@ def test_each_mode_shows_only_the_inputs_it_reads(qapp) -> None:
     expected = {
         TRAINING_MODE_DATA_COLLECTION: {"episodes", "players"},
         TRAINING_MODE_MODULE_TRAINING: {"epochs", "max_minutes", "graph_interval", "resume_row", "datasets_row", "max_games"},
-        TRAINING_MODE_MAIN_AI: {"games", "max_minutes", "graph_interval", "resume_row", "resume_artifact", "artifact"},
+        TRAINING_MODE_MAIN_AI: {"games", "max_minutes", "graph_interval", "resume_row", "resume_main_ai_row", "artifact"},
     }
     fields = (
         "episodes", "players", "epochs", "games", "max_minutes", "graph_interval",
-        "resume_row", "resume_artifact", "artifact", "datasets_row", "target", "output", "max_games",
+        "resume_row", "resume_main_ai_row", "artifact", "datasets_row", "target", "output", "max_games",
     )
     for mode, visible in expected.items():
         panel.mode.setCurrentIndex(panel.mode.findData(mode))

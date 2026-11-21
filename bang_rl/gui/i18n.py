@@ -120,6 +120,7 @@ _STRINGS: dict[str, dict[str, str]] = {
 
 
     "mode.group": {"en": "Game mode", "ko": "게임 모드"},
+    "menu.group": {"en": "Training and tools", "ko": "학습 · 도구"},
     "mode.human_random": {"en": "Human 1 vs Random AI 4", "ko": "사람 1 vs 랜덤 AI 4"},
     "mode.human_dummy": {"en": "Human 1 vs Dummy AI 4", "ko": "사람 1 vs 더미 AI 4"},
     "mode.human_main_dummy": {"en": "Human 1 vs Main AI 1 + Dummy AI 3", "ko": "사람 1 vs 메인 AI 1 + 더미 AI 3"},
@@ -402,6 +403,38 @@ _STRINGS: dict[str, dict[str, str]] = {
     "training.datasets": {"en": "Datasets to train on", "ko": "학습에 쓸 데이터셋"},
     "training.datasets_refresh": {"en": "Refresh datasets", "ko": "데이터셋 새로고침"},
     "training.datasets_empty": {"en": "No datasets yet. Collect data first.", "ko": "데이터셋이 없습니다. 먼저 데이터를 수집하세요."},
+    "training.datasets_all": {"en": "None checked (use every dataset)", "ko": "선택 안 함 (모든 데이터셋 사용)"},
+    "training.resume_main_ai_none": {"en": "None (new PPO on the chosen modules)", "ko": "없음 (선택한 모듈로 PPO 새로 학습)"},
+    # Shared pickers (module pair, main AI model, datasets) and path fields
+    "picker.refresh": {"en": "Refresh", "ko": "새로고침"},
+    "picker.open_folder": {"en": "Open", "ko": "열기"},
+    "picker.browse": {"en": "Browse for a file...", "ko": "파일 찾아보기..."},
+    "picker.browse_title": {"en": "Choose a Main AI model", "ko": "메인 AI 모델 선택"},
+    "picker.browse_folder_title": {"en": "Choose a folder", "ko": "폴더 선택"},
+    "picker.bangmodel_filter": {"en": "Main AI model (*.bangmodel)", "ko": "메인 AI 모델 (*.bangmodel)"},
+    "picker.selected_count": {"en": "{count} selected", "ko": "{count}개 선택됨"},
+    "tooltip.picker_refresh": {"en": "Reload the list from disk.", "ko": "디스크에서 목록을 다시 읽습니다."},
+    "tooltip.picker_open_folder": {"en": "Open the folder in the file explorer.", "ko": "탐색기에서 폴더를 엽니다."},
+    "tooltip.picker_browse": {"en": "Pick a .bangmodel file outside the listed folders.", "ko": "목록에 없는 폴더의 .bangmodel 파일을 고릅니다."},
+    "tooltip.path_browse": {"en": "Choose a folder.", "ko": "폴더를 고릅니다."},
+    # Save locations group and the result path line
+    "training.storage_group": {"en": "Save locations", "ko": "저장 위치"},
+    "training.storage_report": {"en": "report", "ko": "리포트"},
+    "training.storage_artifact": {"en": "artifact", "ko": "아티팩트"},
+    "training.storage_default": {"en": "default folders", "ko": "기본 폴더"},
+    "training.storage_changed": {"en": "changed", "ko": "변경됨"},
+    "training.storage_naming": {
+        "en": "File names: date-time_kind_conditions_shortid (for example 20261117-0348_mainai_30000g_ba97bb). Each .bangmodel has a .about.md next to it with its kind, sources and notes.",
+        "ko": "파일 이름 규칙: 날짜-시각_종류_조건_짧은ID (예: 20261117-0348_mainai_30000g_ba97bb). 각 .bangmodel 옆의 .about.md에 종류, 원본, 비고가 적혀 있습니다.",
+    },
+    "tooltip.training_storage": {
+        "en": "Show or hide the folders where reports and models are written.",
+        "ko": "리포트와 모델을 저장할 폴더를 펼치거나 접습니다.",
+    },
+    "training.result_saving": {"en": "Saving to:", "ko": "저장 위치:"},
+    "training.result_saved": {"en": "Saved:", "ko": "저장됨:"},
+    "training.result_copy": {"en": "Copy path", "ko": "경로 복사"},
+    "tooltip.training_result_copy": {"en": "Copy the full path to the clipboard.", "ko": "전체 경로를 클립보드에 복사합니다."},
     "training.games_per_round": {"en": "Games per round", "ko": "라운드당 수집 게임 수"},
     "training.refine_rounds": {"en": "Max rounds", "ko": "최대 라운드 수"},
     "training.refine_epochs": {"en": "Epochs per round", "ko": "라운드당 에폭"},
@@ -702,8 +735,8 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ko": "향후 메인 AI 학습을 이어갈 때 사용할 기존 .bangmodel 파일 또는 폴더입니다. 데이터 수집과 Phase-2 추론 모듈 학습에서는 사용하지 않습니다.",
     },
     "tooltip.training_resume_artifact_path_main": {
-        "en": "Optional. A .bangmodel file to continue Main AI training from: its PPO weights are kept, the optimizer starts fresh, and the intent and emotion modules stored inside it are used. When a file is set here, the module choice above is ignored. A folder or a missing file is treated as not set, and training starts a fresh PPO on the chosen modules.",
-        "ko": "선택 사항입니다. 메인 AI 학습을 이어갈 .bangmodel 파일입니다. PPO 가중치는 이어받고 optimizer는 새로 시작하며, 파일 안에 저장된 의도·감정 모듈을 그대로 사용합니다. 여기에 파일을 지정하면 위의 모듈 선택은 무시됩니다. 폴더이거나 없는 파일이면 지정하지 않은 것으로 보고, 선택한 모듈 위에서 PPO를 새로 학습합니다.",
+        "en": "Optional. A saved Main AI model (.bangmodel) to continue training from: its PPO weights are kept, the optimizer starts fresh, and the intent and emotion modules stored inside it are used. When a model is chosen here, the module choice above is ignored. Choose None to start a fresh PPO on the chosen modules. Use 'Browse for a file...' for a model outside the listed folders. Incompatible models are listed but cannot be chosen.",
+        "ko": "선택 사항입니다. 이어 학습할 저장된 메인 AI 모델(.bangmodel)입니다. PPO 가중치는 이어받고 optimizer는 새로 시작하며, 파일 안에 저장된 의도·감정 모듈을 그대로 사용합니다. 여기서 모델을 고르면 위의 모듈 선택은 무시됩니다. '없음'을 고르면 선택한 모듈 위에서 PPO를 새로 학습합니다. 목록에 없는 폴더의 모델은 '파일 찾아보기...'로 고릅니다. 호환되지 않는 모델은 목록에 보이지만 고를 수 없습니다.",
     },
     "tooltip.training_resume_module_main": {
         "en": "The intent and emotion modules the Main AI is built on. They stay frozen during training and only the PPO policy learns. Auto picks the newest saved run that is compatible. Runs marked incompatible cannot be used: the intent module must predict 4 roles and the emotion module must use the Dummy AI's 9-entry formula-1.0+label9 labels. Ignored when a .bangmodel is set below.",

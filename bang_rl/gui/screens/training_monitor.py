@@ -22,6 +22,7 @@ from ..qt_compat import (
     QListWidgetItem,
     QPlainTextEdit,
     QProgressBar,
+    QScrollArea,
     QSizePolicy,
     QPushButton,
     QSpinBox,
@@ -37,6 +38,10 @@ from ..qt_compat import (
 )
 from ..i18n import tr
 from .. import main_ai_view
+from ..widgets.artifact_picker import ArtifactPicker, MultiArtifactPicker, PathField, open_folder
+
+# The setup column keeps this width in every mode; the graphs take the rest.
+SETUP_PANEL_WIDTH = 480
 from ..training import (
     TRAINING_MODE_DATA_COLLECTION,
     TRAINING_MODE_INFERENCE_REFINEMENT,
@@ -188,19 +193,28 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self.target.setSpecialValueText("Use episodes")
             self.seed = QSpinBox(self)
             self.seed.setRange(-2_147_483_648, 2_147_483_647)
-            self.report = QLineEdit(str(REPORTS_DIR), self)
-            self.output = QLineEdit(str(OUTPUTS_DIR), self)
-            self.artifact = QLineEdit(str(ARTIFACTS_DIR), self)
-            self.resume_artifact = QLineEdit(str(ARTIFACTS_DIR), self)
+            # Where results are written: folder fields with Browse/Open buttons,
+            # grouped in the collapsible "Save locations" box built below.
+            self.report = PathField(str(REPORTS_DIR), parent=self)
+            self.output = PathField(str(OUTPUTS_DIR), parent=self)
+            self.artifact = PathField(str(ARTIFACTS_DIR), parent=self)
+            # Main AI training: the saved .bangmodel to continue from (or none).
+            self.resume_main_ai_row = ArtifactPicker(
+                on_refresh=self.refresh_resume_main_ai_models,
+                folder=lambda: ARTIFACTS_DIR,
+                browse_filter=tr("picker.bangmodel_filter"),
+                parent=self,
+            )
+            self.resume_main_ai = self.resume_main_ai_row.combo
+            self.refresh_resume_main_ai_models()
             # Saved intent/emotion modules to continue module training from.
-            self.resume_module = QComboBox(self)
-            self.resume_module_refresh = QPushButton(tr("perf.refresh"), self)
-            self.resume_module_refresh.clicked.connect(self.refresh_resume_runs)
-            resume_row = self.resume_row = QWidget(self)
-            resume_row_layout = QHBoxLayout(resume_row)
-            resume_row_layout.setContentsMargins(0, 0, 0, 0)
-            resume_row_layout.addWidget(self.resume_module, 1)
-            resume_row_layout.addWidget(self.resume_module_refresh)
+            resume_row = self.resume_row = ArtifactPicker(
+                on_refresh=self.refresh_resume_runs,
+                folder=self._module_folder,
+                parent=self,
+            )
+            self.resume_module = resume_row.combo
+            self.resume_module_refresh = resume_row.refresh_button
             self._resume_runs: dict[str, Any] = {}
             # Main-AI compatibility of each listed run: job id -> (ok, reason).
             self._resume_compat: dict[str, tuple[bool, str | None]] = {}
@@ -214,27 +228,26 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self.players.addItem(tr("training.collection_players.dummy5"), "dummy5")
             self.players.addItem(tr("training.collection_players.main1_dummy4"), "main1-dummy4")
             # The main AI model that plays (collection) or whose PPO stays fixed (refinement).
-            self.base_model = QComboBox(self)
-            self.base_model_refresh = QPushButton(tr("training.base_model_refresh"), self)
-            self.base_model_refresh.clicked.connect(self.refresh_base_models)
-            base_model_row = self.base_model_row = QWidget(self)
-            base_model_layout = QHBoxLayout(base_model_row)
-            base_model_layout.setContentsMargins(0, 0, 0, 0)
-            base_model_layout.addWidget(self.base_model, 1)
-            base_model_layout.addWidget(self.base_model_refresh)
+            base_model_row = self.base_model_row = ArtifactPicker(
+                on_refresh=self.refresh_base_models,
+                folder=lambda: ARTIFACTS_DIR,
+                parent=self,
+            )
+            self.base_model = base_model_row.combo
+            self.base_model_refresh = base_model_row.refresh_button
             self.action_mode = QComboBox(self)
             self.action_mode.addItem(tr("training.action_mode.deterministic"), "deterministic")
             self.action_mode.addItem(tr("training.action_mode.stochastic"), "stochastic")
             # Datasets (dummy5 and main1+dummy4, local and saved) to train the modules on.
-            self.datasets = QListWidget(self)
-            self.datasets.setMaximumHeight(130)
-            self.datasets_refresh = QPushButton(tr("training.datasets_refresh"), self)
-            self.datasets_refresh.clicked.connect(self.refresh_datasets)
-            datasets_row = self.datasets_row = QWidget(self)
-            datasets_layout = QVBoxLayout(datasets_row)
-            datasets_layout.setContentsMargins(0, 0, 0, 0)
-            datasets_layout.addWidget(self.datasets)
-            datasets_layout.addWidget(self.datasets_refresh)
+            # Same row as the single pickers; the list opens as a drop-down.
+            datasets_row = self.datasets_row = MultiArtifactPicker(
+                on_refresh=self.refresh_datasets,
+                folder=lambda: self._dataset_root()[0],
+                none_text=tr("training.datasets_all"),
+                parent=self,
+            )
+            self.datasets = datasets_row.list
+            self.datasets_refresh = datasets_row.refresh_button
             # Inference refinement settings.
             self.refine_games = QSpinBox(self)
             self.refine_games.setRange(1, 2_147_483_647)
@@ -280,11 +293,28 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             form.addRow(tr("training.graph_interval"), self.graph_interval)
             form.addRow(tr("training.target"), self.target)
             form.addRow(tr("training.seed"), self.seed)
-            form.addRow(tr("training.report_path"), self.report)
-            form.addRow(tr("training.output_path"), self.output)
-            form.addRow(tr("training.artifact_path"), self.artifact)
             form.addRow(tr("training.resume_module"), resume_row)
-            form.addRow(tr("training.resume_artifact_path"), self.resume_artifact)
+            form.addRow(tr("training.resume_artifact_path"), self.resume_main_ai_row)
+
+            # Save locations: collapsed to a one-line summary by default.
+            self.storage_toggle = QPushButton(self)
+            self.storage_toggle.setCheckable(True)
+            self.storage_toggle.setFlat(True)
+            self.storage_toggle.setStyleSheet("text-align: left; padding: 2px 0px;")
+            self.storage_toggle.setToolTip(tr("tooltip.training_storage"))
+            self.storage_toggle.toggled.connect(self._sync_storage)
+            self.storage_body = QWidget(self)
+            storage_form = self._storage_form = QFormLayout(self.storage_body)
+            storage_form.setContentsMargins(0, 0, 0, 0)
+            storage_form.addRow(tr("training.report_path"), self.report)
+            storage_form.addRow(tr("training.output_path"), self.output)
+            storage_form.addRow(tr("training.artifact_path"), self.artifact)
+            naming = QLabel(tr("training.storage_naming"), self.storage_body)
+            naming.setWordWrap(True)
+            naming.setStyleSheet("color: gray;")
+            storage_form.addRow(naming)
+            for path_field in (self.report, self.output, self.artifact):
+                path_field.edit.editingFinished.connect(self._sync_storage)
 
             # Hardware / AI-training controls, moved here from the Settings
             # screen so they sit next to the job they configure. Their values
@@ -323,8 +353,13 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self.hardware_form = hardware_form
 
             outer = QVBoxLayout(self)
+            outer.setContentsMargins(0, 0, 0, 0)
             outer.addLayout(form)
+            outer.addWidget(self.storage_toggle)
+            outer.addWidget(self.storage_body)
             outer.addWidget(self.hardware_group)
+            outer.addStretch(1)
+            self._fix_column_widths()
 
             # Item 3: hover help on every field AND its QFormLayout label so the
             # AI-training settings menu gets mouse-over tooltips too.
@@ -340,7 +375,9 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 (self.report, "tooltip.training_report_path"),
                 (self.output, "tooltip.training_output_path"),
                 (self.artifact, "tooltip.training_artifact_path"),
-                (self.resume_artifact, "tooltip.training_resume_artifact_path"),
+                (self.resume_main_ai, "tooltip.training_resume_artifact_path"),
+                (self.resume_main_ai_row, "tooltip.training_resume_artifact_path"),
+                (self.resume_row, "tooltip.training_resume_module"),
                 (self.resume_module, "tooltip.training_resume_module"),
                 (self.players, "tooltip.training_collection_players"),
                 (self.base_model, "tooltip.training_base_model"),
@@ -359,10 +396,13 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             if label is not None:
                 label.setToolTip(tr("tooltip.training_resume_module"))
             for field, key in field_tooltips:
-                field.setToolTip(tr(key))
-                label = form.labelForField(field)
+                text = tr(key)
+                if field is self.artifact:
+                    text += "\n\n" + tr("training.storage_naming")
+                field.setToolTip(text)
+                label = form.labelForField(field) or storage_form.labelForField(field)
                 if label is not None:
-                    label.setToolTip(tr(key))
+                    label.setToolTip(text)
             hardware_tooltips = (
                 (self.clip, "tooltip.ppo_clip"),
                 (self.cpu, "tooltip.cpu"),
@@ -380,7 +420,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
 
             self.mode.currentIndexChanged.connect(self._on_mode_changed)
             self.players.currentIndexChanged.connect(lambda _index: self._apply_mode())
-            self.resume_artifact.textChanged.connect(self._sync_main_ai_sources)
+            self.resume_main_ai.currentIndexChanged.connect(lambda _index: self._sync_main_ai_sources())
             self._apply_mode()
 
         # --- mode-dependent form -------------------------------------------
@@ -391,16 +431,86 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
         def _resume_kind(self) -> str:
             return "main" if self._is_main_ai() else "module"
 
+        def _label_for(self, field: QWidget) -> Any:
+            return self._form.labelForField(field) or self._storage_form.labelForField(field)
+
         def _set_row_visible(self, field: QWidget, visible: bool) -> None:
             field.setVisible(visible)
-            label = self._form.labelForField(field)
+            label = self._label_for(field)
             if label is not None:
                 label.setVisible(visible)
+
+        # Every label text a row can show in any mode; the label column is as
+        # wide as the longest of them, so switching modes never moves a field.
+        _ALTERNATE_LABEL_KEYS = (
+            "training.graph_interval_main",
+            "training.resume_module_main",
+        )
+        _LABEL_COLUMN_MAX = 170
+
+        def _fix_column_widths(self) -> None:
+            """Give the label column of every form one fixed width.
+
+            QFormLayout sizes its label column to the longest *visible* label,
+            so hiding rows per mode used to move the fields sideways. Labels
+            longer than the cap wrap onto a second line.
+            """
+
+            forms = (self._form, self._storage_form, self.hardware_form)
+            labels: list[QLabel] = []
+            for layout in forms:
+                layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+                layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                for row in range(layout.rowCount()):
+                    item = layout.itemAt(row, QFormLayout.ItemRole.LabelRole)
+                    widget = item.widget() if item is not None else None
+                    if isinstance(widget, QLabel):
+                        labels.append(widget)
+            metrics = self.fontMetrics()
+            texts = [label.text() for label in labels] + [tr(key) for key in self._ALTERNATE_LABEL_KEYS]
+            widest = max((metrics.horizontalAdvance(text) for text in texts), default=0) + 8
+            width = min(widest, self._LABEL_COLUMN_MAX)
+            for label in labels:
+                label.setWordWrap(True)
+                label.setFixedWidth(width)
+            # Hardware group labels sit inside a frame; keep the same column.
+            self._label_column_width = width
+            for combo in (self.mode, self.players, self.action_mode):
+                combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+                combo.setMinimumContentsLength(12)
+            for spin in self.findChildren(QSpinBox) + self.findChildren(QDoubleSpinBox):
+                policy = spin.sizePolicy()
+                policy.setHorizontalPolicy(QSizePolicy.Policy.Expanding)
+                spin.setSizePolicy(policy)
+
+        def _sync_storage(self, _value: Any = None) -> None:
+            """Show or hide the save-location fields and refresh the summary line."""
+
+            expanded = self.storage_toggle.isChecked()
+            self.storage_body.setVisible(expanded)
+            visible = [field for field in (self.report, self.artifact) if not field.isHidden()]
+            changed = any(not field.is_default() for field in visible)
+            names = " · ".join(tr(key) for key, field in (
+                ("training.storage_report", self.report), ("training.storage_artifact", self.artifact),
+            ) if field in visible)
+            state = tr("training.storage_changed" if changed else "training.storage_default")
+            # U+25BC / U+25B6 exist in Korean UI fonts (Malgun Gothic); ▾/▸ do not.
+            arrow = "\u25bc" if expanded else "\u25b6"
+            self.storage_toggle.setText(f"{arrow} {tr('training.storage_group')}: {names} ({state})")
+
+        def _module_folder(self) -> Path:
+            from bang_rl.training.module_artifacts import MODULE_MODEL_ROOT
+
+            run = self._resume_runs.get(self.resume_module.currentData() or "") if hasattr(self, "_resume_runs") else None
+            path = getattr(run, "intent_path", None) or getattr(run, "emotion_path", None)
+            if path:
+                return Path(path).parent
+            return Path(self.model_root) if self.model_root is not None else MODULE_MODEL_ROOT
 
         def _set_row_text(self, field: QWidget, label_key: str | None, tooltip_key: str) -> None:
             """Set a row's label text (when given) and the tooltip on both widgets."""
 
-            label = self._form.labelForField(field)
+            label = self._label_for(field)
             if label is not None:
                 if label_key is not None:
                     label.setText(tr(label_key))
@@ -450,7 +560,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self._set_row_visible(self.max_minutes, not collect)
             self._set_row_visible(self.graph_interval, module or main)
             self._set_row_visible(self.resume_row, module or main)
-            self._set_row_visible(self.resume_artifact, main)
+            self._set_row_visible(self.resume_main_ai_row, main)
             # Every workflow writes its data under folders derived from the
             # config, so the generic output path is never read by them.
             self._set_row_visible(self.output, False)
@@ -474,36 +584,126 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 else "tooltip.training_max_minutes",
             )
             self._set_row_text(
-                self.resume_artifact,
+                self.resume_main_ai_row,
                 None,
                 "tooltip.training_resume_artifact_path_main" if main else "tooltip.training_resume_artifact_path",
             )
+            self.resume_main_ai.setToolTip(self.resume_main_ai_row.toolTip())
             resume_label = self._form.labelForField(self.resume_row)
             if resume_label is not None:
                 resume_label.setText(tr("training.resume_module_main" if main else "training.resume_module"))
             self._sync_limit_mode()
             self._sync_main_ai_sources()
+            self._sync_storage()
 
         def _on_mode_changed(self, _index: int | None = None) -> None:
             self._apply_mode()
             self.refresh_resume_runs()
 
         def _main_ai_resume_file(self) -> str | None:
-            """The .bangmodel file to continue from, or None.
+            """The selected .bangmodel file to continue from, or None.
 
-            Only an existing file counts. The field defaults to the artifacts
-            folder, and a folder would silently pick its newest model, so a
-            folder is treated as "not set" for Main AI training.
+            Only an existing file counts: a folder would silently pick its
+            newest model, so "none" never sends a folder to the service.
             """
 
-            text = self.resume_artifact.text().strip()
-            if not text:
+            value = self.resume_main_ai.currentData()
+            if not isinstance(value, str) or not value:
+                return None
+            index = self.resume_main_ai.currentIndex()
+            item = self.resume_main_ai.model().item(index)
+            if item is not None and not item.isEnabled():
                 return None
             try:
-                path = Path(text).expanduser()
+                path = Path(value).expanduser()
                 return str(path) if path.is_file() else None
             except OSError:
                 return None
+
+        def refresh_resume_main_ai_models(self) -> None:
+            """Reload the main AI models that main-AI training can continue from."""
+
+            self._fill_main_ai_combo(
+                self.resume_main_ai_row, tr("training.resume_main_ai_none"), keep_first=True
+            )
+
+        def _fill_main_ai_combo(self, picker: Any, none_text: str, *, keep_first: bool) -> None:
+            """List saved .bangmodel files in ``picker``; incompatible ones are disabled.
+
+            ``keep_first`` keeps the "none" entry selected by default (continue
+            from nothing); otherwise the newest usable model is preselected.
+            """
+
+            from bang_rl.training.main_ai_artifacts import (
+                list_saved_main_ai_models,
+                main_ai_model_compatibility,
+            )
+
+            combo = picker.combo
+            previous = combo.currentData()
+            # Files added with "Browse..." stay listed after a refresh.
+            extra = [
+                (combo.itemData(i), combo.itemText(i), combo.itemData(i, Qt.ItemDataRole.ToolTipRole))
+                for i in range(combo.count())
+                if isinstance(combo.itemData(i), str) and combo.itemData(i).endswith(".bangmodel")
+            ]
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem(none_text, None)
+            try:
+                models = list_saved_main_ai_models(self._main_ai_dirs)
+            except OSError:
+                models = ()
+            first_usable = -1
+            for model in models:
+                ok, reason = main_ai_model_compatibility(model.path)
+                label = model.display_name + ("" if ok else tr("training.resume_module_incompatible"))
+                combo.addItem(label, str(model.path))
+                index = combo.count() - 1
+                tip = model.tooltip if ok else tr(f"training.base_model_reason.{reason}") + "\n\n" + model.tooltip
+                combo.setItemData(index, tip, Qt.ItemDataRole.ToolTipRole)
+                if not ok:
+                    item = combo.model().item(index)
+                    if item is not None:
+                        item.setEnabled(False)
+                elif first_usable < 0:
+                    first_usable = index
+            for path, text, tip in extra:
+                if combo.findData(path) < 0 and Path(path).is_file():
+                    picker.add_path_item(path, text, str(tip or ""))
+            picker.add_browse_item()
+            index = combo.findData(previous) if previous else -1
+            if index < 0:
+                index = 0 if keep_first else max(first_usable, 0)
+            combo.setCurrentIndex(index)
+            combo.blockSignals(False)
+            picker.update_summary()
+
+        def set_resume_main_ai(self, path: str | Path | None) -> bool:
+            """Choose the .bangmodel to continue from; anything but an existing file selects "none"."""
+
+            if path and Path(str(path)).is_file() and self._select_main_ai_file(self.resume_main_ai_row, str(path)):
+                return True
+            self.resume_main_ai.setCurrentIndex(0)
+            return False
+
+        def _select_main_ai_file(self, picker: Any, path: str) -> bool:
+            """Select ``path`` in a main-AI picker, adding it when it is outside the listed folders."""
+
+            combo = picker.combo
+            index = combo.findData(str(path))
+            if index < 0:
+                if not Path(path).is_file():
+                    return False
+                from bang_rl.artifact_info import display_name
+
+                index = picker.add_path_item(path, display_name(path))
+            item = combo.model().item(index)
+            if item is not None and not item.isEnabled():
+                return False
+            combo.setCurrentIndex(index)
+            picker.update_summary()
+            return True
 
         def _sync_main_ai_sources(self, _text: str | None = None) -> None:
             """A .bangmodel to continue from overrides the module choice."""
@@ -650,6 +850,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self.resume_module.setCurrentIndex(max(0, index))
             self._resume_kind_shown = kind
             self.resume_module.blockSignals(False)
+            self.resume_row.update_summary()
 
         def select_resume_job(self, job_id: str | None) -> bool:
             """Preselect a saved run in the module list; False if it is unknown or unusable."""
@@ -713,22 +914,9 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
         def _select_base_model(self, path: str) -> bool:
             """Select ``path`` in the base-model combo (adding it when it is outside the listed folders)."""
 
-            index = self.base_model.findData(str(path))
-            if index < 0:
+            if self.base_model.findData(str(path)) < 0:
                 self.refresh_base_models()
-                index = self.base_model.findData(str(path))
-            if index < 0:
-                if not Path(path).is_file():
-                    return False
-                from bang_rl.artifact_info import display_name
-
-                self.base_model.addItem(display_name(path), str(path))
-                index = self.base_model.count() - 1
-            item = self.base_model.model().item(index)
-            if item is not None and not item.isEnabled():
-                return False
-            self.base_model.setCurrentIndex(index)
-            return True
+            return self._select_main_ai_file(self.base_model_row, str(path))
 
         def apply_preset(self, preset: TrainingPreset) -> PresetResult:
             """Switch the form to ``preset`` (mode, datasets, module pair, model, players).
@@ -746,6 +934,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self._apply_mode()
             self.refresh_datasets()
             self.refresh_base_models()
+            self.refresh_resume_main_ai_models()
             self.refresh_resume_runs()
             problems: list[str] = []
             parts: list[str] = []
@@ -765,19 +954,20 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 parts.append(tr("library.applied_datasets", count=len(self.checked_dataset_paths())))
             if preset.module_run_id is not None and mode in (TRAINING_MODE_MODULE_TRAINING, TRAINING_MODE_MAIN_AI):
                 if mode == TRAINING_MODE_MAIN_AI and preset.bangmodel_path is None:
-                    # A .bangmodel typed earlier would override the chosen module pair.
-                    self.resume_artifact.setText(str(ARTIFACTS_DIR))
+                    # A .bangmodel chosen earlier would override the chosen module pair.
+                    self.resume_main_ai.setCurrentIndex(0)
                 if self.select_resume_job(preset.module_run_id):
                     parts.append(tr("library.applied_module", job=str(preset.module_run_id)[:8]))
                 else:
                     problems.append(tr("library.apply_module_unusable", job=preset.module_run_id))
             if preset.bangmodel_path is not None:
                 if mode == TRAINING_MODE_MAIN_AI:
-                    if Path(preset.bangmodel_path).is_file():
-                        self.resume_artifact.setText(str(preset.bangmodel_path))
+                    if not Path(preset.bangmodel_path).is_file():
+                        problems.append(tr("library.apply_model_missing", path=preset.bangmodel_path))
+                    elif self._select_main_ai_file(self.resume_main_ai_row, str(preset.bangmodel_path)):
                         parts.append(tr("library.applied_continue", name=Path(preset.bangmodel_path).name))
                     else:
-                        problems.append(tr("library.apply_model_missing", path=preset.bangmodel_path))
+                        problems.append(tr("library.apply_model_unusable", path=preset.bangmodel_path))
                 elif mode in (TRAINING_MODE_INFERENCE_REFINEMENT, TRAINING_MODE_DATA_COLLECTION):
                     if self._select_base_model(preset.bangmodel_path):
                         parts.append(tr("library.applied_base", name=Path(preset.bangmodel_path).name))
@@ -837,38 +1027,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
         def refresh_base_models(self) -> None:
             """Reload the main AI models (compatible ones are selectable)."""
 
-            from bang_rl.training.main_ai_artifacts import (
-                list_saved_main_ai_models,
-                main_ai_model_compatibility,
-            )
-
-            previous = self.base_model.currentData()
-            self.base_model.blockSignals(True)
-            self.base_model.clear()
-            self.base_model.addItem(tr("training.base_model_none"), None)
-            try:
-                models = list_saved_main_ai_models(self._main_ai_dirs)
-            except OSError:
-                models = ()
-            first_usable = -1
-            for model in models:
-                ok, reason = main_ai_model_compatibility(model.path)
-                label = model.display_name + ("" if ok else tr("training.resume_module_incompatible"))
-                self.base_model.addItem(label, str(model.path))
-                index = self.base_model.count() - 1
-                tip = model.tooltip if ok else tr(f"training.base_model_reason.{reason}") + "\n\n" + model.tooltip
-                self.base_model.setItemData(index, tip, Qt.ItemDataRole.ToolTipRole)
-                if not ok:
-                    item = self.base_model.model().item(index)
-                    if item is not None:
-                        item.setEnabled(False)
-                elif first_usable < 0:
-                    first_usable = index
-            index = self.base_model.findData(previous) if previous else -1
-            if index < 0:
-                index = max(first_usable, 0)
-            self.base_model.setCurrentIndex(index)
-            self.base_model.blockSignals(False)
+            self._fill_main_ai_combo(self.base_model_row, tr("training.base_model_none"), keep_first=False)
 
         def _dataset_root(self) -> tuple[Path, bool]:
             """Canonical dataset folder of the config, and whether it is the default one."""
@@ -905,6 +1064,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 placeholder = QListWidgetItem(tr("training.datasets_empty"))
                 placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
                 self.datasets.addItem(placeholder)
+            self.datasets_row.update_summary()
 
         def checked_dataset_paths(self) -> tuple[str, ...]:
             """Folders of the checked datasets (empty = use every dataset found)."""
@@ -1018,6 +1178,26 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self.snapshot = QLabel(tr("training.snapshot_not_started"), self)
             self.paths = QLabel("Report: — · Output: — · Artifact: —", self)
             self.paths.setWordWrap(True)
+            # Where this run's result is (or will be) saved, with Open/Copy.
+            self.result_bar = QWidget(self)
+            result_layout = QHBoxLayout(self.result_bar)
+            result_layout.setContentsMargins(0, 0, 0, 0)
+            self.result_label = QLabel("", self.result_bar)
+            self.result_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            result_policy = self.result_label.sizePolicy()
+            result_policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+            self.result_label.setSizePolicy(result_policy)
+            self.result_open_button = QPushButton(tr("picker.open_folder"), self.result_bar)
+            self.result_open_button.setToolTip(tr("tooltip.picker_open_folder"))
+            self.result_open_button.clicked.connect(lambda: open_folder(self._result_path))
+            self.result_copy_button = QPushButton(tr("training.result_copy"), self.result_bar)
+            self.result_copy_button.setToolTip(tr("tooltip.training_result_copy"))
+            self.result_copy_button.clicked.connect(self._copy_result_path)
+            result_layout.addWidget(self.result_label, 1)
+            result_layout.addWidget(self.result_open_button)
+            result_layout.addWidget(self.result_copy_button)
+            self._result_path = ""
+            self.result_bar.setVisible(False)
             self.logs = QPlainTextEdit(self)
             self.logs.setReadOnly(True)
             self.logs.setMinimumHeight(70)
@@ -1192,13 +1372,19 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             layout.addWidget(self.back_button)
             columns = QHBoxLayout()
             left_panel = QVBoxLayout()
-            left_panel.addWidget(self.setup_panel)
+            # The form scrolls vertically when it is taller than the window
+            # (for example with the save locations expanded); never sideways.
+            self.setup_scroll = QScrollArea(self)
+            self.setup_scroll.setWidgetResizable(True)
+            self.setup_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+            self.setup_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.setup_scroll.setWidget(self.setup_panel)
+            left_panel.addWidget(self.setup_scroll, 1)
             left_panel.addLayout(buttons)
             left_panel.addWidget(self.library_button)
             left_panel.addWidget(self.performance_button)
             left_panel.addWidget(self.inference_button)
             left_panel.addWidget(self.save_button)
-            left_panel.addStretch(1)
             right_panel = QVBoxLayout()
             right_panel.addWidget(self.environment_steps)
             right_panel.addWidget(self.truncated)
@@ -1212,13 +1398,20 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             right_panel.addWidget(self.status)
             right_panel.addWidget(self.snapshot)
             right_panel.addWidget(self.paths)
+            right_panel.addWidget(self.result_bar)
             right_panel.addWidget(self.graph_stack, 6)
             right_panel.addLayout(graph_controls)
             right_panel.addWidget(self.legend_bar)
             right_panel.addWidget(self.logs, 1)
             right_panel.addWidget(self.message)
-            columns.addLayout(left_panel, 1)
-            columns.addLayout(right_panel, 2)
+            # A fixed-width setup column: switching modes or long item names
+            # never resizes it (or the graphs next to it).
+            left_container = self.setup_column = QWidget(self)
+            left_container.setLayout(left_panel)
+            left_panel.setContentsMargins(0, 0, 0, 0)
+            left_container.setFixedWidth(SETUP_PANEL_WIDTH)
+            columns.addWidget(left_container)
+            columns.addLayout(right_panel, 1)
             layout.addLayout(columns, 1)
             self._timer = QTimer(self)
             self._timer.setInterval(250)
@@ -1361,8 +1554,35 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             if status != self._last_status and status in {"finished", "cancelled"}:
                 self.setup_panel.refresh_resume_runs()
                 self.setup_panel.refresh_base_models()
+                if hasattr(self.setup_panel, "refresh_resume_main_ai_models"):
+                    self.setup_panel.refresh_resume_main_ai_models()
                 self.setup_panel.refresh_datasets()
             self._last_status = status
+
+        def _update_result_bar(self, progress: Any) -> None:
+            """Show the main result path: "Saved: ..." once the run ended, "Saving to: ..." before."""
+
+            path = ""
+            if progress is not None:
+                for key in ("artifact_path", "output_path", "report_path"):
+                    value = getattr(progress, key, None)
+                    if value:
+                        path = str(value)
+                        break
+            self._result_path = path
+            self.result_bar.setVisible(bool(path))
+            if not path:
+                return
+            done = str(getattr(progress, "status", "")) in {"finished", "cancelled"}
+            prefix = tr("training.result_saved" if done else "training.result_saving")
+            text = f"{prefix} {path}"
+            width = max(60, self.result_label.width())
+            self.result_label.setText(self.result_label.fontMetrics().elidedText(text, Qt.TextElideMode.ElideMiddle, width))
+            self.result_label.setToolTip(text)
+
+        def _copy_result_path(self) -> None:
+            if QApplication is not None and self._result_path:
+                QApplication.clipboard().setText(self._result_path)
 
         def _copy_metrics(self) -> None:
             if QApplication is not None:
@@ -1620,6 +1840,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 self._save_status = None
                 self._save_plans = []
                 self.save_button.setEnabled(False)
+                self._update_result_bar(None)
                 return
             self._refresh_resume_on_finish(str(progress.status))
             target_config = getattr(state.snapshot, "config_snapshot", {}) if state.snapshot is not None else {}
@@ -1713,6 +1934,8 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 f"Report: {progress.report_path or '—'} · Output: {getattr(progress, 'output_path', None) or '—'} · "
                 f"Artifact: {progress.artifact_path or '—'}"
             )
+            self.paths.setToolTip(self.paths.text())
+            self._update_result_bar(progress)
             _set_log_text_preserving_scroll(self.logs, "\n".join(state.logs))
             self.message.setText(state.message or self._notice or "")
             if self.plot is not None:

@@ -12,6 +12,8 @@ from .qt_compat import (
     Qt,
     QApplication,
     QFileDialog,
+    QGroupBox,
+    QHBoxLayout,
     QMainWindow,
     QLabel,
     QPushButton,
@@ -63,12 +65,19 @@ MIN_FONT_POINT_SIZE = 10
 # ``if QT_AVAILABLE:`` gate so they can be imported and unit-tested headlessly
 # (mirroring WINDOW_WIDTH / MIN_FONT_POINT_SIZE above). GameModeSelect imports
 # them so the whole menu stays visually consistent.
-MENU_BUTTON_WIDTH = WINDOW_WIDTH // 2
+# The main menu has two columns: game modes on the left, everything else
+# (training, library, settings, ...) on the right. Both columns use the same
+# button size, the same vertical gap between buttons and the same frame
+# margins, so their rows line up; MENU_COLUMN_GAP is the one horizontal gap.
+MENU_BUTTON_WIDTH = 440
 MENU_BUTTON_MIN_HEIGHT = 48
+MENU_BUTTON_SPACING = 16
+MENU_COLUMN_GAP = 48
+MENU_COLUMN_MARGIN = 16
 # Point size (>= 14pt) and horizontal/vertical padding applied via a stylesheet
 # so the button text is large relative to the wide window.
 MENU_BUTTON_FONT_POINT_SIZE = 16
-MENU_BUTTON_STYLE = "padding: 12px 40px; font-size: 16pt;"
+MENU_BUTTON_STYLE = "padding: 12px 16px; font-size: 16pt;"
 
 
 def style_menu_button(button: Any) -> None:
@@ -87,6 +96,18 @@ def style_menu_button(button: Any) -> None:
     if font.pointSize() < MENU_BUTTON_FONT_POINT_SIZE:
         font.setPointSize(MENU_BUTTON_FONT_POINT_SIZE)
         button.setFont(font)
+
+
+def style_menu_column(layout: Any) -> None:
+    """Give a menu column's button layout the shared gap and margins.
+
+    Used by both columns (game modes and the other menu items) so the vertical
+    gap between buttons is the same everywhere and the rows of the two
+    columns line up.
+    """
+
+    layout.setSpacing(MENU_BUTTON_SPACING)
+    layout.setContentsMargins(MENU_COLUMN_MARGIN, MENU_COLUMN_MARGIN, MENU_COLUMN_MARGIN, MENU_COLUMN_MARGIN)
 
 
 if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
@@ -177,35 +198,43 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
             layout.addWidget(title)
             layout.setAlignment(title, Qt.AlignmentFlag.AlignHCenter)
             layout.addSpacing(8)
+            # Two columns: game modes (left) and the other menu items (right).
+            # Both are group boxes with the same margins and button gap, so
+            # the button rows line up across the columns.
             mode_select = GameModeSelect(self._select_mode, menu)
-            layout.addWidget(mode_select)
-            layout.setAlignment(mode_select, Qt.AlignmentFlag.AlignHCenter)
-            training_button = QPushButton(tr("menu.training"), menu)
+            other = QGroupBox(tr("menu.group"), menu)
+            other_layout = QVBoxLayout(other)
+            style_menu_column(other_layout)
+            self._menu_columns = (mode_select, other)
+            training_button = QPushButton(tr("menu.training"), other)
             training_button.clicked.connect(self._show_training)
-            layout.addWidget(training_button)
-            self._style_menu_button(training_button, layout)
-            library_button = QPushButton(tr("menu.library"), menu)
+            library_button = QPushButton(tr("menu.library"), other)
             library_button.setToolTip(tr("tooltip.library_open"))
             library_button.clicked.connect(lambda: self._open_library())
-            layout.addWidget(library_button)
-            self._style_menu_button(library_button, layout)
             self._library_button = library_button
-            intent_button = QPushButton(tr("menu.intent_training"), menu)
+            intent_button = QPushButton(tr("menu.intent_training"), other)
             intent_button.clicked.connect(self._show_intent_training)
-            layout.addWidget(intent_button)
-            self._style_menu_button(intent_button, layout)
-            settings_button = QPushButton(tr("menu.settings"), menu)
+            settings_button = QPushButton(tr("menu.settings"), other)
             settings_button.clicked.connect(self._show_settings)
-            layout.addWidget(settings_button)
-            self._style_menu_button(settings_button, layout)
-            replay_button = QPushButton(tr("menu.replay"), menu)
+            replay_button = QPushButton(tr("menu.replay"), other)
             replay_button.clicked.connect(self._show_replay)
-            layout.addWidget(replay_button)
-            self._style_menu_button(replay_button, layout)
-            exit_button = QPushButton(tr("menu.exit"), menu)
+            exit_button = QPushButton(tr("menu.exit"), other)
             exit_button.clicked.connect(self.close)
-            layout.addWidget(exit_button)
-            self._style_menu_button(exit_button, layout)
+            self._menu_buttons = (
+                training_button, library_button, intent_button, settings_button, replay_button, exit_button,
+            )
+            for button in self._menu_buttons:
+                other_layout.addWidget(button)
+                style_menu_button(button)
+            # A column with fewer buttons keeps its buttons at the top.
+            other_layout.addStretch(1)
+            columns = QHBoxLayout()
+            columns.setSpacing(MENU_COLUMN_GAP)
+            columns.addStretch(1)
+            columns.addWidget(mode_select, 0, Qt.AlignmentFlag.AlignTop)
+            columns.addWidget(other, 0, Qt.AlignmentFlag.AlignTop)
+            columns.addStretch(1)
+            layout.addLayout(columns)
             layout.addStretch(1)
             self._set_screen(menu)
 

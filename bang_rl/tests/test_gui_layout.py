@@ -59,10 +59,13 @@ def test_opponent_panel_width_is_bounded() -> None:
     assert 0 < OPPONENT_PANEL_MAX_WIDTH <= WINDOW_WIDTH // 2
 
 
-def test_menu_button_width_is_about_half_the_window() -> None:
-    # User item 1: menu buttons should be about half the window width.
-    assert MENU_BUTTON_WIDTH == WINDOW_WIDTH // 2
-    assert WINDOW_WIDTH * 0.4 <= MENU_BUTTON_WIDTH <= WINDOW_WIDTH * 0.6
+def test_two_menu_columns_fit_in_the_window() -> None:
+    # The main menu has two columns (game modes | training and tools) side by side.
+    from bang_rl.gui.main_window import MENU_COLUMN_GAP, MENU_COLUMN_MARGIN
+
+    columns = 2 * (MENU_BUTTON_WIDTH + 2 * MENU_COLUMN_MARGIN) + MENU_COLUMN_GAP
+    assert columns <= WINDOW_WIDTH * 0.9
+    assert MENU_BUTTON_WIDTH >= WINDOW_WIDTH * 0.3
     assert MENU_BUTTON_MIN_HEIGHT >= 40
 
 
