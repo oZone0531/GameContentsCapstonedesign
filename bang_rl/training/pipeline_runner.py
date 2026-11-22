@@ -443,6 +443,8 @@ def _publish_module_stage(run: Any, stage: str, message: str, **fields: Any) -> 
 
     with run.lock:
         run.metrics["module_preprocessing_stage"] = stage
+        # The latest stage text, shown in the monitor's status banner.
+        run.metrics["stage_message"] = message
         run.logs.append({"message": message})
     run.logger.event(
         "module_training_progress",

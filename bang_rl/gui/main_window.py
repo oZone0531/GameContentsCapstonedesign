@@ -283,6 +283,8 @@ if QT_AVAILABLE:  # pragma: no cover - UI rendering is host/display dependent
                 setup_panel = TrainingSetupPanel(
                     config=self.settings_editor.snapshot.config,
                     parent=self,
+                    # Hardware / AI-training values are saved locally on change.
+                    settings_editor=self.settings_editor,
                 )
                 self._training_monitor = TrainingMonitor(
                     self.training_controller,
