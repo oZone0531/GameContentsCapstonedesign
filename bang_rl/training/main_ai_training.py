@@ -52,12 +52,12 @@ from bang_rl.agents.main_agent import (
     build_policy_inputs,
     policy_emotion_dim,
 )
-from bang_rl.agents.main_agent.policy_inputs import PolicyInputs
+from bang_rl.agents.main_agent.policy_inputs import PolicyInputs, policy_input_layout, ppo_dims_for_layout
 from bang_rl.config import PPOConfig, RewardConfig, SystemConfig
 from bang_rl.data.game_collection import FORMULA_LABEL_SCHEMA
 from bang_rl.agents.dummy_agent.emotion_formula import LABEL_NAMES
 from bang_rl.env import BangEnvironment
-from bang_rl.env.types import TerminationStatus
+from bang_rl.env.types import Role, TerminationStatus
 from bang_rl.evaluation.baseline import baseline_factory, run_seat_evaluation
 from bang_rl.evaluation.protocol import (
     PRIMARY_SEATS,
@@ -163,6 +163,7 @@ class PolicyModules:
             emotion=self.emotion,
             role_fusion=self.role_fusion,
             viewer_idx=seat,
+            layout=policy_input_layout(self.ppo),
         )
 
 
@@ -197,6 +198,23 @@ def main_seat_for_game(game_index: int) -> int:
     """The main agent rotates through the five seats."""
 
     return int(game_index) % 5
+
+
+_BALANCED_ROLE_CYCLE = ("sheriff", "deputy", "outlaw", "traitor")
+
+
+def role_balanced_seat(game_index: int, roles: Sequence[int]) -> int:
+    """Seat holding this game's role in the sheriff/deputy/outlaw/traitor cycle.
+
+    The trainer (not the policy) reads the true roles here, only to pick which
+    seat the main agent plays.  Outlaw games alternate between the two seats.
+    """
+
+    wanted = _BALANCED_ROLE_CYCLE[int(game_index) % len(_BALANCED_ROLE_CYCLE)]
+    seats = [seat for seat, role in enumerate(roles) if Role(int(role)).name.lower().startswith(wanted)]
+    if not seats:
+        return main_seat_for_game(game_index)
+    return seats[(int(game_index) // len(_BALANCED_ROLE_CYCLE)) % len(seats)]
 
 
 def training_game_seed(run_seed: int, game_index: int) -> int:
@@ -270,6 +288,8 @@ def play_training_game(
     env = factory(episode_id, seed, config.env)
     try:
         env.reset(seed=seed, episode_id=episode_id)
+        if config.rl_training.ppo.seat_sampling == "role_balanced":
+            seat = role_balanced_seat(game_index, tuple(int(role) for role in env.state.roles))
         opponents = build_dummy_opponents(seat, seed, config.preset)
         for agent in opponents.values():
             agent.on_episode_start({"episode_id": episode_id, "seed": seed})
@@ -813,7 +833,7 @@ def resolve_main_ai_source(run: Any, *, ppo_seed: int) -> MainAiSource:
         validate_emotion_contract(emotion)
     _freeze(intent)
     _freeze(emotion)
-    ppo = PPOModule(emotion_dim=policy_emotion_dim(emotion), ppo_config=ppo_config, seed=ppo_seed)
+    ppo = PPOModule(**ppo_dims_for_layout(emotion, ppo_config.input_layout), ppo_config=ppo_config, seed=ppo_seed)
     return MainAiSource(
         policy=PolicyModules(intent, emotion, RoleFusion(), ObservationPreprocessor(), ppo),
         origin=origin,

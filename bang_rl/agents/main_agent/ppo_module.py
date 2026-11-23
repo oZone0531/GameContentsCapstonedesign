@@ -43,6 +43,9 @@ PPO_OPTIMIZER_METADATA = {
 POLICY_OUTPUT_SIZE = 6
 VALUE_OUTPUT_SIZE = 1
 SHARED_TRUNK_HIDDEN_SIZE = 256
+ROLE_HEAD_COUNT = 4
+# Role enum (sheriff, deputy, outlaw A, outlaw B, traitor) -> head index.
+_ROLE_TO_HEAD = torch.tensor([0, 1, 2, 2, 3], dtype=torch.long)
 
 # These names are rejected before conversion so a caller cannot silently pass
 # training labels or privileged diagnostics as an auxiliary feature.
@@ -231,12 +234,20 @@ class PPOModule(nn.Module):
             nn.ReLU(),
         ]
         self.shared_trunk = self._initialise(layers, seed)
+        # ``role_heads`` gives each own-role group (sheriff / deputy / outlaw /
+        # traitor) its own policy and value output on the shared trunk, so
+        # outlaw play does not overwrite deputy play. The group is read from
+        # the own-role one-hot of the seat-aligned self_state.
+        self._role_heads = bool(getattr(self.config, "role_heads", False))
+        if self._role_heads and self._component_dims["self_state"] != 19:
+            raise ValueError("role_heads needs the seat_aligned self_state (19 values)")
+        head_count = ROLE_HEAD_COUNT if self._role_heads else 1
         self.policy_head = self._initialise(
-            [nn.Linear(SHARED_TRUNK_HIDDEN_SIZE, POLICY_OUTPUT_SIZE)],
+            [nn.Linear(SHARED_TRUNK_HIDDEN_SIZE, POLICY_OUTPUT_SIZE * head_count)],
             None if seed is None else seed + 1,
         )
         self.value_head = self._initialise(
-            [nn.Linear(SHARED_TRUNK_HIDDEN_SIZE, VALUE_OUTPUT_SIZE)],
+            [nn.Linear(SHARED_TRUNK_HIDDEN_SIZE, VALUE_OUTPUT_SIZE * head_count)],
             None if seed is None else seed + 2,
         )
 
@@ -401,10 +412,15 @@ class PPOModule(nn.Module):
         )
         trunk = self.shared_trunk(features)
         raw_logits = self.policy_head(trunk)
+        values = self.value_head(trunk)
+        if self._role_heads:
+            group = self._role_group(features)
+            rows = torch.arange(features.shape[0], device=features.device)
+            raw_logits = raw_logits.view(-1, ROLE_HEAD_COUNT, POLICY_OUTPUT_SIZE)[rows, group]
+            values = values.view(-1, ROLE_HEAD_COUNT)[rows, group].unsqueeze(-1)
         masked_logits = self.masked_logits(raw_logits, mask)
         result_logits = masked_logits[0] if unbatched else masked_logits
         distribution = Categorical(logits=result_logits)
-        values = self.value_head(trunk)
         result_values = values[0] if unbatched else values
         result = PPOOutput(result_logits, result_values, distribution)
         if sample:
@@ -424,6 +440,13 @@ class PPOModule(nn.Module):
                 entropy,
             )
         return result
+
+    @staticmethod
+    def _role_group(features: Tensor) -> Tensor:
+        """Own-role group index from the seat-aligned self_state one-hot."""
+
+        own_role = features[:, 9:14].argmax(dim=-1)
+        return _ROLE_TO_HEAD.to(features.device)[own_role]
 
     def forward_features(
         self,

@@ -142,9 +142,9 @@ class EmotionInferenceModule(nn.Module):
     * ``(B, 4, T, F)`` -> ``(B, 4, E)`` for batched observations;
     * ``(B, T, F)`` -> ``(B, E)`` for independent streams.
 
-    ``valid_mask`` identifies public events.  All-invalid streams use the
-    configured ``initial_baseline`` instead of a learned value, while valid
-    streams use the shared GRU and emotion head.
+    ``valid_mask`` identifies public events.  All-invalid streams go through
+    the same GRU and emotion head as valid streams, so train and eval outputs
+    match.  ``initial_baseline`` is kept in the config for compatibility.
     """
 
     module_type = "EmotionInferenceModule"
@@ -328,7 +328,7 @@ class EmotionInferenceModule(nn.Module):
                 "hidden_true_role": "forbidden",
                 "actual_emotion_state": "forbidden",
                 "reward": "forbidden",
-                "empty_history": "configured initial_baseline",
+                "empty_history": "learned head output (same as training)",
             },
             "preprocessor": self.preprocessor.metadata(),
         }
@@ -380,11 +380,10 @@ class EmotionInferenceModule(nn.Module):
             sequence, mask = self._append_stream_state(sequence, mask)
         encoded = self.encoder(sequence, mask)
         predictions = self.emotion_head(encoded)
-        nonempty = mask.any(dim=-1)
-        baseline = self._initial_baseline.to(device=predictions.device, dtype=predictions.dtype)
-        baseline = baseline.expand_as(predictions)
-        if not self.training:
-            predictions = torch.where(nonempty.unsqueeze(-1), predictions, baseline)
+        # Empty streams keep the learned head output in both modes.  Swapping
+        # in ``initial_baseline`` only at eval time made eval differ from the
+        # SL objective (about 18% of target streams are empty early in a
+        # game), so calm/relation estimates collapsed toward the constant.
         # Sigmoid guarantees this mathematically; clamp only protects callers
         # using unusual floating-point dtypes at the public boundary.
         return predictions.clamp(0.0, 1.0)

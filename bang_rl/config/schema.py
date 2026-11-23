@@ -600,6 +600,16 @@ class PPOConfig(ConfigModel):
     max_grad_norm: float | None = Field(default=0.5, gt=0.0)
     value_loss_coef: float = Field(default=0.5, ge=0.0)
     entropy_coef: float = Field(default=0.01, ge=0.0)
+    # "seat_aligned" lines intent/emotion rows up with the absolute-seat action
+    # slots and adds own role/seat one-hots; "relative" is the original layout.
+    input_layout: Literal["relative", "seat_aligned"] = "relative"
+    # "role_balanced" picks the training seat that holds sheriff / deputy /
+    # outlaw / traitor in turn (25% each) instead of rotating seats, which
+    # gives outlaw 40% of games and the other roles 20% each.
+    seat_sampling: Literal["rotate", "role_balanced"] = "rotate"
+    # One policy/value output per own-role group (sheriff / deputy / outlaw /
+    # traitor) on the shared trunk. Needs input_layout "seat_aligned".
+    role_heads: bool = False
     shared_trunk_hidden_size: Literal[256] = 256
     shared_trunk_layers: Literal[2] = 2
     policy_output_size: Literal[6] = 6

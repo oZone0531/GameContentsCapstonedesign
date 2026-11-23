@@ -18,7 +18,7 @@ import numpy as np
 import torch
 
 from bang_rl.agents.dummy_agent import DummyAgent
-from bang_rl.agents.main_agent.policy_inputs import build_policy_inputs
+from bang_rl.agents.main_agent.policy_inputs import build_policy_inputs, policy_input_layout
 from bang_rl.agents.random_agent import RandomAgent
 from bang_rl.config import EvaluationConfig, EnvConfig, PresetConfig, SystemConfig
 from bang_rl.config.snapshot import JobSnapshot
@@ -601,6 +601,7 @@ class PrimaryEvaluationProtocol:
             emotion=self.artifact.emotion,
             role_fusion=self.artifact.role_fusion,
             viewer_idx=seat,
+            layout=policy_input_layout(self.artifact.ppo),
         )
         processed = inputs.processed
         policy_inputs = inputs.ppo_inputs()

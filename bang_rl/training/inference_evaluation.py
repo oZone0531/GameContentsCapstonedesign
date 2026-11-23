@@ -25,6 +25,7 @@ import numpy as np
 
 from bang_rl.agents.dummy_agent.emotion_formula import LABEL_NAMES
 from bang_rl.agents.main_agent import policy_emotion_dim
+from bang_rl.agents.main_agent.policy_inputs import policy_input_layout
 from bang_rl.config import SystemConfig
 from bang_rl.data.emotion_slots import emotion_value_mask
 from bang_rl.evaluation.protocol import (
@@ -133,7 +134,7 @@ def check_modules_fit_ppo(ppo: Any, emotion: Any) -> None:
     """The PPO was built for one emotion input size; a swapped pair must match it."""
 
     expected = int(ppo.component_dims["emotion"])
-    actual = int(policy_emotion_dim(emotion))
+    actual = int(policy_emotion_dim(emotion, policy_input_layout(ppo)))
     if expected != actual:
         raise TrainingError(
             f"감정 모듈의 출력 크기({actual})가 PPO 입력({expected})과 다릅니다. "

@@ -163,3 +163,18 @@ def test_cli_ablations_add_rows(tmp_path, untrained_model):
     ]) == 0
     rows = json.loads(out.read_text(encoding="utf-8"))
     assert [row["agent"] for row in rows] == ["dummy", "main", "main:no_intent", "main:no_emotion", "main:no_inference"]
+
+
+def test_relation_and_global_emotion_ablations_replace_only_their_part() -> None:
+    import torch
+
+    from bang_rl.evaluation.ablation import neutral_global, neutral_relation
+
+    estimate = torch.rand(2, 4, 9)
+    no_relation = neutral_relation(estimate)
+    assert torch.equal(no_relation[..., :4], estimate[..., :4])
+    assert torch.all(no_relation[..., 4:] == 0.5)
+
+    no_global = neutral_global(estimate)
+    assert torch.equal(no_global[..., 4:], estimate[..., 4:])
+    assert torch.allclose(no_global[0, 0, :4], torch.tensor([0.9, 0.1, 0.1, 0.1]))

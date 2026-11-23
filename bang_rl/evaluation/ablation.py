@@ -11,6 +11,13 @@ evaluation time and replays the same games:
     no_emotion    emotion inference -> the formula's resting state
                   (calm 0.9, confidence / aggression / anxiety 0.1, relations 0.5)
     no_inference  both of the above
+    no_relation   emotion inference keeps calm / confidence / aggression /
+                  anxiety; relation_0..4 -> 0.5 (neutral)
+    no_global_emotion
+                  emotion inference keeps relation_0..4; the four global
+                  emotions -> the formula's resting state
+    no_intent_relation
+                  no_intent and no_relation together
 
 The win-rate drop from ``full`` to an ablation is how much that inference
 contributes to winning *for this trained policy*. It is a test-time ablation:
@@ -29,7 +36,7 @@ import torch
 
 from .protocol import CustomEvaluationProtocol
 
-ABLATIONS = ("full", "no_intent", "no_emotion", "no_inference")
+ABLATIONS = ("full", "no_intent", "no_emotion", "no_inference", "no_relation", "no_global_emotion", "no_intent_relation")
 
 # Formula resting state: baselines b_S = b_A = b_F = 0.1, calm = 1 - max(...).
 _FORMULA_REST = (0.9, 0.1, 0.1, 0.1)
@@ -42,6 +49,24 @@ def neutral_emotion(like: torch.Tensor) -> torch.Tensor:
     values = torch.full_like(like, 0.5)
     if width >= len(_FORMULA_REST):
         values[..., : len(_FORMULA_REST)] = torch.tensor(_FORMULA_REST, dtype=like.dtype, device=like.device)
+    return values
+
+
+def neutral_relation(like: torch.Tensor) -> torch.Tensor:
+    """Keep calm/confidence/aggression/anxiety; relation_0..4 -> 0.5 (neutral)."""
+
+    values = like.clone()
+    if like.shape[-1] > len(_FORMULA_REST):
+        values[..., len(_FORMULA_REST):] = 0.5
+    return values
+
+
+def neutral_global(like: torch.Tensor) -> torch.Tensor:
+    """Keep relation_0..4; the four global emotions -> formula resting state."""
+
+    values = like.clone()
+    n = min(len(_FORMULA_REST), int(like.shape[-1]))
+    values[..., :n] = torch.tensor(_FORMULA_REST[:n], dtype=like.dtype, device=like.device)
     return values
 
 
@@ -100,8 +125,12 @@ def ablated_protocol(artifact: Any, ablation: str, **kwargs: Any) -> CustomEvalu
     base = protocol.artifact
     intent = base.intent
     emotion = base.emotion
-    if ablation in ("no_intent", "no_inference"):
+    if ablation in ("no_intent", "no_inference", "no_intent_relation"):
         intent = _ConstantModule(intent, uniform_roles)
+    if ablation in ("no_relation", "no_intent_relation"):
+        emotion = _ConstantModule(emotion, neutral_relation)
+    if ablation == "no_global_emotion":
+        emotion = _ConstantModule(emotion, neutral_global)
     if ablation in ("no_emotion", "no_inference"):
         emotion = _ConstantModule(emotion, neutral_emotion)
     protocol.artifact = _AblatedArtifact(base, intent=intent, emotion=emotion)
