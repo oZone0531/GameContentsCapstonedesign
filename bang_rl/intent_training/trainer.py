@@ -1,15 +1,9 @@
-"""Role-balanced, terminal-outcome-only intent learning and evaluation.
-
-Four separate policies are trained, one agent/role per game; the other four
-players are a reproducible mixture of the existing rule IntentModule (with
-NO emotion) and RandomAgent. "100 episodes" means 100 episodes *per role*
-(400 total). Evaluations are extra, seeded and never used for gradient updates.
-"""
 from __future__ import annotations
 
+import copy
 import json
 import threading
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -35,6 +29,9 @@ class IntentTrainingConfig:
     max_steps: int = 200
     seed: int = 12345
     random_opponent_probability: float = 0.35
+    learned_opponent_probability: float = 0.25
+    opponent_snapshot_every: int = 500
+    opponent_snapshot_pool_size: int = 4
     learning_rate: float = 0.0006
     batch_games: int = 16
     eval_games_per_role: int = 20
@@ -47,6 +44,12 @@ class IntentTrainingConfig:
             raise ValueError("episodes_per_role >= 1 and max_steps >= 2 required")
         if not 0 <= self.random_opponent_probability <= 1:
             raise ValueError("random_opponent_probability must be within [0,1]")
+        if not 0 <= self.learned_opponent_probability <= 1:
+            raise ValueError("learned_opponent_probability must be within [0,1]")
+        if self.random_opponent_probability + self.learned_opponent_probability > 1:
+            raise ValueError("random + learned opponent probabilities must not exceed 1")
+        if self.opponent_snapshot_every < 1 or self.opponent_snapshot_pool_size < 1:
+            raise ValueError("snapshot interval and pool size must both be positive")
         if not 0 < self.learning_rate <= 0.1 or self.batch_games < 1:
             raise ValueError("invalid optimizer hyperparameters")
         if self.eval_games_per_role < 1 or self.checkpoint_every < 0:
@@ -113,10 +116,21 @@ def _target_seat(state: EnvironmentState, key: str, episode: int) -> int:
     return state.roles.index(role)
 
 
+def _frozen_copy(policy: LearnedIntentPolicy) -> LearnedIntentPolicy:
+    frozen = copy.deepcopy(policy)
+    for network in frozen.networks.values():
+        network.eval()
+        for parameter in network.parameters():
+            parameter.requires_grad_(False)
+    return frozen
+
+
 def play_intent_game(
     *, policy: LearnedIntentPolicy | None, role: str, game_seed: int,
     episode: int, max_steps: int, random_probability: float,
     training: bool = False, rule_policy_config: Any = None,
+    frozen_opponent_policies: tuple[LearnedIntentPolicy, ...] = (),
+    learned_opponent_probability: float = 0.0,
 ) -> tuple[bool | None, list[tuple[np.ndarray, np.ndarray, int]], dict[str, Any]]:
     """Run a *real* game. True/False is target-role victory/defeat; None is truncation.
 
@@ -140,10 +154,15 @@ def play_intent_game(
                 agent = trainee
             else:
                 agent = LearnedIntentAgent(policy, player_idx=i, seed=game_seed + i)
-        elif rng.random() < random_probability:
-            agent = RandomAgent(agent_id=f"player_{i}", seed=game_seed + i)
         else:
-            agent = RuleIntentAgent(i, seed=game_seed + i, policy_config=rule_policy_config)
+            draw = rng.random()
+            if draw < random_probability:
+                agent = RandomAgent(agent_id=f"player_{i}", seed=game_seed + i)
+            elif draw < random_probability + learned_opponent_probability and frozen_opponent_policies:
+                snapshot = frozen_opponent_policies[int(rng.integers(len(frozen_opponent_policies)))]
+                agent = LearnedIntentAgent(snapshot, player_idx=i, seed=game_seed + i)
+            else:
+                agent = RuleIntentAgent(i, seed=game_seed + i, policy_config=rule_policy_config)
         opponents.append(agent)
     for i, agent in enumerate(opponents):
         agent.on_episode_start({"episode_id": state.episode_id, "seed": game_seed, "observation": env.observe(i)})
@@ -301,6 +320,9 @@ class IntentTrainer:
         self.prior_episodes_per_role = int(prior or 0) if config.initial_model_path else 0
         self.parent_training_episodes = int(old.get("cumulative_training_episodes", old.get("training_episodes", 0))) if config.initial_model_path else 0
         self.rule_policy_config = rule_policy_config
+        self.opponent_snapshots: deque[LearnedIntentPolicy] = deque(maxlen=config.opponent_snapshot_pool_size)
+        if config.initial_model_path and config.learned_opponent_probability > 0:
+            self.opponent_snapshots.append(_frozen_copy(self.policy))
 
     def _emit(self, **fields: Any) -> None:
         if self.callback:
@@ -339,14 +361,16 @@ class IntentTrainer:
                     max_steps=cfg.max_steps,
                     random_probability=cfg.random_opponent_probability, training=True,
                     rule_policy_config=self.rule_policy_config,
+                    frozen_opponent_policies=tuple(self.opponent_snapshots),
+                    learned_opponent_probability=cfg.learned_opponent_probability,
                 )
                 played[role] += 1
                 wins[role] += int(win is True)
                 losses[role] += int(win is False)
                 truncated[role] += int(win is None)
 
-                if win is not None and trajectory:
-                    pending[role].append((trajectory, 1.0 if win else -1.0))
+                if trajectory:
+                    pending[role].append((trajectory, 1.0 if win is True else -1.0))
                 if len(pending[role]) >= cfg.batch_games:
                     recent_losses[role] = _update_policy(
                         self.policy.networks[role], optimizers[role], pending[role]
@@ -354,6 +378,9 @@ class IntentTrainer:
                     pending[role].clear()
                     updates[role] += 1
                 completed += 1
+                if (cfg.learned_opponent_probability > 0
+                        and completed % cfg.opponent_snapshot_every == 0):
+                    self.opponent_snapshots.append(_frozen_copy(self.policy))
                 if completed % max(1, total // 200) == 0 or completed == total:
                     self._emit(
                         phase="training", completed=completed, total=total,
