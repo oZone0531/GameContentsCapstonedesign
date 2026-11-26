@@ -2,8 +2,9 @@
 
 The main agent is frozen intent + emotion inference, RoleFusion, the
 observation preprocessor and a trainable :class:`PPOModule`. One game at a time
-is played in-process: the main seat rotates (``game_index % 5``) and the four
-other seats are DummyAgents built exactly like the evaluation protocol builds
+is played in-process: the main agent plays sheriff, deputy, outlaw and traitor
+in turn (:func:`bang_rl.evaluation.protocol.role_balanced_seat`, a quarter of
+the games each) and the four other seats are DummyAgents built exactly like the evaluation protocol builds
 them (:func:`bang_rl.evaluation.protocol.build_dummy_opponents`).
 
 Reward
@@ -50,23 +51,22 @@ from bang_rl.agents.main_agent import (
     PPOModule,
     RoleFusion,
     build_policy_inputs,
-    policy_emotion_dim,
 )
-from bang_rl.agents.main_agent.policy_inputs import PolicyInputs, policy_input_layout, ppo_dims_for_layout
+from bang_rl.agents.main_agent.policy_inputs import PolicyInputs, policy_ppo_dims
 from bang_rl.config import PPOConfig, RewardConfig, SystemConfig
 from bang_rl.data.game_collection import FORMULA_LABEL_SCHEMA
 from bang_rl.agents.dummy_agent.emotion_formula import LABEL_NAMES
 from bang_rl.env import BangEnvironment
-from bang_rl.env.types import Role, TerminationStatus
+from bang_rl.env.types import TerminationStatus
 from bang_rl.evaluation.baseline import baseline_factory, run_seat_evaluation
 from bang_rl.evaluation.protocol import (
-    PRIMARY_SEATS,
     SEMANTIC_ROLE_NAMES,
     SEMANTIC_ROLE_OF,
     InferenceMetrics,
     _wilson_interval,
     build_dummy_opponents,
     observe_boundaries,
+    role_balanced_seat,
 )
 from bang_rl.artifact_builders import baseline_info, info_ref, main_ai_info
 from bang_rl.artifact_info import (
@@ -99,7 +99,8 @@ MAIN_AI_MOVING_AVERAGE_GAMES = 200
 MAIN_AI_TRUNCATION_WARNING_RATE = 0.01
 NORMALIZED_SCORE_EPS = 0.01
 BASELINE_NAMES = ("dummy", "random")
-BASELINE_CACHE_VERSION = 1
+# 2: baselines now play the role-balanced seat of each game, not seat = index % 5.
+BASELINE_CACHE_VERSION = 2
 MAIN_AI_REWARD_VERSION = "main-ai-terminal-team-1.0"
 _ENVIRONMENT_VERSION = "1.0"
 _SEED_MODULUS = 2**31
@@ -163,7 +164,6 @@ class PolicyModules:
             emotion=self.emotion,
             role_fusion=self.role_fusion,
             viewer_idx=seat,
-            layout=policy_input_layout(self.ppo),
         )
 
 
@@ -195,26 +195,9 @@ def _critic_value(ppo: PPOModule, inputs: PolicyInputs) -> float:
 
 
 def main_seat_for_game(game_index: int) -> int:
-    """The main agent rotates through the five seats."""
+    """Seat rotation ``game_index % 5``; used by main-AI data collection, not by training."""
 
     return int(game_index) % 5
-
-
-_BALANCED_ROLE_CYCLE = ("sheriff", "deputy", "outlaw", "traitor")
-
-
-def role_balanced_seat(game_index: int, roles: Sequence[int]) -> int:
-    """Seat holding this game's role in the sheriff/deputy/outlaw/traitor cycle.
-
-    The trainer (not the policy) reads the true roles here, only to pick which
-    seat the main agent plays.  Outlaw games alternate between the two seats.
-    """
-
-    wanted = _BALANCED_ROLE_CYCLE[int(game_index) % len(_BALANCED_ROLE_CYCLE)]
-    seats = [seat for seat, role in enumerate(roles) if Role(int(role)).name.lower().startswith(wanted)]
-    if not seats:
-        return main_seat_for_game(game_index)
-    return seats[(int(game_index) // len(_BALANCED_ROLE_CYCLE)) % len(seats)]
 
 
 def training_game_seed(run_seed: int, game_index: int) -> int:
@@ -282,14 +265,13 @@ def play_training_game(
 
     calculator = reward_calculator or RewardCalculator(main_ai_reward_config())
     factory = environment_factory or _default_environment
-    seat = main_seat_for_game(game_index)
     seed = training_game_seed(run_seed, game_index)
     episode_id = f"train-g{int(game_index):09d}"
     env = factory(episode_id, seed, config.env)
     try:
         env.reset(seed=seed, episode_id=episode_id)
-        if config.rl_training.ppo.seat_sampling == "role_balanced":
-            seat = role_balanced_seat(game_index, tuple(int(role) for role in env.state.roles))
+        # The main agent plays sheriff, deputy, outlaw and traitor in turn.
+        seat = role_balanced_seat(game_index, tuple(int(role) for role in env.state.roles))
         opponents = build_dummy_opponents(seat, seed, config.preset)
         for agent in opponents.values():
             agent.on_episode_start({"episode_id": episode_id, "seed": seed})
@@ -440,16 +422,20 @@ def _play_evaluation_game(
     config: SystemConfig,
     *,
     seed: int,
-    seat: int,
+    seat: int | None,
     index: int,
     environment_factory: EnvironmentFactory | None,
     metrics: InferenceMetrics,
 ) -> tuple[bool | None, str, int]:
+    """Play one evaluation game; ``seat=None`` plays the role game ``index`` calls for."""
+
     episode_id = f"main-ai-eval-g{index:05d}"
     env = (environment_factory or _default_environment)(episode_id, seed, config.env)
     try:
         env.reset(seed=seed, episode_id=episode_id)
         roles = tuple(int(role) for role in env.state.roles)
+        if seat is None:
+            seat = role_balanced_seat(index, roles)
         opponents = build_dummy_opponents(seat, seed, config.preset)
         for agent in opponents.values():
             agent.on_episode_start({"episode_id": episode_id, "seed": seed})
@@ -498,17 +484,19 @@ def evaluate_policy(
     *,
     games: int = MAIN_AI_EVAL_GAMES,
     base_seed: int = MAIN_AI_EVAL_BASE_SEED,
-    seats: Sequence[int] = PRIMARY_SEATS,
+    seats: Sequence[int] | None = None,
     environment_factory: EnvironmentFactory | None = None,
     should_stop: Callable[[], bool] | None = None,
     metrics_factory: Callable[[], InferenceMetrics] | None = None,
 ) -> dict[str, Any] | None:
     """Deterministic evaluation on the fixed deal set; None if stopped midway.
 
-    Game ``i`` uses seed ``base_seed + i`` and seat ``seats[i % len(seats)]``,
-    the deals the baselines play. Besides win rates it records role
-    classification, hidden-role accuracy and emotion MSE (privileged labels are
-    read for these metrics only) so inference drift is visible.
+    Game ``i`` uses seed ``base_seed + i`` and plays the role ``i`` calls for
+    (:func:`role_balanced_seat`, a quarter of the games per role), or seat
+    ``seats[i % len(seats)]`` if ``seats`` is given: the deals the baselines
+    play. Besides win rates it records role classification, hidden-role
+    accuracy and emotion MSE (privileged labels are read for these metrics
+    only) so inference drift is visible.
 
     ``metrics_factory`` may build an :class:`InferenceMetrics` subclass; when it
     has a ``detail()`` method its result is stored as ``inference_detail``.
@@ -517,7 +505,8 @@ def evaluate_policy(
     games = int(games)
     if games < 1:
         raise ValueError("evaluation games must be at least 1")
-    seats = tuple(int(seat) for seat in seats)
+    if seats is not None:
+        seats = tuple(int(seat) for seat in seats)
     per_role = _role_table()
     metrics = (metrics_factory or InferenceMetrics)()
     wins = normal = truncated = 0
@@ -529,7 +518,7 @@ def evaluate_policy(
             policy,
             config,
             seed=int(base_seed) + index,
-            seat=seats[index % len(seats)],
+            seat=None if seats is None else seats[index % len(seats)],
             index=index,
             environment_factory=environment_factory,
             metrics=metrics,
@@ -564,14 +553,16 @@ def evaluate_policy(
 # --- baselines and scores ----------------------------------------------------
 
 
-def baseline_cache_key(config: SystemConfig, *, games: int, base_seed: int, seats: Sequence[int]) -> str:
+def baseline_cache_key(
+    config: SystemConfig, *, games: int, base_seed: int, seats: Sequence[int] | None = None
+) -> str:
     """Key of the cached baselines: the deals, opponent preset and environment."""
 
     payload = {
         "cache_version": BASELINE_CACHE_VERSION,
         "games": int(games),
         "base_seed": int(base_seed),
-        "seats": [int(seat) for seat in seats],
+        "seats": None if seats is None else [int(seat) for seat in seats],
         "preset": config.preset.model_dump(mode="json"),
         "env": config.env.model_dump(mode="json"),
         "environment_version": _ENVIRONMENT_VERSION,
@@ -601,7 +592,7 @@ def load_or_compute_baselines(
     *,
     games: int = MAIN_AI_EVAL_GAMES,
     base_seed: int = MAIN_AI_EVAL_BASE_SEED,
-    seats: Sequence[int] = PRIMARY_SEATS,
+    seats: Sequence[int] | None = None,
     cache_dir: str | Path | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> tuple[dict[str, Any], bool] | None:
@@ -632,7 +623,11 @@ def load_or_compute_baselines(
         id=key,
         games=games,
         label="dummy+random",
-        conditions={"base_seed": int(base_seed), "seats": list(seats)},
+        conditions={
+            "base_seed": int(base_seed),
+            "seats": None if seats is None else list(seats),
+            "seat_assignment": "role_balanced_cyclic" if seats is None else "explicit_cyclic",
+        },
     )
     path = directory / f"{created.name}.json"
     baselines: dict[str, Any] = {}
@@ -833,7 +828,7 @@ def resolve_main_ai_source(run: Any, *, ppo_seed: int) -> MainAiSource:
         validate_emotion_contract(emotion)
     _freeze(intent)
     _freeze(emotion)
-    ppo = PPOModule(**ppo_dims_for_layout(emotion, ppo_config.input_layout), ppo_config=ppo_config, seed=ppo_seed)
+    ppo = PPOModule(**policy_ppo_dims(emotion), ppo_config=ppo_config, seed=ppo_seed)
     return MainAiSource(
         policy=PolicyModules(intent, emotion, RoleFusion(), ObservationPreprocessor(), ppo),
         origin=origin,
@@ -946,7 +941,6 @@ def train_main_ai(
     )
     reward_config = main_ai_reward_config()
     calculator = RewardCalculator(reward_config)
-    seats = PRIMARY_SEATS
 
     _publish_module_stage(
         run,
@@ -958,7 +952,6 @@ def train_main_ai(
         system_config,
         games=eval_games,
         base_seed=eval_base_seed,
-        seats=seats,
         cache_dir=baseline_cache_dir,
         should_stop=controller.should_stop,
     )
@@ -1034,7 +1027,7 @@ def train_main_ai(
                     "source_origin": source.origin,
                     "prior_training_games": game_offset,
                     "evaluation_base_seed": int(eval_base_seed),
-                    "seats": [int(seat) for seat in seats],
+                    "seat_assignment": "role_balanced_cyclic",
                 },
                 notes=previous.notes if previous is not None else "",
             )
@@ -1098,7 +1091,6 @@ def train_main_ai(
             system_config,
             games=eval_games,
             base_seed=eval_base_seed,
-            seats=seats,
             environment_factory=environment_factory,
             should_stop=None if final else controller.should_stop,
         )

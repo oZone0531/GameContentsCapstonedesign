@@ -12,7 +12,8 @@ seat instead, so a main-agent win rate can be read against reference points:
   (see ``belief_source``). These cheat and are reference ceilings only.
 
 Game construction mirrors ``PrimaryEvaluationProtocol._run_game_impl``:
-seed = ``base_seed + index``, seat = ``seats[index % len(seats)]``, environment
+seed = ``base_seed + index``, seat = ``role_balanced_seat(index, roles)`` (or
+``seats[index % len(seats)]`` when ``seats`` is given), environment
 ``BangEnvironment(seed=seed)``, opponent ``i`` a DummyAgent with seed
 ``seed + i + 1``. Roles depend only on the seed, so game ``i`` deals the same
 roles to every evaluated agent. With the ``dummy`` baseline, game ``i`` is
@@ -34,11 +35,11 @@ from bang_rl.env import BangEnvironment
 from bang_rl.env.types import TerminationStatus
 
 from .protocol import (
-    PRIMARY_SEATS,
     SEMANTIC_ROLE_NAMES,
     SEMANTIC_ROLE_OF,
     _wilson_interval,
     observe_boundaries,
+    role_balanced_seat,
 )
 
 SeatAgentFactory = Callable[[int, int, tuple[int, ...]], Any]
@@ -99,28 +100,34 @@ def run_seat_evaluation(
     *,
     games: int = 500,
     base_seed: int = 0,
-    seats: Sequence[int] = PRIMARY_SEATS,
+    seats: Sequence[int] | None = None,
     label: str = "baseline",
 ) -> dict[str, Any]:
-    """Play ``games`` evaluation games with ``factory``'s agent in the seat."""
+    """Play ``games`` evaluation games with ``factory``'s agent in the seat.
+
+    By default the seat is chosen per game by :func:`role_balanced_seat`, so the
+    agent plays each role in a quarter of the games. An explicit ``seats`` list
+    instead cycles through those seats.
+    """
 
     games = int(games)
     if games < 1:
         raise ValueError("games must be at least 1")
-    seats = tuple(int(seat) for seat in seats)
-    if not seats or any(not 0 <= seat < 5 for seat in seats):
-        raise ValueError("seats must be player indices in [0, 4]")
+    if seats is not None:
+        seats = tuple(int(seat) for seat in seats)
+        if not seats or any(not 0 <= seat < 5 for seat in seats):
+            raise ValueError("seats must be player indices in [0, 4]")
     per_role = {name: {"games": 0, "wins": 0} for name in SEMANTIC_ROLE_NAMES}
     normal = wins = truncated = friendly = bangs = 0
     lengths: list[int] = []
     game_rows: list[dict[str, Any]] = []
     for index in range(games):
         seed = int(base_seed) + index
-        seat = seats[index % len(seats)]
         episode_id = f"{label}-game-{index:03d}"
         env = BangEnvironment(episode_id=episode_id, seed=seed, config=config.env)
         env.reset(seed=seed, episode_id=episode_id)
         roles = tuple(int(role) for role in env.state.roles)
+        seat = role_balanced_seat(index, roles) if seats is None else seats[index % len(seats)]
         agents: dict[int, Any] = {
             index_: _dummy(config, index_, seed) for index_ in range(5) if index_ != seat
         }
@@ -161,7 +168,8 @@ def run_seat_evaluation(
         "agent": label,
         "games": games,
         "base_seed": int(base_seed),
-        "seats": list(seats),
+        "seats": None if seats is None else list(seats),
+        "seat_assignment": "role_balanced_cyclic" if seats is None else "explicit_cyclic",
         "normal_games": normal,
         "truncated_games": truncated,
         "win_rate": _rate(wins, normal),

@@ -20,11 +20,9 @@ import torch
 from .preprocessor import STATE_VECTOR_SIZE
 from .role_fusion import PLAYER_COUNT, ROLE_COUNT, TARGET_PLAYER_COUNT
 
-RELATIVE_LAYOUT = "relative"
-SEAT_ALIGNED_LAYOUT = "seat_aligned"
-POLICY_INPUT_LAYOUTS = (RELATIVE_LAYOUT, SEAT_ALIGNED_LAYOUT)
-# Seat-aligned self_state appends one-hot own role and one-hot own seat.
-SEAT_ALIGNED_SELF_STATE_DIM = STATE_VECTOR_SIZE + ROLE_COUNT + PLAYER_COUNT
+# self_state appends a one-hot of the viewer's own role and a one-hot of the
+# viewer's own seat to the preprocessor's state vector.
+SELF_STATE_DIM = STATE_VECTOR_SIZE + ROLE_COUNT + PLAYER_COUNT
 
 POLICY_FEATURE_KEYS = (
     "self_state",
@@ -40,9 +38,11 @@ class PolicyInputs:
     """The PPO feature blocks plus the intermediate estimates used by metrics.
 
     ``features`` holds the five float32 blocks in ``POLICY_FEATURE_KEYS`` order
-    with ``emotion_features`` already flattened to ``(4 * emotion_count,)``.
-    ``estimated_emotion`` keeps the unflattened ``(4, emotion_count)`` estimate
-    that the emotion MSE metric compares with the opponents' labels.
+    with the ``fused_intent`` and ``emotion_features`` blocks laid out per
+    absolute seat and flattened to ``(5 * 5,)`` and ``(5 * emotion_count,)``.
+    The ``fused_intent`` and ``estimated_emotion`` attributes keep the
+    four-opponent ``(4, ...)`` estimates that the metrics compare with the
+    opponents' labels.
     """
 
     features: Mapping[str, np.ndarray]
@@ -58,34 +58,23 @@ class PolicyInputs:
         return {**self.features, "action_mask": self.action_mask}
 
 
-def policy_emotion_dim(emotion_module: Any, layout: str = RELATIVE_LAYOUT) -> int:
-    """Flattened emotion block size the PPO module needs for this emotion module."""
+def policy_emotion_dim(emotion_module: Any) -> int:
+    """Flattened emotion block size the PPO module needs for this emotion module.
 
-    rows = PLAYER_COUNT if layout == SEAT_ALIGNED_LAYOUT else TARGET_PLAYER_COUNT
-    return int(rows * int(emotion_module.emotion_count))
+    The block has one row per absolute seat (the viewer's own row is zero).
+    """
+
+    return int(PLAYER_COUNT * int(emotion_module.emotion_count))
 
 
-def ppo_dims_for_layout(emotion_module: Any, layout: str) -> dict[str, int]:
-    """Keyword arguments for ``PPOModule`` that match ``layout``."""
+def policy_ppo_dims(emotion_module: Any) -> dict[str, int]:
+    """Keyword arguments that size a ``PPOModule`` for :func:`build_policy_inputs`."""
 
-    if layout not in POLICY_INPUT_LAYOUTS:
-        raise ValueError(f"unknown policy input layout: {layout!r}")
-    if layout == RELATIVE_LAYOUT:
-        return {"emotion_dim": policy_emotion_dim(emotion_module)}
     return {
-        "self_state_dim": SEAT_ALIGNED_SELF_STATE_DIM,
+        "self_state_dim": SELF_STATE_DIM,
         "intent_dim": PLAYER_COUNT * ROLE_COUNT,
-        "emotion_dim": policy_emotion_dim(emotion_module, SEAT_ALIGNED_LAYOUT),
+        "emotion_dim": policy_emotion_dim(emotion_module),
     }
-
-
-def policy_input_layout(ppo: Any) -> str:
-    """Infer the layout a PPO module was built for from its block sizes."""
-
-    dims = getattr(ppo, "_component_dims", None) or {}
-    if int(dims.get("fused_intent", 0)) == PLAYER_COUNT * ROLE_COUNT:
-        return SEAT_ALIGNED_LAYOUT
-    return RELATIVE_LAYOUT
 
 
 def _one_hot(index: int, size: int) -> np.ndarray:
@@ -126,13 +115,12 @@ def build_policy_inputs(
     emotion: Any,
     role_fusion: Any,
     viewer_idx: int,
-    layout: str = RELATIVE_LAYOUT,
 ) -> PolicyInputs:
     """Compute the PPO input blocks for ``viewer_idx`` from a public observation.
 
-    ``layout="seat_aligned"`` puts other-player intent/emotion rows at their
-    absolute seats, the same order as the PPO action slots (own row zero), and
-    appends the viewer's own role and seat as one-hot vectors to ``self_state``.
+    Other-player intent/emotion rows sit at their absolute seats, the same
+    order as the PPO action slots (the viewer's own row is zero), and the
+    viewer's own role and seat are appended to ``self_state`` as one-hot vectors.
     """
 
     processed = preprocessor.preprocess(observation)
@@ -152,19 +140,17 @@ def build_policy_inputs(
         viewer_idx=int(viewer_idx),
     )
     fused_array = np.asarray(fused, dtype=np.float32)
-    self_state = np.asarray(processed.state_vector, dtype=np.float32)
-    intent_block = fused_array
-    emotion_block = estimated_emotion_array.reshape(-1).astype(np.float32)
-    if layout == SEAT_ALIGNED_LAYOUT:
-        viewer = int(viewer_idx)
-        self_role = int(np.asarray(values["self_role"]).reshape(-1)[0])
-        self_state = np.concatenate(
-            [self_state.reshape(-1), _one_hot(self_role, ROLE_COUNT), _one_hot(viewer, PLAYER_COUNT)]
-        )
-        intent_block = _seat_rows(fused_array, viewer).reshape(-1)
-        emotion_block = _seat_rows(estimated_emotion_array.astype(np.float32), viewer).reshape(-1)
-    elif layout != RELATIVE_LAYOUT:
-        raise ValueError(f"unknown policy input layout: {layout!r}")
+    viewer = int(viewer_idx)
+    self_role = int(np.asarray(values["self_role"]).reshape(-1)[0])
+    self_state = np.concatenate(
+        [
+            np.asarray(processed.state_vector, dtype=np.float32).reshape(-1),
+            _one_hot(self_role, ROLE_COUNT),
+            _one_hot(viewer, PLAYER_COUNT),
+        ]
+    )
+    intent_block = _seat_rows(fused_array, viewer).reshape(-1)
+    emotion_block = _seat_rows(estimated_emotion_array.astype(np.float32), viewer).reshape(-1)
     features = {
         "self_state": self_state,
         "board_state": np.asarray(processed.player_state_matrix, dtype=np.float32),
@@ -184,12 +170,9 @@ def build_policy_inputs(
 
 __all__ = [
     "POLICY_FEATURE_KEYS",
-    "POLICY_INPUT_LAYOUTS",
-    "RELATIVE_LAYOUT",
-    "SEAT_ALIGNED_LAYOUT",
-    "policy_input_layout",
-    "ppo_dims_for_layout",
+    "SELF_STATE_DIM",
     "PolicyInputs",
     "build_policy_inputs",
     "policy_emotion_dim",
+    "policy_ppo_dims",
 ]

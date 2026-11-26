@@ -120,7 +120,7 @@ Final artifacts are inference-only. Compatibility checks cover model architectur
 
 Structured JSON Lines channels are `episode_events`, `termination`, `reward_breakdown`, `invalid_action`, `training`, `evaluation`, and `privileged_diagnostics`. Privileged role/label diagnostics are physically separated from agent-visible/public channels.
 
-The primary evaluation protocol is `deterministic_v1`: 500 games, 100 games per MainAgent seat, cyclic balanced seats, and `base_seed + evaluation_index`. Win Rate is normal wins divided by normal games; truncated games are excluded from that denominator. If there are no normal games, Win Rate is `N/A`. Custom and stochastic runs have separate protocol/run identities and are not merged into primary results.
+The primary evaluation protocol is `deterministic_v1`: 500 games, 125 games per MainAgent role (the MainAgent plays the Sheriff, Deputy, Outlaw and Traitor in turn; the two Outlaw seats alternate), and `base_seed + evaluation_index`. Win Rate is normal wins divided by normal games; truncated games are excluded from that denominator. If there are no normal games, Win Rate is `N/A`. Custom and stochastic runs have separate protocol/run identities and are not merged into primary results.
 
 ## Deliberate limitations
 

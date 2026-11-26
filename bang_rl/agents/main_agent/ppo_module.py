@@ -237,10 +237,10 @@ class PPOModule(nn.Module):
         # ``role_heads`` gives each own-role group (sheriff / deputy / outlaw /
         # traitor) its own policy and value output on the shared trunk, so
         # outlaw play does not overwrite deputy play. The group is read from
-        # the own-role one-hot of the seat-aligned self_state.
+        # the own-role one-hot of the policy self_state (see policy_inputs).
         self._role_heads = bool(getattr(self.config, "role_heads", False))
         if self._role_heads and self._component_dims["self_state"] != 19:
-            raise ValueError("role_heads needs the seat_aligned self_state (19 values)")
+            raise ValueError("role_heads needs the policy self_state of 19 values (state + own role + own seat)")
         head_count = ROLE_HEAD_COUNT if self._role_heads else 1
         self.policy_head = self._initialise(
             [nn.Linear(SHARED_TRUNK_HIDDEN_SIZE, POLICY_OUTPUT_SIZE * head_count)],

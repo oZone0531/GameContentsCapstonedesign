@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from bang_rl.agents.main_agent import EmotionInferenceModule, IntentInferenceModule, PPOModule
+from bang_rl.agents.main_agent import EmotionInferenceModule, IntentInferenceModule, PPOModule, policy_ppo_dims
 from bang_rl.config import EvaluationConfig
 from bang_rl.data.game_collection import formula_label_emotion_config, load_collection_config
 from bang_rl.evaluation import (
@@ -48,7 +48,7 @@ def untrained_model(config, tmp_path_factory):
     versions = dict(_version_expectations(config, None))
     return save_final_inference_artifact(
         root / "untrained.bangmodel",
-        PPOModule(seed=3, emotion_dim=4 * 9),
+        PPOModule(seed=3, **policy_ppo_dims(emotion)),
         phase2_artifact=phase2,
         job_snapshot={"job_id": "untrained", "seed": 0, "split_seed": 0, "config_snapshot": {}, "versions": versions},
         config_snapshot={},

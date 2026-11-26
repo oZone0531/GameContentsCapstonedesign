@@ -3,11 +3,12 @@
 The evaluator is deliberately an execution boundary, not a training runtime.
 It loads a frozen inference artifact, composes MainAgent features from the
 public observation only, and keeps privileged game state on a metrics-only
-path.  The primary protocol is fixed at 500 games (100 games per seat).
+path.  The primary protocol is fixed at 500 games (125 games per role: the main
+agent plays sheriff, deputy, outlaw and traitor in turn).
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from hashlib import sha256
 import json
@@ -18,7 +19,7 @@ import numpy as np
 import torch
 
 from bang_rl.agents.dummy_agent import DummyAgent
-from bang_rl.agents.main_agent.policy_inputs import build_policy_inputs, policy_input_layout
+from bang_rl.agents.main_agent.policy_inputs import build_policy_inputs
 from bang_rl.agents.random_agent import RandomAgent
 from bang_rl.config import EvaluationConfig, EnvConfig, PresetConfig, SystemConfig
 from bang_rl.config.snapshot import JobSnapshot
@@ -34,6 +35,7 @@ from bang_rl.training.final_inference_artifact import load_final_inference_artif
 PRIMARY_PROTOCOL_ID = "deterministic_v1"
 PRIMARY_GAMES = 500
 PRIMARY_GAMES_PER_SEAT = 100
+PRIMARY_GAMES_PER_ROLE = PRIMARY_GAMES // 4
 PRIMARY_SEATS = (0, 1, 2, 3, 4)
 PRIMARY_ACTION_MODE = "deterministic"
 PRIMARY_SEED_FORMULA = "base_seed + evaluation_index"
@@ -42,6 +44,26 @@ PRIMARY_SEED_FORMULA = "base_seed + evaluation_index"
 # over four semantic roles. Canonical index -> semantic index.
 SEMANTIC_ROLE_NAMES = ("sheriff", "deputy", "outlaw", "traitor")
 SEMANTIC_ROLE_OF = (0, 1, 2, 2, 3)
+
+
+def role_balanced_seat(game_index: int, roles: Sequence[int]) -> int:
+    """Seat the main agent plays in game ``game_index``, balanced over roles.
+
+    Games cycle sheriff, deputy, outlaw, traitor, so each role is played in a
+    quarter of the games. When the outlaw turn comes up, the two outlaw seats
+    alternate. Training and evaluation both use this rule, so a game ``i`` puts
+    the main agent in the same seat for every agent compared on the same deals.
+
+    ``roles`` are the true roles of the game. Only the trainer/evaluator reads
+    them here, to choose the seat; the policy never sees them. If the wanted
+    role is not dealt (e.g. a test environment), the seat rotates ``game_index % 5``.
+    """
+
+    wanted = SEMANTIC_ROLE_NAMES[int(game_index) % len(SEMANTIC_ROLE_NAMES)]
+    seats = [seat for seat, role in enumerate(roles) if SEMANTIC_ROLE_NAMES[SEMANTIC_ROLE_OF[int(role)]] == wanted]
+    if not seats:
+        return int(game_index) % len(PRIMARY_SEATS)
+    return seats[(int(game_index) // len(SEMANTIC_ROLE_NAMES)) % len(seats)]
 
 
 def semantic_role_prediction(distribution: Any) -> int:
@@ -601,7 +623,6 @@ class PrimaryEvaluationProtocol:
             emotion=self.artifact.emotion,
             role_fusion=self.artifact.role_fusion,
             viewer_idx=seat,
-            layout=policy_input_layout(self.artifact.ppo),
         )
         processed = inputs.processed
         policy_inputs = inputs.ppo_inputs()
@@ -657,7 +678,7 @@ class PrimaryEvaluationProtocol:
     def _run_game(
         self,
         evaluation_index: int,
-        seat: int,
+        seat: int | None,
         seed: int,
         preset: PresetConfig,
         *,
@@ -702,7 +723,7 @@ class PrimaryEvaluationProtocol:
     def _run_game_impl(
         self,
         evaluation_index: int,
-        seat: int,
+        seat: int | None,
         seed: int,
         preset: PresetConfig,
         *,
@@ -712,6 +733,9 @@ class PrimaryEvaluationProtocol:
         episode_id = f"{self.evaluation_run_id}-game-{evaluation_index:03d}"
         env = self.environment_factory(episode_id, seed, self.config.env)
         first_observation = env.reset(seed=seed, episode_id=episode_id)
+        if seat is None:
+            # No explicit seat: play the role this game index calls for.
+            seat = role_balanced_seat(evaluation_index, tuple(int(role) for role in env.state.roles))
         if opponent == "random":
             opponents: dict[int, Any] = {
                 index: RandomAgent(agent_id=f"player_{index}", seed=seed + index + 1)
@@ -817,16 +841,16 @@ class PrimaryEvaluationProtocol:
         emotion_squared_error = 0.0
         emotion_dimensions = 0
         for evaluation_index in range(PRIMARY_GAMES):
-            seat = PRIMARY_SEATS[evaluation_index % len(PRIMARY_SEATS)]
             seed = evaluation.base_seed + evaluation_index
-            seat_counts[str(seat)] += 1
             game, metrics = self._run_game(
                 evaluation_index,
-                seat,
+                None,
                 seed,
                 preset,
                 opponent=evaluation.opponent,
             )
+            seat = int(game["main_agent_seat"])
+            seat_counts[str(seat)] += 1
             game_results.append(game)
             status = game["termination_status"]
             role = str(game["main_agent_role"])
@@ -870,8 +894,8 @@ class PrimaryEvaluationProtocol:
         protocol = {
             "id": PRIMARY_PROTOCOL_ID,
             "games": PRIMARY_GAMES,
-            "games_per_seat": PRIMARY_GAMES_PER_SEAT,
-            "seat_assignment_policy": "balanced_cyclic_0_1_2_3_4",
+            "games_per_role": PRIMARY_GAMES_PER_ROLE,
+            "seat_assignment_policy": "role_balanced_cyclic",
             "action_selection_mode": PRIMARY_ACTION_MODE,
             "seed_formula": PRIMARY_SEED_FORMULA,
             "base_seed": evaluation.base_seed,
@@ -1009,7 +1033,11 @@ class CustomEvaluationProtocol(PrimaryEvaluationProtocol):
             raise ValueError("fixed seat_policy requires exactly one seat")
 
     @staticmethod
-    def _seat_schedule(evaluation: EvaluationConfig) -> tuple[int, ...]:
+    def _seat_schedule(evaluation: EvaluationConfig) -> tuple[int | None, ...]:
+        """Seat per game; ``None`` means "play the role this game index calls for"."""
+
+        if evaluation.seat_policy == "balanced" and not evaluation.seats:
+            return (None,) * evaluation.games
         seats = tuple(evaluation.seats) or PRIMARY_SEATS
         if any(seat < 0 or seat >= 5 for seat in seats):
             raise ValueError("evaluation seats must be player indices in [0, 4]")
@@ -1109,16 +1137,17 @@ class CustomEvaluationProtocol(PrimaryEvaluationProtocol):
         role_correct = role_total = hidden_correct = hidden_total = 0
         emotion_squared_error = 0.0
         emotion_dimensions = 0
-        for evaluation_index, (seat, seed) in enumerate(zip(seats, seeds)):
-            seat_counts[str(seat)] += 1
+        for evaluation_index, (scheduled_seat, seed) in enumerate(zip(seats, seeds)):
             game, metrics = self._run_game(
                 evaluation_index,
-                seat,
+                scheduled_seat,
                 int(seed),
                 preset,
                 action_mode=evaluation.action_mode,
                 opponent=evaluation.opponent,
             )
+            seat = int(game["main_agent_seat"])
+            seat_counts[str(seat)] += 1
             game_results.append(game)
             status = game["termination_status"]
             role = str(game["main_agent_role"])
@@ -1170,7 +1199,7 @@ class CustomEvaluationProtocol(PrimaryEvaluationProtocol):
                 "games": evaluation.games,
                 "games_per_seat": evaluation.games_per_seat,
                 "seat_assignment_policy": evaluation.seat_policy,
-                "seats": list(seats),
+                "seats": [int(game["main_agent_seat"]) for game in game_results],
                 "action_selection_mode": evaluation.action_mode,
                 "seed_formula": evaluation.seed_formula,
                 "base_seed": evaluation.base_seed,
@@ -1313,11 +1342,13 @@ __all__ = [
     "EvaluationService",
     "PRIMARY_ACTION_MODE",
     "PRIMARY_GAMES",
+    "PRIMARY_GAMES_PER_ROLE",
     "PRIMARY_GAMES_PER_SEAT",
     "PRIMARY_PROTOCOL_ID",
     "PRIMARY_SEATS",
     "PRIMARY_SEED_FORMULA",
     "PrimaryEvaluationProtocol",
+    "role_balanced_seat",
     "run_custom_evaluation",
     "run_primary_evaluation",
 ]

@@ -743,8 +743,8 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ko": "메인 AI가 사용할 의도·감정 모듈입니다. 학습하는 동안 모듈은 고정되고 PPO 정책만 학습합니다. 자동은 저장된 작업 중 가장 최근의 호환되는 것을 고릅니다. 호환 안 됨으로 표시된 작업은 쓸 수 없습니다. 의도 모듈은 역할 4종을, 감정 모듈은 더미 AI의 9개 항목(formula-1.0+label9) 라벨을 예측해야 합니다. 아래에 .bangmodel을 지정하면 무시됩니다.",
     },
     "tooltip.training_games": {
-        "en": "How many games Main AI training plays. The main agent rotates through the five seats, so use a multiple of 5 for an even seat mix. Set it to 0 (shown as Blank) to limit training by time instead, using the Max training time field.",
-        "ko": "메인 AI 학습이 진행할 게임 수입니다. 메인 에이전트가 다섯 좌석을 번갈아 맡으므로 5의 배수로 두면 좌석이 고르게 섞입니다. 0(비움)으로 두면 게임 수 대신 '최대 학습 시간' 값으로 학습을 제한합니다.",
+        "en": "How many games Main AI training plays. The main agent plays sheriff, deputy, outlaw and traitor in turn, so use a multiple of 4 for an even role mix. Set it to 0 (shown as Blank) to limit training by time instead, using the Max training time field.",
+        "ko": "메인 AI 학습이 진행할 게임 수입니다. 메인 에이전트가 보안관·부관·무법자·배신자 역할을 차례로 맡으므로 4의 배수로 두면 역할이 고르게 섞입니다. 0(비움)으로 두면 게임 수 대신 '최대 학습 시간' 값으로 학습을 제한합니다.",
     },
     "tooltip.training_max_minutes_main": {
         "en": "Time limit in minutes, used only when Training games is Blank. Leave this blank (or 0) to train until you press Stop. The best model found so far is saved when training ends. Pausing does not use up the time.",

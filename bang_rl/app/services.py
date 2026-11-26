@@ -22,7 +22,7 @@ import numpy as np
 import torch
 
 from bang_rl.agents import DummyAgent, HumanAgent, RandomAgent
-from bang_rl.agents.main_agent.policy_inputs import build_policy_inputs, policy_input_layout
+from bang_rl.agents.main_agent.policy_inputs import build_policy_inputs
 from bang_rl.artifact_builders import (
     main_ai_pending_info,
     report_info,
@@ -473,7 +473,6 @@ class _ArtifactAgent:
             emotion=self.artifact.emotion,
             role_fusion=self.artifact.role_fusion,
             viewer_idx=int(np.asarray(viewer).reshape(-1)[0]),
-            layout=policy_input_layout(self.artifact.ppo),
         )
         with torch.inference_mode():
             output = self.artifact.ppo.act(inputs.ppo_inputs(), action_mask, deterministic=True)
