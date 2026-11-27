@@ -1,9 +1,11 @@
 """Main-AI (Phase 3) PPO training against DummyAgents.
 
 The main agent is frozen intent + emotion inference, RoleFusion, the
-observation preprocessor and a trainable :class:`PPOModule`. One game at a time
-is played in-process: the main agent plays sheriff, deputy, outlaw and traitor
-in turn (:func:`bang_rl.evaluation.protocol.role_balanced_seat`, a quarter of
+observation preprocessor and a trainable :class:`PPOModule`. Games are played
+in this process, or with ``hardware.workers`` > 1 in that many worker processes
+(:mod:`bang_rl.training.parallel_games`, a batch of ``workers`` games at a
+time). The main agent plays sheriff, deputy, outlaw and traitor in turn
+(:func:`bang_rl.evaluation.protocol.role_balanced_seat`, a quarter of
 the games each) and the four other seats are DummyAgents built exactly like the evaluation protocol builds
 them (:func:`bang_rl.evaluation.protocol.build_dummy_opponents`).
 
@@ -86,6 +88,7 @@ from .final_inference_artifact import (
     load_final_artifact_for_training,
     save_final_inference_artifact,
 )
+from .parallel_games import BrokenProcessPool, open_game_pool, usable_workers
 from .pending_transition import PendingTransitionLedger
 from .ppo_trainer import PPOTrainer, PPOTransition
 
@@ -507,10 +510,8 @@ def evaluate_policy(
         raise ValueError("evaluation games must be at least 1")
     if seats is not None:
         seats = tuple(int(seat) for seat in seats)
-    per_role = _role_table()
     metrics = (metrics_factory or InferenceMetrics)()
-    wins = normal = truncated = 0
-    steps: list[int] = []
+    rows: list[tuple[bool | None, str, int]] = []
     for index in range(games):
         if should_stop is not None and index % 10 == 0 and should_stop():
             return None
@@ -523,6 +524,23 @@ def evaluate_policy(
             environment_factory=environment_factory,
             metrics=metrics,
         )
+        rows.append((won, role, length))
+    return evaluation_summary(rows, metrics, games=games, base_seed=base_seed)
+
+
+def evaluation_summary(
+    rows: Sequence[tuple[bool | None, str, int]],
+    metrics: InferenceMetrics,
+    *,
+    games: int,
+    base_seed: int,
+) -> dict[str, Any]:
+    """The evaluation result from per-game ``(won, role, steps)`` rows (``won`` None = truncated)."""
+
+    per_role = _role_table()
+    wins = normal = truncated = 0
+    steps: list[int] = []
+    for won, role, length in rows:
         steps.append(length)
         if won is None:
             truncated += 1
@@ -705,6 +723,43 @@ class MainAiSource:
     origin: str
     description: dict[str, Any] = field(default_factory=dict)
     prior_training_games: int = 0
+    # Evaluation stored in the .bangmodel being continued (its best evaluation).
+    prior_evaluation: dict[str, Any] | None = None
+
+
+def prior_evaluation_row(metadata: Any) -> dict[str, Any] | None:
+    """The saved evaluation of a ``.bangmodel`` as an evaluation row, or None.
+
+    Main-AI training stores the evaluation of the model it saved (the best one)
+    under ``main_ai_training.evaluation``; other producers (refinement) put it
+    in the top-level ``evaluation``.
+    """
+
+    if not isinstance(metadata, Mapping):
+        return None
+    training = metadata.get("main_ai_training") if isinstance(metadata.get("main_ai_training"), Mapping) else {}
+    evaluation = training.get("evaluation") if isinstance(training.get("evaluation"), Mapping) else None
+    if evaluation is None and isinstance(metadata.get("evaluation"), Mapping):
+        evaluation = metadata["evaluation"]
+    if not evaluation:
+        return None
+    win_rate = evaluation.get("win_rate")
+    if isinstance(win_rate, bool) or not isinstance(win_rate, (int, float)):
+        return None
+    scores = training.get("normalized_scores") if isinstance(training.get("normalized_scores"), Mapping) else {}
+    return {
+        "win_rate": float(win_rate),
+        "normalized_score": scores.get("mean"),
+        "role_accuracy": evaluation.get("role_accuracy"),
+        "hidden_role_accuracy": evaluation.get("hidden_role_accuracy"),
+        "emotion_mse": evaluation.get("emotion_mse"),
+        "by_role": {
+            name: (values.get("win_rate") if isinstance(values, Mapping) else values)
+            for name, values in dict(evaluation.get("by_role") or {}).items()
+        },
+        "ppo_update": training.get("ppo_updates"),
+        "training_games": training.get("training_games"),
+    }
 
 
 def _freeze(module: torch.nn.Module) -> None:
@@ -788,6 +843,7 @@ def resolve_main_ai_source(run: Any, *, ppo_seed: int) -> MainAiSource:
             origin="bangmodel",
             description={"resume_artifact_path": getattr(run, "resume_artifact_path", None)},
             prior_training_games=prior,
+            prior_evaluation=prior_evaluation_row(metadata),
         )
     else:
         candidates = [
@@ -919,6 +975,11 @@ def train_main_ai(
 
     source = resolve_main_ai_source(run, ppo_seed=run_seed)
     policy = source.policy
+    if source.prior_evaluation is not None:
+        # A continued model starts from its saved evaluation, not from 0: the
+        # monitor draws it as the point at game 0 until this run evaluates.
+        with run.lock:
+            run.metrics["main_prior_eval"] = dict(source.prior_evaluation)
     _verify_frozen("intent", policy.intent)
     _verify_frozen("emotion", policy.emotion)
     _publish_module_stage(
@@ -1076,6 +1137,51 @@ def train_main_ai(
             },
         )
 
+    # The "training ..." stage text, restored after each evaluation.
+    stage_message = {"training": ""}
+
+    def run_evaluation(should_stop: Callable[[], bool] | None) -> dict[str, Any] | None:
+        """Evaluate in the worker pool when there is one, else in this process."""
+
+        nonlocal pool
+        if pool is not None:
+            try:
+                played = pool.evaluate(
+                    policy.ppo, games=eval_games, base_seed=eval_base_seed, should_stop=should_stop
+                )
+            except BrokenProcessPool as exc:
+                drop_pool(exc)
+            else:
+                if played is None:
+                    return None
+                rows, totals = played
+                return evaluation_summary(
+                    [row[1:] for row in rows], InferenceMetrics(**totals), games=eval_games, base_seed=eval_base_seed
+                )
+        return evaluate_policy(
+            policy,
+            system_config,
+            games=eval_games,
+            base_seed=eval_base_seed,
+            environment_factory=environment_factory,
+            should_stop=should_stop,
+        )
+
+    def drop_pool(exc: BaseException) -> None:
+        """A worker died: continue in this process instead of failing the run."""
+
+        nonlocal pool
+        log = getattr(run.logger, "error", None) or run.logger.event
+        log("main_ai_parallel_failed", job_id=handle.job_id, error=f"{type(exc).__name__}: {exc}")
+        if pool is not None:
+            try:
+                pool.close()
+            except Exception:  # noqa: BLE001 - the pool is already broken
+                pass
+        pool = None
+        with run.lock:
+            run.metrics["main_parallel_workers"] = 1
+
     def evaluate(final: bool) -> None:
         nonlocal best, best_rank, last_eval_update
         if not baselines:
@@ -1086,14 +1192,11 @@ def train_main_ai(
             f"평가 중 (PPO 업데이트 {updates}회, {eval_games}판)",
             ppo_update=updates,
         )
-        evaluation = evaluate_policy(
-            policy,
-            system_config,
-            games=eval_games,
-            base_seed=eval_base_seed,
-            environment_factory=environment_factory,
-            should_stop=None if final else controller.should_stop,
-        )
+        evaluation = run_evaluation(None if final else controller.should_stop)
+        if not final and stage_message["training"]:
+            # Back to training: the banner must not keep saying "evaluating".
+            with run.lock:
+                run.metrics["stage_message"] = stage_message["training"]
         if evaluation is None:
             return
         last_eval_update = updates
@@ -1151,34 +1254,35 @@ def train_main_ai(
             approx_kl=metrics.approx_kl,
         )
 
-    _publish_module_stage(
-        run,
-        "main_ai_training",
-        (
-            "시간 기준 학습: "
-            + (f"{budget / 60.0:g}분" if budget is not None else "무제한 (중지를 누를 때까지)")
-            if train_by_time
-            else f"{total_games}판 학습"
-        ),
-        train_by_time=train_by_time,
-        total_games=total_games,
-    )
     stopped_early = False
     discarded_transitions = 0
-    while True:
-        if controller.should_stop():
-            stopped_early = True
-            break
-        if not train_by_time and games_done >= total_games:
-            break
-        game = play_training_game(
-            game_offset + games_done,
-            run_seed=run_seed,
-            config=system_config,
-            policy=policy,
-            reward_calculator=calculator,
-            environment_factory=environment_factory,
-        )
+
+    def play_next() -> list[TrainingGameResult]:
+        """The next games: one in this process, or a batch of ``workers`` games in the pool."""
+
+        first = game_offset + games_done
+        if pool is not None:
+            count = pool.batch_games if train_by_time else min(pool.batch_games, total_games - games_done)
+            try:
+                return pool.play_training_games(range(first, first + count), policy.ppo)
+            except BrokenProcessPool as exc:
+                drop_pool(exc)
+        return [
+            play_training_game(
+                first,
+                run_seed=run_seed,
+                config=system_config,
+                policy=policy,
+                reward_calculator=calculator,
+                environment_factory=environment_factory,
+            )
+        ]
+
+    def record(game: TrainingGameResult) -> bool:
+        """Count one finished game and update/evaluate when a rollout is full; True = stop."""
+
+        nonlocal games_done, normal_games, truncated_games, wins_total, transitions_total
+        nonlocal environment_steps, last_truncation_warning, buffer
         summary = game.summary
         games_done += 1
         buffer.extend(game.transitions)
@@ -1220,20 +1324,75 @@ def train_main_ai(
             _append_point(run, "main_reward_points", sum(recent_rewards) / len(recent_rewards))
         if len(buffer) >= rollout_size:
             if controller.should_stop():
-                stopped_early = True
-                break
+                return True
             run_update(buffer)
             buffer = []
             if updates % eval_every_updates == 0:
                 evaluate(final=False)
-    if buffer and updates == 0:
-        # A short run that never reached a full rollout still trains once so it
-        # leaves a model; otherwise the partial rollout is dropped.
-        run_update(buffer)
-        buffer = []
-    discarded_transitions = len(buffer)
-    if updates > 0 and last_eval_update != updates:
-        evaluate(final=True)
+        return False
+
+    # Hardware "workers" > 1 plays games in that many processes. A custom
+    # environment factory (tests) cannot be sent to other processes.
+    requested_workers = getattr(getattr(system_config, "hardware", None), "workers", 1)
+    pool = None
+    if environment_factory is None and usable_workers(requested_workers) > 1:
+        _publish_module_stage(run, "main_ai_workers", f"게임 워커 준비 중 ({usable_workers(requested_workers)}개)")
+        pool = open_game_pool(
+            requested_workers,
+            system_config,
+            policy,
+            run_seed,
+            log=lambda message: run.logger.event("main_ai_parallel_unavailable", job_id=handle.job_id, reason=message),
+        )
+    with run.lock:
+        run.metrics["main_parallel_workers"] = pool.workers if pool is not None else 1
+    run.logger.event(
+        "main_ai_parallel_workers",
+        job_id=handle.job_id,
+        requested=requested_workers,
+        workers=pool.workers if pool is not None else 1,
+    )
+    stage_message["training"] = (
+        "학습 게임 진행 중 ("
+        + (
+            "시간 기준: "
+            + (f"{budget / 60.0:g}분" if budget is not None else "무제한, 중지를 누를 때까지")
+            if train_by_time
+            else f"{total_games}판"
+        )
+        + ")"
+    )
+    _publish_module_stage(
+        run,
+        "main_ai_training",
+        stage_message["training"],
+        train_by_time=train_by_time,
+        total_games=total_games,
+    )
+    try:
+        while True:
+            if controller.should_stop():
+                stopped_early = True
+                break
+            if not train_by_time and games_done >= total_games:
+                break
+            for game in play_next():
+                if record(game):
+                    stopped_early = True
+                    break
+            if stopped_early:
+                break
+        if buffer and updates == 0:
+            # A short run that never reached a full rollout still trains once so it
+            # leaves a model; otherwise the partial rollout is dropped.
+            run_update(buffer)
+            buffer = []
+        discarded_transitions = len(buffer)
+        if updates > 0 and last_eval_update != updates:
+            evaluate(final=True)
+    finally:
+        if pool is not None:
+            pool.close()
 
     truncated_rate = (truncated_games / games_done) if games_done else 0.0
     best_path = str(artifact_path) if (best is not None and artifact_path is not None) else None

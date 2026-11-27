@@ -90,6 +90,20 @@ def _norm_path(value: Any) -> str:
     return os.path.normcase(os.path.abspath(str(value)))
 
 
+def _lock_plot(plot: Any) -> Any:
+    """Make a pyqtgraph plot view-only: no mouse/wheel zoom or pan, no menu, no auto-range button.
+
+    The view follows the data by itself (auto range on both axes; a fixed Y
+    range set afterwards with ``setYRange`` stays fixed).
+    """
+
+    plot.setMouseEnabled(x=False, y=False)
+    plot.setMenuEnabled(False)
+    plot.hideButtons()
+    plot.enableAutoRange(x=True, y=True)
+    return plot
+
+
 def _set_log_text_preserving_scroll(editor: Any, text: str) -> None:
     """Replace log text without stealing the user's viewport position."""
 
@@ -145,10 +159,14 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             model_root: str | Path | None = None,
             main_ai_dirs: Any = None,
             dataset_root: str | Path | None = None,
+            settings_editor: Any = None,
         ) -> None:
             require_qt()
             super().__init__(parent)
             self.config = config
+            # When given, the hardware group is written to the local (git-ignored)
+            # settings file whenever it changes, so it survives a restart.
+            self._settings_editor = settings_editor
             # Where saved .phase2model modules are looked up (None = project default).
             self.model_root = model_root
             # A custom model root scopes the main AI models too (as in the performance dialog).
@@ -359,6 +377,19 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             hardware_form.addRow(tr("settings.buffer"), self.buffer)
             hardware_form.addRow(tr("settings.gpu"), self.gpu)
             self.hardware_form = hardware_form
+            # Save the hardware group shortly after the last change (one write
+            # per burst of spin-box clicks, not one per click).
+            self._hardware_save_timer = QTimer(self)
+            self._hardware_save_timer.setSingleShot(True)
+            self._hardware_save_timer.setInterval(500)
+            self._hardware_save_timer.timeout.connect(self.save_hardware_settings)
+            for spin in (self.clip, self.cpu, self.ram, self.workers, self.batch, self.buffer):
+                spin.valueChanged.connect(lambda _value: self._hardware_save_timer.start())
+            self.gpu.toggled.connect(lambda _checked: self._hardware_save_timer.start())
+            self.hardware_status = QLabel("", self.hardware_group)
+            self.hardware_status.setWordWrap(True)
+            self.hardware_status.setStyleSheet("color: gray;")
+            hardware_form.addRow(self.hardware_status)
 
             outer = QVBoxLayout(self)
             outer.setContentsMargins(0, 0, 0, 0)
@@ -801,6 +832,34 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             preset["emotion"] = emotion
             payload["preset"] = preset
 
+        def _hardware_values(self) -> dict[str, Any]:
+            return {
+                "cpu_cores": int(self.cpu.value()),
+                "ram_gb": float(self.ram.value()),
+                "use_gpu": bool(self.gpu.isChecked()),
+                "workers": int(self.workers.value()),
+                "batch_size": int(self.batch.value()),
+                "buffer_size": int(self.buffer.value()),
+            }
+
+        def save_hardware_settings(self) -> bool:
+            """Write the hardware group to the local settings file; False when there is no editor or it fails."""
+
+            self._hardware_save_timer.stop()
+            if self._settings_editor is None:
+                return False
+            try:
+                snapshot = self._settings_editor.save_training_resources(
+                    self._hardware_values(), clip_epsilon=float(self.clip.value())
+                )
+            except Exception as exc:  # noqa: BLE001 - a failed save must not break the form
+                self.hardware_status.setText(tr("training.hardware_save_failed", error=str(exc)))
+                return False
+            # Later setup() calls start from the saved values too.
+            self.config = snapshot.config
+            self.hardware_status.setText(tr("training.hardware_saved"))
+            return True
+
         def _config_with_overrides(self) -> Any:
             """Return the config with the panel's hardware/epoch edits applied.
 
@@ -1137,7 +1196,18 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             value = self.base_model.currentData()
             return str(value) if value else None
 
+        def flush_hardware_settings(self) -> None:
+            """Save a pending hardware change now (before a run starts or the screen closes)."""
+
+            if self._hardware_save_timer.isActive():
+                self.save_hardware_settings()
+
+        def hideEvent(self, event: Any) -> None:  # noqa: N802 - Qt signature
+            self.flush_hardware_settings()
+            super().hideEvent(event)
+
         def setup(self) -> TrainingSetup:
+            self.flush_hardware_settings()
             main = self._is_main_ai()
             refine = self._is_refinement()
             mode = self._mode_value()
@@ -1230,9 +1300,30 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self._metrics_full_text = "{}"
             self.validation_summary = QLabel("Validation: —", self)
             self.validation_summary.setWordWrap(True)
+            # Big coloured banner: job state + mode on top, current stage and
+            # progress below. Separate from the log so it is seen at a glance.
+            self.status_banner = QWidget(self)
+            self.status_banner.setObjectName("statusBanner")
+            self.status_banner.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            banner_layout = QVBoxLayout(self.status_banner)
+            banner_layout.setContentsMargins(12, 8, 12, 8)
+            banner_layout.setSpacing(2)
+            self.status_title = QLabel("", self.status_banner)
+            title_font = self.status_title.font()
+            title_font.setPointSize(max(title_font.pointSize() + 5, 15))
+            title_font.setBold(True)
+            self.status_title.setFont(title_font)
+            self.status_detail = QLabel("", self.status_banner)
+            detail_font = self.status_detail.font()
+            detail_font.setPointSize(max(detail_font.pointSize() + 1, 11))
+            self.status_detail.setFont(detail_font)
+            self.status_detail.setWordWrap(True)
+            banner_layout.addWidget(self.status_title)
+            banner_layout.addWidget(self.status_detail)
+            self._banner_state: str | None = None
             self.status = QLabel(tr("training.no_job"), self)
             self.snapshot = QLabel(tr("training.snapshot_not_started"), self)
-            self.paths = QLabel("Report: — · Output: — · Artifact: —", self)
+            self.paths = QLabel("Report: —\nOutput: —\nArtifact: —", self)
             self.paths.setWordWrap(True)
             # Where this run's result is (or will be) saved, with Open/Copy.
             self.result_bar = QWidget(self)
@@ -1335,7 +1426,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self._legend_layout.setContentsMargins(4, 0, 4, 0)
             self._legend_layout.addStretch(1)
             if PYQTGRAPH_AVAILABLE:
-                self.plot = PlotWidget(self)
+                self.plot = _lock_plot(PlotWidget(self))
                 self.plot.setLabel("left", "Accuracy")
                 self.plot.setLabel("bottom", "Batch")
                 # No in-plot addLegend(): the legend lives in self.legend_bar,
@@ -1358,11 +1449,11 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self._main_ai_signature: tuple[Any, ...] | None = None
             self._dashed_curves: set[str] = set()
             if PYQTGRAPH_AVAILABLE:
-                self.main_ai_win_plot = PlotWidget(self)
+                self.main_ai_win_plot = _lock_plot(PlotWidget(self))
                 self.main_ai_win_plot.setLabel("left", tr("mainai.axis.win_rate"))
                 self.main_ai_win_plot.setLabel("bottom", tr("mainai.axis.games"))
                 self.main_ai_win_plot.setYRange(0.0, 1.0)
-                self.main_ai_loss_plot = PlotWidget(self)
+                self.main_ai_loss_plot = _lock_plot(PlotWidget(self))
                 self.main_ai_loss_plot.setLabel("left", tr("mainai.axis.loss"))
                 self.main_ai_loss_plot.setLabel("bottom", tr("mainai.axis.updates"))
                 main_ai_graphs = QWidget(self)
@@ -1379,11 +1470,11 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self.refine_mse_plot = None
             self._refine_signature: tuple[Any, ...] | None = None
             if PYQTGRAPH_AVAILABLE:
-                self.refine_acc_plot = PlotWidget(self)
+                self.refine_acc_plot = _lock_plot(PlotWidget(self))
                 self.refine_acc_plot.setLabel("left", tr("refine.axis.accuracy"))
                 self.refine_acc_plot.setLabel("bottom", tr("refine.axis.round"))
                 self.refine_acc_plot.setYRange(0.0, 1.0)
-                self.refine_mse_plot = PlotWidget(self)
+                self.refine_mse_plot = _lock_plot(PlotWidget(self))
                 self.refine_mse_plot.setLabel("left", tr("refine.axis.mse"))
                 self.refine_mse_plot.setLabel("bottom", tr("refine.axis.round"))
                 refine_graphs = QWidget(self)
@@ -1442,6 +1533,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             left_panel.addWidget(self.inference_button)
             left_panel.addWidget(self.save_button)
             right_panel = QVBoxLayout()
+            right_panel.addWidget(self.status_banner)
             right_panel.addWidget(self.environment_steps)
             right_panel.addWidget(self.truncated)
             metrics_row = QHBoxLayout()
@@ -1614,6 +1706,24 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                     self.setup_panel.refresh_resume_main_ai_models()
                 self.setup_panel.refresh_datasets()
             self._last_status = status
+
+        def _update_status_banner(self, progress: Any, workflow: Any, metrics: Mapping[str, Any] | None) -> None:
+            state, title, detail = main_ai_view.status_banner(
+                None if progress is None else str(getattr(progress, "status", "")),
+                None if workflow is None else str(workflow),
+                metrics,
+                ppo_updates=int(getattr(progress, "ppo_updates", 0) or 0) if progress is not None else 0,
+                error=getattr(progress, "error", None) if progress is not None else None,
+            )
+            if state != self._banner_state:
+                self._banner_state = state
+                color = main_ai_view.STATUS_COLORS.get(state, main_ai_view.STATUS_COLORS["running"])
+                self.status_banner.setStyleSheet(
+                    f"#statusBanner {{ background-color: {color}; border-radius: 6px; }}"
+                    " #statusBanner QLabel { color: white; background: transparent; }"
+                )
+            self.status_title.setText(("\u25cf " if state == "running" else "") + title)
+            self.status_detail.setText(detail)
 
         def _update_result_bar(self, progress: Any) -> None:
             """Show the main result path: "Saved: ..." once the run ended, "Saving to: ..." before."""
@@ -1815,10 +1925,11 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             value = main_ai_view.series(metrics, "main_value_loss_points")
             entropy = main_ai_view.series(metrics, "main_entropy_points")
             baselines = main_ai_view.baseline_win_rates(metrics)
+            prior = main_ai_view.prior_win_rate(metrics)
             # The monitor re-renders every poll; redraw only when something new arrived.
             signature = (
                 job_id, interval, len(train), len(evaluation), len(eval_games),
-                len(policy), len(value), len(entropy), tuple(baselines.values()),
+                len(policy), len(value), len(entropy), tuple(baselines.values()), prior,
             )
             if signature == self._main_ai_signature:
                 return
@@ -1830,6 +1941,10 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 list(range(1, len(evaluation) + 1))
             )
             update_x = main_ai_view.sampled_axis(len(policy), interval)
+            # Continuing a saved model: both win-rate curves start at game 0
+            # from its saved evaluation instead of from no data.
+            train_x, train = main_ai_view.with_prior_point(train_x, train, prior)
+            eval_x, evaluation = main_ai_view.with_prior_point(eval_x, evaluation, prior)
             x_end = max([2, *train_x[-1:], *eval_x[-1:]])
             specs: list[tuple[Any, str, str, list[Any], list[float], bool]] = [
                 (win_plot, tr("mainai.curve.train_win"), "#5bc0eb", train_x, train, False),
@@ -1841,7 +1956,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             ):
                 rate = baselines.get(name)
                 if rate is not None:
-                    specs.append((win_plot, tr(key), color, [1, x_end], [rate, rate], True))
+                    specs.append((win_plot, tr(key), color, [0 if prior is not None else 1, x_end], [rate, rate], True))
             specs += [
                 (loss_plot, tr("mainai.curve.policy_loss"), "#b084cc", update_x, policy, False),
                 (loss_plot, tr("mainai.curve.value_loss"), "#f28f3b", update_x, value, False),
@@ -1855,6 +1970,10 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 self._active_curves.append((name, curve, color))
                 if dashed:
                     self._dashed_curves.add(name)
+            if prior is not None:
+                # A line through one point draws nothing: mark the saved
+                # evaluation at game 0 so it is visible before new points arrive.
+                win_plot.plot([0], [prior], pen=None, symbol="o", symbolSize=10, symbolBrush="#8bd450", symbolPen="w")
             self._highlight(None)
             self._rebuild_legend()
 
@@ -1908,6 +2027,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 self._save_plans = []
                 self.save_button.setEnabled(False)
                 self._update_result_bar(None)
+                self._update_status_banner(None, None, None)
                 return
             self._refresh_resume_on_finish(str(progress.status))
             target_config = getattr(state.snapshot, "config_snapshot", {}) if state.snapshot is not None else {}
@@ -1955,6 +2075,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self.truncated.setStyleSheet("color: #e08a00; font-weight: bold;" if truncation_high else "")
             metrics_value = public_training_metadata(getattr(progress, "metrics", {}) or {})
             self._metrics_full_text = metrics_json(metrics_value)
+            self._update_status_banner(progress, workflow, metrics_value)
             self.metrics.setToolTip(self._metrics_full_text)
             self.metrics.setText("Metrics: " + metrics_preview(metrics_value))
             if workflow == "module_training":
@@ -1997,8 +2118,10 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                     f"Snapshot: {state.snapshot.job_id} · config {state.snapshot.config_version} "
                     f"· seed {state.snapshot.seed}"
                 )
+            # One line per path so each kind starts at the left edge.
             self.paths.setText(
-                f"Report: {progress.report_path or '—'} · Output: {getattr(progress, 'output_path', None) or '—'} · "
+                f"Report: {progress.report_path or '—'}\n"
+                f"Output: {getattr(progress, 'output_path', None) or '—'}\n"
                 f"Artifact: {progress.artifact_path or '—'}"
             )
             self.paths.setToolTip(self.paths.text())
