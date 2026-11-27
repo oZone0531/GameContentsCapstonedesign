@@ -533,6 +533,10 @@ def _publish_module_metric(run: Any, record: Mapping[str, Any]) -> None:
                     run.metrics["emotion_validation_accuracy_by_dimension"] = list(record["validation_emotion_accuracy_by_dimension"])
                 if isinstance(record.get("validation_mse"), (int, float)):
                     run.metrics["emotion_validation_mse"] = float(record["validation_mse"])
+                if isinstance(record.get("validation_personality_accuracy"), (int, float)):
+                    run.metrics["personality_validation_accuracy"] = float(record["validation_personality_accuracy"])
+                if isinstance(record.get("personality_names"), (list, tuple)):
+                    run.metrics["personality_names"] = list(record["personality_names"])
         return
     if str(record.get("event")) != "batch":
         return
@@ -554,6 +558,10 @@ def _publish_module_metric(run: Any, record: Mapping[str, Any]) -> None:
             if not _keep_graph_point(run, "emotion"):
                 return
             run.metrics.setdefault("emotion_accuracy_points", []).append(float(record["accuracy"]))
+            if isinstance(record.get("personality_accuracy"), (int, float)):
+                run.metrics.setdefault("personality_accuracy_points", []).append(
+                    float(record["personality_accuracy"])
+                )
             if isinstance(record.get("accuracy_by_dimension"), (list, tuple)):
                 run.metrics.setdefault("emotion_accuracy_by_dimension_points", []).append(
                     [float(value) for value in record["accuracy_by_dimension"]]
@@ -900,6 +908,11 @@ def run_module_training(handle: Any, run: Any) -> Mapping[str, Any]:
             ),
             "emotion_accuracy_tolerance": float(emotion_trainer.config.accuracy_tolerance),
             "emotion_dimension_names": list(emotion_trainer.model.emotion_names),
+            "personality_trained": bool(emotion_trainer.personality_enabled),
+            "personality_names": list(emotion_trainer.model.personality_names),
+            "personality_final_validation_accuracy": _last_history_metric(
+                emotion_result.history, "validation_personality_accuracy"
+            ),
             "intent_gradient_norm_history": _history_metric(intent_result.history, "train_gradient_norm"),
             "emotion_gradient_norm_history": _history_metric(emotion_result.history, "train_gradient_norm"),
             "cache_diagnostics": _cache_diagnostics(loaders),

@@ -55,7 +55,11 @@ TARGET_KEYS = (
     "role_label_mask",
     "emotion_labels",
     "emotion_label_mask",
+    "personality_labels",
+    "personality_label_mask",
 )
+# Seat personality label for "no personality" (index into manifest personality_names).
+NO_PERSONALITY = -1
 TRANSITION_KEYS = (
     "actions",
     "actor_indices",
@@ -83,6 +87,8 @@ FIXED_TENSOR_SCHEMA: dict[str, dict[str, Any]] = {
     "role_label_mask": {"dtype": "bool", "shape": [None, PLAYER_COUNT]},
     "emotion_labels": {"dtype": "float32", "shape": [None, PLAYER_COUNT, None]},
     "emotion_label_mask": {"dtype": "bool", "shape": [None, PLAYER_COUNT]},
+    "personality_labels": {"dtype": "int16", "shape": [None, PLAYER_COUNT]},
+    "personality_label_mask": {"dtype": "bool", "shape": [None, PLAYER_COUNT]},
     "actions": {"dtype": "uint8", "shape": [None]},
     "actor_indices": {"dtype": "uint8", "shape": [None]},
     "target_indices": {"dtype": "uint8", "shape": [None]},
@@ -293,6 +299,24 @@ def _emotion_dimension(episodes: Sequence[CanonicalEpisode], configured: int | N
     return next(iter(dimensions), 0)
 
 
+def _episode_personalities(episode: CanonicalEpisode) -> list[str | None]:
+    """Per-seat personality preset names recorded at collection time (None = none)."""
+
+    raw = episode.metadata.get("personalities") if isinstance(episode.metadata, Mapping) else None
+    if not isinstance(raw, (list, tuple)) or len(raw) != PLAYER_COUNT:
+        return [None] * PLAYER_COUNT
+    return [None if item is None or str(item) == "" else str(item) for item in raw]
+
+
+def _personality_names(episodes: Iterable[CanonicalEpisode]) -> tuple[str, ...]:
+    """Sorted names of every personality preset used by any seat of ``episodes``."""
+
+    names: set[str] = set()
+    for episode in episodes:
+        names.update(name for name in _episode_personalities(episode) if name is not None)
+    return tuple(sorted(names))
+
+
 def _normalization_stats(tensors: Mapping[str, np.ndarray]) -> dict[str, Any]:
     stats: dict[str, Any] = {}
     for key in ("state_vector", "player_state_matrix", "role_beliefs", "event_history"):
@@ -318,6 +342,7 @@ def _cache_diagnostics(tensors: Mapping[str, np.ndarray]) -> dict[str, Any]:
     emotion_mask = np.asarray(tensors["emotion_label_mask"], dtype=np.bool_)
     role_values = np.asarray(tensors["role_labels"], dtype=np.int64)
     role_mask = np.asarray(tensors["role_label_mask"], dtype=np.bool_)
+    personality_mask = np.asarray(tensors["personality_label_mask"], dtype=np.bool_)
     event_streams = int(np.prod(event_mask.shape[:-1])) if event_mask.ndim >= 2 else 0
     valid_positions = int(event_mask.sum())
     total_positions = int(event_mask.size)
@@ -336,6 +361,7 @@ def _cache_diagnostics(tensors: Mapping[str, np.ndarray]) -> dict[str, Any]:
         "emotion_label_mask_ratio": float(emotion_mask.mean()) if emotion_mask.size else 0.0,
         "emotion_label_count": int(emotion_mask.sum()),
         "emotion_label_slot_count": int(emotion_mask.size),
+        "personality_label_count": int(personality_mask.sum()),
         "raw_role_distribution": {name: int(raw_counts[index]) for index, name in enumerate(raw_names)},
         "mapped_role_distribution": {name: int(mapped_counts[index]) for index, name in enumerate(mapped_names)},
     }
@@ -470,6 +496,9 @@ class NPZTensorCacheWriter:
         self.config_payload = _config_payload(config)
         self.config_hash = config_hash or (_hash(self.config_payload) if config is not None else None)
         self.resume = bool(resume)
+        # Personality names shared by all splits (set by write_all so the label
+        # indices mean the same thing in train, validation and test).
+        self._personality_names: tuple[str, ...] | None = None
 
     def write(
         self,
@@ -524,18 +553,26 @@ class NPZTensorCacheWriter:
         config_hash = None if manifest is None else manifest.get("config_hash")
         artifacts: dict[str, TensorCacheArtifact] = {}
         stats: Mapping[str, Any] | None = None
-        for name in ("train", "validation", "test"):
-            artifact = self._write_one(
-                name, _episodes(partitions[name].episodes), training,
-                manifest=manifest, source_content_hash=source_hash,
-                source_shard_ids=self.source_shard_ids, split_seed=split_seed,
-                config_hash=config_hash, train_stats=stats,
-            )
-            if name == "train":
-                # Validation/test reuse the train statistics instead of
-                # materializing the whole training set again each.
-                stats = artifact.manifest.get("train_statistics")
-            artifacts[name] = artifact
+        self._personality_names = _personality_names(
+            episode
+            for name in ("train", "validation", "test")
+            for episode in _episodes(partitions[name].episodes)
+        )
+        try:
+            for name in ("train", "validation", "test"):
+                artifact = self._write_one(
+                    name, _episodes(partitions[name].episodes), training,
+                    manifest=manifest, source_content_hash=source_hash,
+                    source_shard_ids=self.source_shard_ids, split_seed=split_seed,
+                    config_hash=config_hash, train_stats=stats,
+                )
+                if name == "train":
+                    # Validation/test reuse the train statistics instead of
+                    # materializing the whole training set again each.
+                    stats = artifact.manifest.get("train_statistics")
+                artifacts[name] = artifact
+        finally:
+            self._personality_names = None
         return artifacts
 
     build = write
@@ -564,7 +601,12 @@ class NPZTensorCacheWriter:
         schema_version = self.emotion_schema_version or _version(all_records, "emotion_schema_version", "unknown")
         obs_version = self.observation_schema_version or _version(all_records, "observation_schema_version", "1.0")
         emotion_dim = _emotion_dimension(normal_records or normal_train, self.emotion_dimension)
-        tensors = self._materialize(normal_records, emotion_dim)
+        personality_names = (
+            self._personality_names
+            if self._personality_names is not None
+            else _personality_names((*all_records, *train_records))
+        )
+        tensors = self._materialize(normal_records, emotion_dim, personality_names)
         if train_stats is not None:
             stats = train_stats
         elif [item.episode_id for item in normal_train] == [item.episode_id for item in normal_records]:
@@ -572,7 +614,7 @@ class NPZTensorCacheWriter:
             # built, instead of materializing the same episodes a second time.
             stats = _normalization_stats(tensors)
         else:
-            train_tensors = self._materialize(normal_train, emotion_dim)
+            train_tensors = self._materialize(normal_train, emotion_dim, personality_names)
             stats = _normalization_stats(train_tensors)
             del train_tensors
         split_ids = [str(item.episode_id) for item in normal_records]
@@ -607,6 +649,7 @@ class NPZTensorCacheWriter:
             "emotion_schema_version": schema_version,
             "schema_hash": _hash({"observation_schema_version": obs_version, "emotion_schema_version": schema_version, "preprocessor_config_hash": _hash(self.preprocessor.config.to_dict())}),
             "emotion_dimension": emotion_dim,
+            "personality_names": list(personality_names),
             "episode_ids": split_ids,
             "included_episode_count": len(split_ids),
             "excluded_truncated_episode_count": sum(str(item.termination_status) == "truncated" for item in all_records),
@@ -644,11 +687,23 @@ class NPZTensorCacheWriter:
             for key, value in sorted(tensors.items())
         }
 
-    def _materialize(self, records: Sequence[CanonicalEpisode], emotion_dim: int) -> dict[str, np.ndarray]:
+    def _materialize(
+        self,
+        records: Sequence[CanonicalEpisode],
+        emotion_dim: int,
+        personality_names: Sequence[str] = (),
+    ) -> dict[str, np.ndarray]:
         rows: list[dict[str, Any]] = []
+        personality_index = {str(name): index for index, name in enumerate(personality_names)}
         for episode_index, episode in enumerate(sorted(records, key=lambda item: str(item.episode_id))):
             if str(episode.termination_status) != "normal":
                 continue
+            personality_values = np.full(PLAYER_COUNT, NO_PERSONALITY, dtype=np.int16)
+            personality_mask = np.zeros(PLAYER_COUNT, dtype=np.bool_)
+            for seat, preset in enumerate(_episode_personalities(episode)):
+                if preset is not None and preset in personality_index:
+                    personality_values[seat] = personality_index[preset]
+                    personality_mask[seat] = True
             event_by_id = _episode_event_map(episode)
             for step in sorted(episode.steps, key=lambda item: int(item.environment_step)):
                 if step.pre_observation is None:
@@ -695,6 +750,8 @@ class NPZTensorCacheWriter:
                     "role_label_mask": role_mask,
                     "emotion_labels": emotion_values,
                     "emotion_label_mask": emotion_mask,
+                    "personality_labels": personality_values,
+                    "personality_label_mask": personality_mask,
                     "actions": int(step.action),
                     "actor_indices": int(step.actor_idx),
                     "target_indices": PASS_TARGET_SENTINEL if step.target_idx is None else int(step.target_idx),

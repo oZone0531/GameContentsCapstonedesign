@@ -19,6 +19,7 @@ from bang_rl.agents.main_agent import (
     PPOModule,
     RoleFusion,
     policy_emotion_dim,
+    policy_ppo_dims,
 )
 from bang_rl.app import TrainingConfig, TrainingService
 from bang_rl.artifact_info import KIND_DATASET, KIND_MAIN_AI, new_info, read_info
@@ -73,7 +74,7 @@ def _policy(seed: int = 1) -> PolicyModules:
     for module in (intent, emotion):
         for parameter in module.parameters():
             parameter.requires_grad_(False)
-    ppo = PPOModule(emotion_dim=policy_emotion_dim(emotion), seed=seed)
+    ppo = PPOModule(**policy_ppo_dims(emotion), seed=seed)
     return PolicyModules(intent, emotion, RoleFusion(), ObservationPreprocessor(), ppo)
 
 
@@ -343,7 +344,9 @@ def test_module_pairs_are_evaluated_under_the_fixed_ppo(base_model: Path) -> Non
     assert module_fingerprint(base.ppo) == before
     assert all("hidden_role_accuracy" in row and "emotion_mse_by_entry" in row for row in rows)
     assert progress[-1][:2] == (2, 2)
-    wrong = PPOModule(emotion_dim=policy_emotion_dim(other.emotion) + 4, seed=1)
+    wrong = PPOModule(
+        **{**policy_ppo_dims(other.emotion), "emotion_dim": policy_emotion_dim(other.emotion) + 4}, seed=1
+    )
     with pytest.raises(TrainingError):
         check_modules_fit_ppo(wrong, other.emotion)
 

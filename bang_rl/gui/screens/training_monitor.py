@@ -227,6 +227,9 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self.players = QComboBox(self)
             self.players.addItem(tr("training.collection_players.dummy5"), "dummy5")
             self.players.addItem(tr("training.collection_players.main1_dummy4"), "main1-dummy4")
+            # Data collection: give every dummy a random personality preset per game.
+            self.personality = QCheckBox(tr("training.personality_check"), self)
+            self.personality.setChecked(self._config_personality())
             # The main AI model that plays (collection) or whose PPO stays fixed (refinement).
             base_model_row = self.base_model_row = ArtifactPicker(
                 on_refresh=self.refresh_base_models,
@@ -277,6 +280,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self._form = form
             form.addRow(tr("training.mode"), self.mode)
             form.addRow(tr("training.collection_players"), self.players)
+            form.addRow(tr("training.personality"), self.personality)
             form.addRow(tr("training.episodes"), self.episodes)
             form.addRow(tr("training.epochs"), self.epochs)
             form.addRow(tr("training.games"), self.games)
@@ -324,6 +328,9 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self.clip.setRange(0.000001, 0.999999)
             self.clip.setDecimals(6)
             self.clip.setValue(self._config_clip())
+            # Main AI training: one policy/value head per own role (PPO role_heads).
+            self.role_heads = QCheckBox(tr("settings.role_heads_check"), self)
+            self.role_heads.setChecked(self._config_role_heads())
             self.cpu = QSpinBox(self)
             self.cpu.setRange(1, 4096)
             self.cpu.setValue(int(hw.get("cpu_cores", 1)))
@@ -344,6 +351,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self.hardware_group = QGroupBox(tr("training.hardware_group"), self)
             hardware_form = QFormLayout(self.hardware_group)
             hardware_form.addRow(tr("settings.ppo_clip"), self.clip)
+            hardware_form.addRow(tr("settings.role_heads"), self.role_heads)
             hardware_form.addRow(tr("settings.cpu"), self.cpu)
             hardware_form.addRow(tr("settings.ram"), self.ram)
             hardware_form.addRow(tr("settings.workers"), self.workers)
@@ -380,6 +388,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 (self.resume_row, "tooltip.training_resume_module"),
                 (self.resume_module, "tooltip.training_resume_module"),
                 (self.players, "tooltip.training_collection_players"),
+                (self.personality, "tooltip.training_personality"),
                 (self.base_model, "tooltip.training_base_model"),
                 (self.base_model_row, "tooltip.training_base_model"),
                 (self.action_mode, "tooltip.training_main_action_mode"),
@@ -405,6 +414,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                     label.setToolTip(text)
             hardware_tooltips = (
                 (self.clip, "tooltip.ppo_clip"),
+                (self.role_heads, "tooltip.role_heads"),
                 (self.cpu, "tooltip.cpu"),
                 (self.ram, "tooltip.ram"),
                 (self.workers, "tooltip.workers"),
@@ -421,6 +431,9 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             self.mode.currentIndexChanged.connect(self._on_mode_changed)
             self.players.currentIndexChanged.connect(lambda _index: self._apply_mode())
             self.resume_main_ai.currentIndexChanged.connect(lambda _index: self._sync_main_ai_sources())
+            self.resume_main_ai.currentIndexChanged.connect(
+                lambda _index: self.role_heads.setEnabled(self._main_ai_resume_file() is None)
+            )
             self._apply_mode()
 
         # --- mode-dependent form -------------------------------------------
@@ -542,6 +555,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             # Each row is shown only for the workflows that read it
             # (pipeline_runner / main_ai_training / inference_refinement).
             self._set_row_visible(self.players, collect)
+            self._set_row_visible(self.personality, collect)
             self._set_row_visible(self.episodes, collect)  # games to collect
             self._set_row_visible(self.epochs, module)
             self._set_row_visible(self.max_games, module)
@@ -571,6 +585,12 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             clip_label = self.hardware_form.labelForField(self.clip)
             if clip_label is not None:
                 clip_label.setVisible(main)
+            self.role_heads.setVisible(main)
+            role_heads_label = self.hardware_form.labelForField(self.role_heads)
+            if role_heads_label is not None:
+                role_heads_label.setVisible(main)
+            # A saved .bangmodel fixes the PPO layout, so the choice only applies to a fresh PPO.
+            self.role_heads.setEnabled(self._main_ai_resume_file() is None)
             self._set_row_text(
                 self.graph_interval,
                 "training.graph_interval_main" if main else "training.graph_interval",
@@ -750,6 +770,37 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             except (TypeError, ValueError):
                 return 0.2
 
+        def _config_personality(self) -> bool:
+            preset = self._config_mapping().get("preset") or {}
+            formula = (preset.get("emotion") or {}).get("formula") or {}
+            return str(formula.get("personality_mode", "role")) == "random"
+
+        def _config_role_heads(self) -> bool:
+            rl = self._config_mapping().get("rl_training") or {}
+            return bool((rl.get("ppo") or {}).get("role_heads", False))
+
+        def _apply_personality_override(self, payload: dict[str, Any]) -> None:
+            """Turn the dummies' random personality presets on or off for collection."""
+
+            preset = dict(payload.get("preset") or {})
+            emotion = dict(preset.get("emotion") or {})
+            formula = dict(emotion.get("formula") or {})
+            if self.personality.isChecked():
+                if not formula.get("personality_presets"):
+                    # The config has no presets of its own: use the shipped ones.
+                    from bang_rl.config.schema import DEFAULT_EMOTION_FORMULA_FILE, default_emotion_formula
+
+                    shipped = default_emotion_formula(
+                        DEFAULT_EMOTION_FORMULA_FILE.with_name("emotion_formula.personality.json")
+                    )
+                    formula["personality_presets"] = dict(shipped.personality_presets)
+                formula["personality_mode"] = "random"
+            else:
+                formula["personality_mode"] = "role"
+            emotion["formula"] = formula
+            preset["emotion"] = emotion
+            payload["preset"] = preset
+
         def _config_with_overrides(self) -> Any:
             """Return the config with the panel's hardware/epoch edits applied.
 
@@ -781,8 +832,13 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
             rl = dict(payload.get("rl_training") or {})
             ppo = dict(rl.get("ppo") or {})
             ppo["clip_epsilon"] = float(self.clip.value())
+            if self._is_main_ai() and self.role_heads.isEnabled():
+                ppo["role_heads"] = bool(self.role_heads.isChecked())
             rl["ppo"] = ppo
             payload["rl_training"] = rl
+
+            if self._mode_value() == TRAINING_MODE_DATA_COLLECTION:
+                self._apply_personality_override(payload)
 
             if not payload:
                 return self.config
@@ -1683,6 +1739,7 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 "accuracy", job,
                 len(getattr(state, "intent_accuracy_points", ())),
                 len(getattr(state, "emotion_accuracy_points", ())),
+                len(getattr(state, "personality_accuracy_points", ())),
             )
 
         def _render_graph(self, state: TrainingMonitorSnapshot) -> None:
@@ -1731,6 +1788,16 @@ if QT_AVAILABLE:  # pragma: no cover - display dependent; controller is headless
                 ("Intent", intent_curve, "#f6c344"),
                 ("Emotion", emotion_curve, "#5bc0eb"),
             ]
+            # Shown only when the emotion module also learns the personality.
+            personality_values = getattr(state, "personality_accuracy_points", ())
+            if personality_values:
+                personality_curve = self.plot.plot(
+                    list(range(1, len(personality_values) + 1)),
+                    list(personality_values),
+                    pen="#b084cc",
+                    name="Personality",
+                )
+                self._active_curves.append(("Personality", personality_curve, "#b084cc"))
             self._highlight(None)
             self._rebuild_legend()
 

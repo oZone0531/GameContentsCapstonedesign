@@ -10,12 +10,14 @@ from .protocol import (
     EvaluationService,
     PRIMARY_ACTION_MODE,
     PRIMARY_GAMES,
+    PRIMARY_GAMES_PER_ROLE,
     PRIMARY_GAMES_PER_SEAT,
     PRIMARY_PROTOCOL_ID,
     PRIMARY_SEATS,
     PRIMARY_SEED_FORMULA,
     PrimaryEvaluationProtocol,
     run_custom_evaluation,
+    role_balanced_seat,
     run_primary_evaluation,
 )
 
@@ -30,11 +32,13 @@ __all__ = [
     "EvaluationService",
     "PRIMARY_ACTION_MODE",
     "PRIMARY_GAMES",
+    "PRIMARY_GAMES_PER_ROLE",
     "PRIMARY_GAMES_PER_SEAT",
     "PRIMARY_PROTOCOL_ID",
     "PRIMARY_SEATS",
     "PRIMARY_SEED_FORMULA",
     "PrimaryEvaluationProtocol",
     "run_custom_evaluation",
+    "role_balanced_seat",
     "run_primary_evaluation",
 ]

@@ -19,6 +19,7 @@ import os
 import numpy as np
 import torch
 from torch import Tensor
+from torch.nn import functional as F
 
 from bang_rl.agents.main_agent import EmotionInferenceModule
 from bang_rl.config import EmotionConfig
@@ -42,6 +43,9 @@ from .sl_trainer import (
     _rng_state,
 )
 
+#: Weight of the personality cross-entropy added to the emotion MSE gradient.
+PERSONALITY_LOSS_WEIGHT = 0.1
+
 
 @dataclass(frozen=True)
 class EmotionBatch:
@@ -56,6 +60,9 @@ class EmotionBatch:
     # constant (relation to the owner itself or to a dead seat). None when the
     # emotion names are unknown; then every entry of a valid label counts.
     emotion_value_mask: Tensor | None = None
+    # (batch, 4) class index of each target seat's personality in the model's
+    # ``personality_names``; -1 where unknown. None when personality is not trained.
+    personality_labels: Tensor | None = None
 
     @property
     def inputs(self) -> Mapping[str, Tensor]:
@@ -113,6 +120,7 @@ def build_emotion_batch(
     *,
     device: torch.device | str = "cpu",
     emotion_names: Sequence[str] | None = None,
+    personality_map: np.ndarray | None = None,
 ) -> EmotionBatch:
     """Build a deterministic public-input/continuous-label batch.
 
@@ -146,6 +154,17 @@ def build_emotion_batch(
         selected_values[row] = values[row, targets]
         selected_masks[row] = masks[row, targets]
         selected_owners[row] = targets
+    personality = None
+    if personality_map is not None:
+        # ``personality_map[cache_index]`` is the model's class index (-1 = not in the model).
+        cache_labels = np.asarray(labels["personality_labels"], dtype=np.int64)
+        cache_mask = np.asarray(labels["personality_label_mask"], dtype=np.bool_)
+        lookup = np.asarray(personality_map, dtype=np.int64)
+        known = cache_mask & (cache_labels >= 0) & (cache_labels < len(lookup))
+        mapped = np.where(known, lookup[np.clip(cache_labels, 0, max(len(lookup) - 1, 0))], -1)
+        personality = np.full((len(row_indices), 4), -1, dtype=np.int64)
+        for row, viewer in enumerate(viewers):
+            personality[row] = mapped[row, [p for p in range(5) if p != int(viewer)]]
     value_mask = None
     if emotion_names is not None:
         if len(emotion_names) != emotion_count:
@@ -175,6 +194,9 @@ def build_emotion_batch(
         row_indices=row_indices,
         emotion_value_mask=(
             None if value_mask is None else torch.as_tensor(value_mask, dtype=torch.bool, device=device)
+        ),
+        personality_labels=(
+            None if personality is None else torch.as_tensor(personality, dtype=torch.long, device=device)
         ),
     )
 
@@ -315,7 +337,13 @@ class EmotionInferenceSLTrainer:
                 )
             elif not isinstance(emotion_config, EmotionConfig):
                 emotion_config = EmotionConfig.model_validate(dict(emotion_config))
-            model = EmotionInferenceModule(config=emotion_config, seed=self.config.seed)
+            # A personality head is added only when the training data actually
+            # carries personality labels (dummies collected with personality on).
+            model = EmotionInferenceModule(
+                config=emotion_config,
+                seed=self.config.seed,
+                personality_names=self._cache_personality_names() if self._cache_has_personality() else None,
+            )
         if not isinstance(model, EmotionInferenceModule):
             raise TypeError("model must be an EmotionInferenceModule")
         if model.emotion_schema_version != cache_schema:
@@ -334,6 +362,19 @@ class EmotionInferenceSLTrainer:
                 raise DataError("Emotion Schema dimension mismatch across cache splits")
         self.model = model.to(self.device)
         self.optimizer = self.model.create_optimizer()
+        # Cache personality index -> model class index (matched by preset name).
+        # None when the model has no personality head or the data has no labels:
+        # then only emotions are trained.
+        self._personality_map: np.ndarray | None = None
+        if self.model.personality_names and self._cache_has_personality():
+            model_index = {name: index for index, name in enumerate(self.model.personality_names)}
+            mapping = np.asarray(
+                [model_index.get(name, -1) for name in self._cache_personality_names()], dtype=np.int64
+            )
+            if bool(np.any(mapping >= 0)):
+                self._personality_map = mapping
+        # Side channel of ``_loss_and_metrics``: (cross-entropy, correct, total) of the last batch.
+        self._last_personality: tuple[Tensor, int, int] | None = None
         self.history: list[dict[str, Any]] = []
         self.start_epoch = 1
         self.best_epoch = 0
@@ -354,6 +395,19 @@ class EmotionInferenceSLTrainer:
         resume_from = resume_from or self.config.resume_from
         if resume_from is not None:
             self.load_checkpoint(resume_from)
+
+    def _cache_personality_names(self) -> list[str]:
+        return [str(name) for name in (self.train_cache.manifest.get("personality_names") or ())]
+
+    def _cache_has_personality(self) -> bool:
+        diagnostics = self.train_cache.manifest.get("diagnostics") or {}
+        return bool(self._cache_personality_names()) and int(diagnostics.get("personality_label_count", 0)) > 0
+
+    @property
+    def personality_enabled(self) -> bool:
+        """True when this run also trains (and reports) personality accuracy."""
+
+        return self._personality_map is not None
 
     def _stop_requested(self) -> bool:
         callback = self.should_stop
@@ -489,11 +543,18 @@ class EmotionInferenceSLTrainer:
     def _loss_and_metrics(
         self, batch: EmotionBatch, *, return_accuracy: bool = False
     ) -> tuple[Any, ...]:
-        predictions = self.model(
-            batch.model_inputs["event_history"],
-            batch.model_inputs["event_valid_mask"],
-            output="values",
-        )
+        self._last_personality = None
+        if self._personality_map is not None and batch.personality_labels is not None:
+            predictions, logits = self.model.forward_with_personality(
+                batch.model_inputs["event_history"], batch.model_inputs["event_valid_mask"]
+            )
+            self._last_personality = self._personality_loss(batch, logits)
+        else:
+            predictions = self.model(
+                batch.model_inputs["event_history"],
+                batch.model_inputs["event_valid_mask"],
+                output="values",
+            )
         if predictions.ndim != 3 or tuple(predictions.shape[:2]) != tuple(batch.emotion_labels.shape[:2]):
             raise TrainingError("EmotionInference output does not match four emotion target streams")
         if predictions.shape[-1] != batch.emotion_labels.shape[-1]:
@@ -531,6 +592,26 @@ class EmotionInferenceSLTrainer:
         totals = valid_values.sum(dim=(0, 1)).detach().cpu().to(torch.long)
         return loss, targets, values, correct, totals
 
+    @staticmethod
+    def _personality_loss(batch: EmotionBatch, logits: Tensor | None) -> tuple[Tensor, int, int] | None:
+        """Cross-entropy, correct count and total over seats with a known personality.
+
+        Only seats that also carry an emotion label count (living dummies), so
+        personality and emotions are judged on the same streams.
+        """
+
+        if logits is None or batch.personality_labels is None:
+            return None
+        valid = (batch.personality_labels >= 0) & batch.emotion_label_mask
+        total = int(valid.sum().item())
+        if total == 0:
+            return None
+        selected = logits[valid]
+        targets = batch.personality_labels[valid]
+        loss = F.cross_entropy(selected, targets)
+        correct = int((selected.argmax(dim=-1) == targets).sum().item())
+        return loss, correct, total
+
     def _write_metric(self, record: Mapping[str, Any]) -> None:
         safe = _json_safe(dict(record))
         # Every epoch metric is a split-scoped record.  Keep the aggregate
@@ -566,6 +647,7 @@ class EmotionInferenceSLTrainer:
         losses: list[float] = []
         gradients: list[float] = []
         targets = values = 0
+        personality_correct = personality_total = 0
         correct_by_dimension: torch.Tensor | None = None
         total_by_dimension: torch.Tensor | None = None
         for start in range(0, len(order), self.config.batch_size):
@@ -574,13 +656,22 @@ class EmotionInferenceSLTrainer:
                 break
             indices = order[start : start + self.config.batch_size]
             batch = build_emotion_batch(
-                self.train_cache, indices, device=self.device, emotion_names=self.model.emotion_names
+                self.train_cache, indices, device=self.device, emotion_names=self.model.emotion_names,
+                personality_map=self._personality_map,
             )
             self.optimizer.zero_grad(set_to_none=True)
             loss, batch_targets, batch_values, batch_correct, batch_totals = self._loss_and_metrics(
                 batch, return_accuracy=True
             )
-            loss.backward()
+            personality = self._last_personality
+            # ``loss`` stays the emotion MSE (reported and used for best-model
+            # selection); the personality cross-entropy only adds to the gradient.
+            if personality is None:
+                loss.backward()
+            else:
+                (loss + PERSONALITY_LOSS_WEIGHT * personality[0]).backward()
+                personality_correct += personality[1]
+                personality_total += personality[2]
             squared = 0.0
             for parameter in self.model.parameters():
                 if parameter.grad is not None:
@@ -602,7 +693,7 @@ class EmotionInferenceSLTrainer:
                 batch_correct.to(torch.float32) / batch_totals.to(torch.float32),
                 torch.zeros_like(batch_totals, dtype=torch.float32),
             )
-            self._write_metric({
+            batch_record = {
                 "phase": self.phase,
                 "split": "train",
                 "event": "batch",
@@ -617,7 +708,11 @@ class EmotionInferenceSLTrainer:
                 "valid_targets": batch_targets,
                 "valid_values": batch_values,
                 "gradient_norm": gradient_norm,
-            })
+            }
+            if personality is not None:
+                batch_record["personality_accuracy"] = personality[1] / personality[2]
+                batch_record["personality_loss"] = float(personality[0].detach().item())
+            self._write_metric(batch_record)
         if correct_by_dimension is None or total_by_dimension is None:
             if self._stop_requested():
                 # Stopped before the first batch of this epoch: nothing trained.
@@ -633,6 +728,9 @@ class EmotionInferenceSLTrainer:
             "mse": float(np.mean(losses)) if losses else float("nan"),
             "accuracy": float(aggregate_accuracy.mean().item()),
             "accuracy_by_dimension": [float(value) for value in aggregate_accuracy.tolist()],
+            "personality_accuracy": (
+                personality_correct / personality_total if personality_total else None
+            ),
             "valid_targets": targets,
             "valid_values": values,
             "gradient_norm": float(np.mean(gradients)) if gradients else 0.0,
@@ -643,17 +741,22 @@ class EmotionInferenceSLTrainer:
         self.model.eval()
         losses: list[float] = []
         targets = values = 0
+        personality_correct = personality_total = 0
         correct_by_dimension: torch.Tensor | None = None
         total_by_dimension: torch.Tensor | None = None
         with torch.no_grad():
             for start in range(0, len(loader), self.config.batch_size):
                 indices = np.arange(start, min(start + self.config.batch_size, len(loader)))
                 batch = build_emotion_batch(
-                    loader, indices, device=self.device, emotion_names=self.model.emotion_names
+                    loader, indices, device=self.device, emotion_names=self.model.emotion_names,
+                    personality_map=self._personality_map,
                 )
                 loss, batch_targets, batch_values, batch_correct, batch_totals = self._loss_and_metrics(
                     batch, return_accuracy=True
                 )
+                if self._last_personality is not None:
+                    personality_correct += self._last_personality[1]
+                    personality_total += self._last_personality[2]
                 losses.append(float(loss.item()))
                 targets += batch_targets
                 values += batch_values
@@ -679,6 +782,9 @@ class EmotionInferenceSLTrainer:
             "mse": float(np.mean(losses)) if losses else float("nan"),
             "accuracy": float(aggregate_accuracy.mean().item()),
             "accuracy_by_dimension": [float(value) for value in aggregate_accuracy.tolist()],
+            "personality_accuracy": (
+                personality_correct / personality_total if personality_total else None
+            ),
             "valid_targets": targets,
             "valid_values": values,
             "batches": len(losses),
@@ -842,6 +948,10 @@ class EmotionInferenceSLTrainer:
             "validation_valid_targets": validation["valid_targets"],
             "validation_valid_values": validation["valid_values"],
         }
+        if self.personality_enabled:
+            record["train_personality_accuracy"] = train_metrics["personality_accuracy"]
+            record["validation_personality_accuracy"] = validation["personality_accuracy"]
+            record["personality_names"] = list(self.model.personality_names)
         self.history.append(record)
         self._write_metric(record)
         current_loss = float(validation["loss"])

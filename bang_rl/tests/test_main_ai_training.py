@@ -21,6 +21,7 @@ from bang_rl.agents.main_agent import (
     RoleFusion,
     build_policy_inputs,
     policy_emotion_dim,
+    policy_ppo_dims,
 )
 from bang_rl.app import TrainingConfig, TrainingService
 from bang_rl.app.services import _ArtifactAgent
@@ -60,7 +61,7 @@ def _policy(seed: int = 1) -> PolicyModules:
     for module in (intent, emotion):
         for parameter in module.parameters():
             parameter.requires_grad_(False)
-    ppo = PPOModule(emotion_dim=policy_emotion_dim(emotion), seed=seed)
+    ppo = PPOModule(**policy_ppo_dims(emotion), seed=seed)
     return PolicyModules(intent, emotion, RoleFusion(), ObservationPreprocessor(), ppo)
 
 
@@ -153,8 +154,8 @@ def test_emotion_block_is_flat_and_accepted_by_ppo(policy: PolicyModules) -> Non
     _, seat, observation = _first_observation()
     inputs = policy.inputs(observation, seat)
     assert policy.emotion.emotion_count == 9
-    assert policy_emotion_dim(policy.emotion) == 36
-    assert inputs.features["emotion_features"].shape == (36,)
+    assert policy_emotion_dim(policy.emotion) == 45  # one row per seat, own row zero
+    assert inputs.features["emotion_features"].shape == (45,)
     assert inputs.estimated_emotion.shape == (4, 9)
     assert all(block.dtype == np.float32 for block in inputs.features.values())
     chosen = policy.ppo.act(inputs.ppo_inputs(), inputs.action_mask, deterministic=True)
@@ -196,11 +197,11 @@ def test_training_seeds_are_deterministic_and_leave_the_evaluation_range() -> No
 
 def test_training_game_has_valid_transitions_and_team_terminal_reward(policy: PolicyModules) -> None:
     config = SystemConfig()
-    seats = []
+    roles = []
     for index in range(6):
         game = play_training_game(index, run_seed=11, config=config, policy=policy)
         summary = game.summary
-        seats.append(summary.seat)
+        roles.append(summary.role)
         assert summary.won is not None, "default environment should not truncate"
         assert summary.main_decisions == len(game.transitions)
         if not game.transitions:
@@ -208,13 +209,14 @@ def test_training_game_has_valid_transitions_and_team_terminal_reward(policy: Po
         for transition in game.transitions:
             assert transition.action_mask[transition.action] == 1
             assert transition.trainable and not transition.truncated
-            assert transition.features["emotion_features"].__len__() == 36
+            assert transition.features["emotion_features"].__len__() == 45
         *earlier, last = game.transitions
         assert all(item.reward == 0.0 and not item.terminated and item.next_value is not None for item in earlier)
         assert last.terminated
         assert last.reward == (1.0 if summary.won else -1.0)
         assert summary.total_reward == last.reward
-    assert seats == [0, 1, 2, 3, 4, 0]
+    # The main agent plays sheriff, deputy, outlaw and traitor in turn.
+    assert roles == ["sheriff", "deputy", "outlaw", "traitor", "sheriff", "deputy"]
 
 
 def test_training_game_is_deterministic_for_the_same_seed(policy: PolicyModules) -> None:
@@ -258,9 +260,9 @@ def test_trainer_bootstraps_truncated_only_when_asked(policy: PolicyModules) -> 
     game = _truncated_game(policy)
     count = len(game.transitions)
     config = PPOConfig(rollout_transitions_per_worker=8, minibatch_size=8, ppo_epochs=1)
-    default = PPOTrainer(PPOModule(emotion_dim=36, seed=2), config=config)
+    default = PPOTrainer(PPOModule(**policy_ppo_dims(policy.emotion), seed=2), config=config)
     assert default.update(game.transitions).samples == count - 1
-    opted_in = PPOTrainer(PPOModule(emotion_dim=36, seed=2), config=config, bootstrap_truncated=True)
+    opted_in = PPOTrainer(PPOModule(**policy_ppo_dims(policy.emotion), seed=2), config=config, bootstrap_truncated=True)
     assert opted_in.update(game.transitions).samples == count
 
 
@@ -414,7 +416,7 @@ def test_latest_saved_module_run_is_used_with_a_fresh_ppo(
     assert source.origin == "latest_saved_modules"
     assert source.description["module_job_id"] == "job-a"
     policy = source.policy
-    assert policy.ppo.component_dims["emotion"] == 36
+    assert policy.ppo.component_dims["emotion"] == 45
     for module in (policy.intent, policy.emotion):
         assert not module.training and not any(p.requires_grad for p in module.parameters())
     assert all(p.requires_grad for p in policy.ppo.parameters())
@@ -479,7 +481,7 @@ def test_main_ai_training_end_to_end_saves_a_loadable_best_model(
     artifact = load_final_inference_artifact(path)
     assert artifact.metadata["main_ai_training"]["reward"]["terminal_win"] == 1.0
     assert artifact.metadata["main_ai_training"]["source"]["origin"] == "phase2_pair"
-    assert artifact.ppo.component_dims["emotion"] == 36
+    assert artifact.ppo.component_dims["emotion"] == 45
     assert artifact.metadata["main_ai_training"]["baselines"]["dummy"]["games"] == 5
 
     # The same deals and configuration reuse the cached baselines.

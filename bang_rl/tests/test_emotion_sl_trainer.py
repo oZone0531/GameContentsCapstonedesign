@@ -37,6 +37,8 @@ def _cache(tmp_path: Path, split: str, *, schema: str = "1.0", seed: int = 0) ->
         "role_label_mask": np.ones((count, 5), dtype=np.bool_),
         "emotion_labels": np.zeros((count, 5, 2), dtype=np.float32),
         "emotion_label_mask": np.ones((count, 5), dtype=np.bool_),
+        "personality_labels": np.full((count, 5), -1, dtype=np.int16),
+        "personality_label_mask": np.zeros((count, 5), dtype=np.bool_),
         "actions": np.arange(count, dtype=np.uint8),
         "actor_indices": np.zeros(count, dtype=np.uint8),
         "target_indices": np.full(count, 255, dtype=np.uint8),

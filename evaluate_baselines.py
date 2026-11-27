@@ -76,13 +76,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--ablations",
         default="",
-        help="with --artifact: comma list of no_intent, no_emotion, no_inference",
+        help="with --artifact: comma list of " + ", ".join(name for name in ABLATIONS if name != "full"),
     )
     args = parser.parse_args(argv)
     ablations = [item.strip() for item in args.ablations.split(",") if item.strip()]
     for name in ablations:
         if name not in ABLATIONS or name == "full":
-            parser.error(f"unknown ablation {name!r}; use no_intent, no_emotion, no_inference")
+            parser.error(f"unknown ablation {name!r}; use one of {ABLATIONS}")
     if ablations and not args.artifact:
         parser.error("--ablations needs --artifact")
 
