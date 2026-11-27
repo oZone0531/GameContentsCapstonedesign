@@ -146,9 +146,18 @@ def test_primary_protocol_has_exact_balanced_counts_and_seed_formula() -> None:
     assert report.total_games == 500
     assert report.normal_games == 500
     assert report.truncated_games == 0
-    assert report.seat_counts == {str(index): 100 for index in range(5)}
+    # The fixture deals sheriff, deputy, outlaw A/B, traitor to seats 0..4. The main
+    # agent plays each of the four roles in 125 games; the two outlaw seats alternate.
+    assert report.seat_counts == {"0": 125, "1": 125, "2": 63, "3": 62, "4": 125}
     assert report.seed_set == tuple(range(500))
-    assert [game["main_agent_seat"] for game in report.game_results] == [index % 5 for index in range(500)]
+    assert [game["main_agent_seat"] for game in report.game_results][:8] == [0, 1, 2, 4, 0, 1, 3, 4]
+    assert {role: counts["normal_games"] for role, counts in report.role_specific_results.items()} == {
+        "SHERIFF": 125,
+        "DEPUTY": 125,
+        "OUTLAW_A": 63,
+        "OUTLAW_B": 62,
+        "TRAITOR": 125,
+    }
     assert [game["seed"] for game in report.game_results] == list(range(500))
 
 
@@ -329,15 +338,16 @@ def test_custom_protocol_closes_replaced_superclass_logger(monkeypatch) -> None:
 def test_primary_metrics_and_wilson_ci_are_reported_with_exact_denominators() -> None:
     report = run_primary_evaluation(_artifact(), config=SystemConfig(), environment_factory=_factory)
 
-    assert report.normal_wins == 100
-    assert report.normal_losses == 400
-    assert report.win_rate == pytest.approx(0.2)
+    # Only the sheriff (seat 0) wins in the fixture, and the main agent is sheriff in 125 games.
+    assert report.normal_wins == 125
+    assert report.normal_losses == 375
+    assert report.win_rate == pytest.approx(0.25)
     assert isinstance(report.win_rate_ci, ConfidenceInterval)
     assert 0.0 <= report.win_rate_ci.lower < report.win_rate < report.win_rate_ci.upper <= 1.0
     assert report.truncated_rate == 0.0
-    assert report.role_specific_results["SHERIFF"]["normal_games"] == 100
-    assert report.metric_samples["role_classification"] == 400
-    assert report.metric_samples["hidden_role_classification"] == 400
+    assert report.role_specific_results["SHERIFF"]["normal_games"] == 125
+    assert report.metric_samples["role_classification"] == 500
+    assert report.metric_samples["hidden_role_classification"] == 500
     # Formula labels are not all zero, so an all-zero estimate has a real,
     # bounded error; what matters is that every opponent label was scored.
     assert report.metric_samples["estimated_emotion"] > 0

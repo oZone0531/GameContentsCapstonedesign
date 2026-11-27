@@ -207,6 +207,34 @@ class SettingsEditor:
         self._dirty = False
         return self._publish()
 
+    def save_training_resources(self, hardware: Mapping[str, Any], *, clip_epsilon: float) -> SettingsSnapshot:
+        """Persist the training screen's hardware group (and PPO clip) to the local settings file.
+
+        Only these values are written: the saved file is reloaded, updated and
+        written back, so edits staged elsewhere (Settings screen) and not yet
+        saved stay unsaved. The editor's draft gets the same values so the next
+        training screen opens with them. The file is under ``artifacts/`` and
+        therefore ignored by git.
+        """
+
+        resources = {"hardware": dict(hardware), "ppo_clip_epsilon": float(clip_epsilon)}
+        destination = Path(self._source_path or LOCAL_SETTINGS_PATH)
+        try:
+            base = self.config_service.load(destination, SystemConfig) if destination.is_file() else SystemConfig()
+        except (ConfigFileError, ConfigValidationError, ValidationError):
+            base = SystemConfig()  # an unreadable file is replaced, as Save does
+        saved_editor = SettingsEditor(base, config_service=self.config_service)
+        saved_editor.apply(resources)
+        try:
+            self.config_service.save(destination, saved_editor._config, SystemConfig)
+        except ValidationError as exc:
+            raise SettingsValidationError(self._error_list(exc)) from exc
+        self._source_path = str(destination)
+        dirty = self._dirty
+        self.apply(resources)
+        self._dirty = dirty
+        return self._publish()
+
     def load(self, path: str | Path) -> SettingsSnapshot:
         try:
             loaded = self.config_service.load(path, SystemConfig)

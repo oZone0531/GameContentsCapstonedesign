@@ -47,6 +47,20 @@ def sampled_axis(count: int, interval: int | float | None) -> list[int]:
     return [1 + index * step for index in range(max(0, int(count)))]
 
 
+def prior_win_rate(metrics: Mapping[str, Any] | None) -> float | None:
+    """Saved evaluation win rate of the model being continued (None for a fresh PPO)."""
+
+    return number(_mapping(_mapping(metrics).get("main_prior_eval")).get("win_rate"))
+
+
+def with_prior_point(xs: Sequence[Any], ys: Sequence[float], prior: float | None) -> tuple[list[Any], list[float]]:
+    """Prepend the game-0 point ``(0, prior)`` so a continued run does not start from nothing."""
+
+    if prior is None:
+        return list(xs), list(ys)
+    return [0, *xs], [float(prior), *ys]
+
+
 def baseline_win_rates(metrics: Mapping[str, Any] | None) -> dict[str, float | None]:
     """Overall dummy/random win rate on the evaluation deals (None if unknown)."""
 
@@ -118,11 +132,16 @@ def format_main_ai_summary(
     baselines = _mapping(data.get("main_baselines"))
     rates = baseline_win_rates(data)
     training_rate = number(data.get("main_training_win_rate"))
+    prior = _mapping(data.get("main_prior_eval"))
+    win_text = fmt(training_rate)
+    if training_rate is None and number(prior.get("win_rate")) is not None:
+        # Continuing a saved model: before this run's first game, show its saved evaluation.
+        win_text = tr("mainai.prior_win", win=fmt(prior.get("win_rate")))
     progress = tr(
         "mainai.progress",
         games=int(number(data.get("main_games_completed")) or 0),
         updates=int(ppo_updates or 0),
-        win=fmt(training_rate),
+        win=win_text,
     )
     if any(value is not None for value in rates.values()):
         base_text = tr("mainai.baselines", dummy=fmt(rates["dummy"]), random=fmt(rates["random"]))
@@ -131,10 +150,81 @@ def format_main_ai_summary(
     return {
         "progress": progress,
         "baselines": base_text,
-        "latest": "\n".join(format_eval_row("mainai.latest", _mapping(data.get("main_eval_latest")), baselines)),
+        "latest": "\n".join(
+            format_eval_row("mainai.latest", _mapping(data.get("main_eval_latest")), baselines)
+            if data.get("main_eval_latest") or not prior
+            # No evaluation in this run yet: the continued model's saved one.
+            else format_eval_row("mainai.prior", prior, baselines)
+        ),
         "best": "\n".join(format_eval_row("mainai.best", _mapping(data.get("main_best_eval")), baselines)),
         "saved": tr("mainai.saved", path=artifact_path) if artifact_path else tr("mainai.not_saved"),
     }
+
+
+# --- status banner ----------------------------------------------------------------
+
+# Banner colour per job state (white text on these backgrounds).
+STATUS_COLORS = {
+    "idle": "#616161",
+    "running": "#2e7d32",
+    "paused": "#e08a00",
+    "cancelling": "#e08a00",
+    "finished": "#1565c0",
+    "cancelled": "#616161",
+    "faulted": "#c62828",
+}
+
+
+def status_banner(
+    status: str | None,
+    workflow: str | None,
+    metrics: Mapping[str, Any] | None,
+    *,
+    ppo_updates: int = 0,
+    error: Mapping[str, Any] | None = None,
+) -> tuple[str, str, str]:
+    """``(state, title, detail)`` of the monitor's status banner.
+
+    ``state`` picks the colour (:data:`STATUS_COLORS`), ``title`` is the job
+    state and mode, ``detail`` the current stage and progress in one line.
+    """
+
+    data = _mapping(metrics)
+    state = str(status or "idle")
+    if status is None:
+        return "idle", tr("status.idle"), tr("status.idle_detail")
+    mode = tr(f"training.mode.{workflow}") if workflow else ""
+    title = tr(f"status.{state}") if tr(f"status.{state}") != f"status.{state}" else state
+    if mode:
+        title = f"{title} · {mode}"
+    parts: list[str] = []
+    if state == "faulted":
+        message = _mapping(error).get("message")
+        parts.append(str(message) if message else tr("status.faulted_detail"))
+    else:
+        stage = data.get("stage_message")
+        # A finished or stopped job has no current stage; its last one would mislead.
+        if stage and state in {"running", "paused", "cancelling"}:
+            parts.append(str(stage))
+        if workflow == "main_ai_training":
+            done = int(number(data.get("main_games_completed")) or 0)
+            total = int(number(data.get("main_games_total")) or 0)
+            games = f"{done:,}/{total:,}" if total else f"{done:,}"
+            parts.append(tr("status.main_progress", games=games, updates=int(ppo_updates or 0)))
+            workers = int(number(data.get("main_parallel_workers")) or 0)
+            if workers > 1:
+                parts.append(tr("status.workers", workers=workers))
+        elif workflow == "data_collection":
+            done = int(number(data.get("collection_completed")) or 0)
+            total = int(number(data.get("collection_total")) or 0)
+            if total:
+                parts.append(tr("status.collection_progress", done=f"{done:,}", total=f"{total:,}"))
+        elif workflow == "inference_refinement":
+            round_no = int(number(data.get("refine_round")) or 0)
+            total = int(number(data.get("refine_total_rounds")) or 0)
+            if total:
+                parts.append(tr("status.refine_progress", round=round_no, total=total))
+    return (state if state in STATUS_COLORS else "running"), title, " · ".join(parts) or "—"
 
 
 # --- inference refinement -------------------------------------------------------
@@ -235,6 +325,8 @@ def inference_rows(rows: Sequence[Mapping[str, Any]]) -> list[list[str]]:
 __all__ = [
     "BASELINE_NAMES",
     "REFINE_SERIES",
+    "STATUS_COLORS",
+    "status_banner",
     "ROLE_NAMES",
     "TRUNCATION_WARNING_RATE",
     "format_refinement_summary",

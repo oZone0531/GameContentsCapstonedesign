@@ -8,7 +8,7 @@ labels, roles, rewards, and future events never cross this boundary.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import json
 from pathlib import Path
 from typing import Any
@@ -142,9 +142,9 @@ class EmotionInferenceModule(nn.Module):
     * ``(B, 4, T, F)`` -> ``(B, 4, E)`` for batched observations;
     * ``(B, T, F)`` -> ``(B, E)`` for independent streams.
 
-    ``valid_mask`` identifies public events.  All-invalid streams use the
-    configured ``initial_baseline`` instead of a learned value, while valid
-    streams use the shared GRU and emotion head.
+    ``valid_mask`` identifies public events.  All-invalid streams go through
+    the same GRU and emotion head as valid streams, so train and eval outputs
+    match.  ``initial_baseline`` is kept in the config for compatibility.
     """
 
     module_type = "EmotionInferenceModule"
@@ -162,9 +162,16 @@ class EmotionInferenceModule(nn.Module):
         seed: int | None = DEFAULT_ENCODER_SEED,
         target_player_count: int = OTHER_PLAYER_COUNT,
         preprocessor: ObservationPreprocessor | None = None,
+        personality_names: Sequence[str] | None = None,
     ) -> None:
         super().__init__()
         self._validate_positive_int(input_dim, "input_dim")
+        # Optional second head: which dummy personality preset a stream belongs
+        # to. Only present when the training data carries personality labels.
+        names = tuple(str(name) for name in (personality_names or ()))
+        if len(set(names)) != len(names):
+            raise ValueError("personality_names must be unique")
+        self._personality_names = names
         self._validate_positive_int(target_player_count, "target_player_count")
         if target_player_count != OTHER_PLAYER_COUNT:
             raise ValueError(f"target_player_count is fixed at {OTHER_PLAYER_COUNT}")
@@ -214,6 +221,21 @@ class EmotionInferenceModule(nn.Module):
                     nn.Sigmoid(),
                 )
 
+        if names:
+            def build_personality_head() -> nn.Sequential:
+                return nn.Sequential(
+                    nn.Linear(DEFAULT_GRU_HIDDEN_SIZE, EMOTION_HEAD_HIDDEN_SIZE),
+                    nn.ReLU(),
+                    nn.Linear(EMOTION_HEAD_HIDDEN_SIZE, len(names)),
+                )
+
+            if seed is None:
+                self.personality_head = build_personality_head()
+            else:
+                with torch.random.fork_rng(devices=[]):
+                    torch.manual_seed(seed + 2)
+                    self.personality_head = build_personality_head()
+
         self.register_buffer(
             "_initial_baseline",
             torch.full((self.emotion_count,), self.initial_baseline, dtype=torch.float32),
@@ -246,6 +268,12 @@ class EmotionInferenceModule(nn.Module):
     @property
     def input_dim(self) -> int:
         return self._input_dim
+
+    @property
+    def personality_names(self) -> tuple[str, ...]:
+        """Personality presets the optional personality head distinguishes (empty = no head)."""
+
+        return self._personality_names
 
     @property
     def target_player_count(self) -> int:
@@ -287,6 +315,29 @@ class EmotionInferenceModule(nn.Module):
 
     @property
     def architecture_metadata(self) -> dict[str, Any]:
+        metadata = self._base_architecture_metadata()
+        if self._personality_names:
+            metadata["personality_names"] = list(self._personality_names)
+            metadata["personality_head"] = {
+                "layers": [
+                    {
+                        "type": "Linear",
+                        "in_features": DEFAULT_GRU_HIDDEN_SIZE,
+                        "out_features": EMOTION_HEAD_HIDDEN_SIZE,
+                    },
+                    {"type": "ReLU"},
+                    {
+                        "type": "Linear",
+                        "in_features": EMOTION_HEAD_HIDDEN_SIZE,
+                        "out_features": len(self._personality_names),
+                    },
+                ],
+                "output": "class logits (softmax cross-entropy)",
+                "shared_across_target_players": True,
+            }
+        return metadata
+
+    def _base_architecture_metadata(self) -> dict[str, Any]:
         return {
             "module_type": self.module_type,
             "architecture_version": self.architecture_version,
@@ -328,7 +379,7 @@ class EmotionInferenceModule(nn.Module):
                 "hidden_true_role": "forbidden",
                 "actual_emotion_state": "forbidden",
                 "reward": "forbidden",
-                "empty_history": "configured initial_baseline",
+                "empty_history": "learned head output (same as training)",
             },
             "preprocessor": self.preprocessor.metadata(),
         }
@@ -380,14 +431,53 @@ class EmotionInferenceModule(nn.Module):
             sequence, mask = self._append_stream_state(sequence, mask)
         encoded = self.encoder(sequence, mask)
         predictions = self.emotion_head(encoded)
-        nonempty = mask.any(dim=-1)
-        baseline = self._initial_baseline.to(device=predictions.device, dtype=predictions.dtype)
-        baseline = baseline.expand_as(predictions)
-        if not self.training:
-            predictions = torch.where(nonempty.unsqueeze(-1), predictions, baseline)
+        # Empty streams keep the learned head output in both modes.  Swapping
+        # in ``initial_baseline`` only at eval time made eval differ from the
+        # SL objective (about 18% of target streams are empty early in a
+        # game), so calm/relation estimates collapsed toward the constant.
         # Sigmoid guarantees this mathematically; clamp only protects callers
         # using unusual floating-point dtypes at the public boundary.
         return predictions.clamp(0.0, 1.0)
+
+    def forward_with_personality(
+        self, inputs: Any, valid_mask: Any | None = None, *, stateful: bool = False
+    ) -> tuple[Tensor, Tensor | None]:
+        """Return ``(emotions, personality_logits)`` from one encoder pass.
+
+        ``personality_logits`` has shape ``(..., len(personality_names))`` and is
+        None when the module has no personality head.
+        """
+
+        sequence, mask = self._extract_inputs(inputs, valid_mask)
+        if stateful:
+            sequence, mask = self._append_stream_state(sequence, mask)
+        encoded = self.encoder(sequence, mask)
+        emotions = self.emotion_head(encoded).clamp(0.0, 1.0)
+        if not self._personality_names:
+            return emotions, None
+        return emotions, self.personality_head(encoded)
+
+    def predict_personality(
+        self, inputs: Any, valid_mask: Any | None = None, *, stateful: bool = False
+    ) -> Tensor:
+        """Return personality class probabilities (requires a personality head)."""
+
+        if not self._personality_names:
+            raise ValueError("this EmotionInference module has no personality head")
+        _, logits = self.forward_with_personality(inputs, valid_mask, stateful=stateful)
+        assert logits is not None
+        return torch.softmax(logits, dim=-1)
+
+    def predict_emotion_and_personality(
+        self, inputs: Any, valid_mask: Any | None = None, *, stateful: bool = False
+    ) -> tuple[Tensor, Tensor | None]:
+        """Return ``(emotion values, personality probabilities)`` from one encoder pass.
+
+        The personality probabilities are None when the module has no personality head.
+        """
+
+        emotions, logits = self.forward_with_personality(inputs, valid_mask, stateful=stateful)
+        return emotions, (None if logits is None else torch.softmax(logits, dim=-1))
 
     def predict_proba(
         self, inputs: Any, valid_mask: Any | None = None, *, stateful: bool = False
@@ -612,6 +702,7 @@ class EmotionInferenceModule(nn.Module):
             encoder=encoder,
             seed=encoder_metadata.get("initialization_seed", DEFAULT_ENCODER_SEED),
             target_player_count=architecture.get("target_player_count", OTHER_PLAYER_COUNT),
+            personality_names=architecture.get("personality_names") or None,
         )
 
     from_metadata = from_dict

@@ -600,6 +600,9 @@ class PPOConfig(ConfigModel):
     max_grad_norm: float | None = Field(default=0.5, gt=0.0)
     value_loss_coef: float = Field(default=0.5, ge=0.0)
     entropy_coef: float = Field(default=0.01, ge=0.0)
+    # One policy/value output per own-role group (sheriff / deputy / outlaw /
+    # traitor) on the shared trunk.
+    role_heads: bool = False
     shared_trunk_hidden_size: Literal[256] = 256
     shared_trunk_layers: Literal[2] = 2
     policy_output_size: Literal[6] = 6

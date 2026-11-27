@@ -45,17 +45,21 @@ def test_configurable_emotion_count_outputs_normalized_four_player_vectors() -> 
     assert torch.all(output <= 1.0)
 
 
-def test_empty_history_uses_configured_baseline_and_valid_mask() -> None:
+def test_empty_history_matches_training_output_and_ignores_masked_values() -> None:
     sequence, mask = _streams()
     mask[:] = False
     sequence[:] = 99.0
     module = EmotionInferenceModule(
         config=EmotionConfig(emotion_count=2, initial_baseline=0.35), seed=3
-    ).eval()
-
+    )
+    module.train()
+    training_output = module(sequence, mask)
+    module.eval()
     output = module(sequence, mask)
+    zeroed = module(sequence * 0.0, mask)
 
-    torch.testing.assert_close(output, torch.full((4, 2), 0.35))
+    torch.testing.assert_close(output, training_output)
+    torch.testing.assert_close(output, zeroed)
 
 
 def test_train_and_eval_share_sigmoid_boundary_and_mse_loss() -> None:

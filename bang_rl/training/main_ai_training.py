@@ -1,9 +1,12 @@
 """Main-AI (Phase 3) PPO training against DummyAgents.
 
 The main agent is frozen intent + emotion inference, RoleFusion, the
-observation preprocessor and a trainable :class:`PPOModule`. One game at a time
-is played in-process: the main seat rotates (``game_index % 5``) and the four
-other seats are DummyAgents built exactly like the evaluation protocol builds
+observation preprocessor and a trainable :class:`PPOModule`. Games are played
+in this process, or with ``hardware.workers`` > 1 in that many worker processes
+(:mod:`bang_rl.training.parallel_games`, a batch of ``workers`` games at a
+time). The main agent plays sheriff, deputy, outlaw and traitor in turn
+(:func:`bang_rl.evaluation.protocol.role_balanced_seat`, a quarter of
+the games each) and the four other seats are DummyAgents built exactly like the evaluation protocol builds
 them (:func:`bang_rl.evaluation.protocol.build_dummy_opponents`).
 
 Reward
@@ -50,9 +53,8 @@ from bang_rl.agents.main_agent import (
     PPOModule,
     RoleFusion,
     build_policy_inputs,
-    policy_emotion_dim,
 )
-from bang_rl.agents.main_agent.policy_inputs import PolicyInputs
+from bang_rl.agents.main_agent.policy_inputs import PolicyInputs, policy_ppo_dims
 from bang_rl.config import PPOConfig, RewardConfig, SystemConfig
 from bang_rl.data.game_collection import FORMULA_LABEL_SCHEMA
 from bang_rl.agents.dummy_agent.emotion_formula import LABEL_NAMES
@@ -60,13 +62,13 @@ from bang_rl.env import BangEnvironment
 from bang_rl.env.types import TerminationStatus
 from bang_rl.evaluation.baseline import baseline_factory, run_seat_evaluation
 from bang_rl.evaluation.protocol import (
-    PRIMARY_SEATS,
     SEMANTIC_ROLE_NAMES,
     SEMANTIC_ROLE_OF,
     InferenceMetrics,
     _wilson_interval,
     build_dummy_opponents,
     observe_boundaries,
+    role_balanced_seat,
 )
 from bang_rl.artifact_builders import baseline_info, info_ref, main_ai_info
 from bang_rl.artifact_info import (
@@ -86,6 +88,7 @@ from .final_inference_artifact import (
     load_final_artifact_for_training,
     save_final_inference_artifact,
 )
+from .parallel_games import BrokenProcessPool, open_game_pool, usable_workers
 from .pending_transition import PendingTransitionLedger
 from .ppo_trainer import PPOTrainer, PPOTransition
 
@@ -99,7 +102,8 @@ MAIN_AI_MOVING_AVERAGE_GAMES = 200
 MAIN_AI_TRUNCATION_WARNING_RATE = 0.01
 NORMALIZED_SCORE_EPS = 0.01
 BASELINE_NAMES = ("dummy", "random")
-BASELINE_CACHE_VERSION = 1
+# 2: baselines now play the role-balanced seat of each game, not seat = index % 5.
+BASELINE_CACHE_VERSION = 2
 MAIN_AI_REWARD_VERSION = "main-ai-terminal-team-1.0"
 _ENVIRONMENT_VERSION = "1.0"
 _SEED_MODULUS = 2**31
@@ -194,7 +198,7 @@ def _critic_value(ppo: PPOModule, inputs: PolicyInputs) -> float:
 
 
 def main_seat_for_game(game_index: int) -> int:
-    """The main agent rotates through the five seats."""
+    """Seat rotation ``game_index % 5``; used by main-AI data collection, not by training."""
 
     return int(game_index) % 5
 
@@ -264,12 +268,13 @@ def play_training_game(
 
     calculator = reward_calculator or RewardCalculator(main_ai_reward_config())
     factory = environment_factory or _default_environment
-    seat = main_seat_for_game(game_index)
     seed = training_game_seed(run_seed, game_index)
     episode_id = f"train-g{int(game_index):09d}"
     env = factory(episode_id, seed, config.env)
     try:
         env.reset(seed=seed, episode_id=episode_id)
+        # The main agent plays sheriff, deputy, outlaw and traitor in turn.
+        seat = role_balanced_seat(game_index, tuple(int(role) for role in env.state.roles))
         opponents = build_dummy_opponents(seat, seed, config.preset)
         for agent in opponents.values():
             agent.on_episode_start({"episode_id": episode_id, "seed": seed})
@@ -420,16 +425,20 @@ def _play_evaluation_game(
     config: SystemConfig,
     *,
     seed: int,
-    seat: int,
+    seat: int | None,
     index: int,
     environment_factory: EnvironmentFactory | None,
     metrics: InferenceMetrics,
 ) -> tuple[bool | None, str, int]:
+    """Play one evaluation game; ``seat=None`` plays the role game ``index`` calls for."""
+
     episode_id = f"main-ai-eval-g{index:05d}"
     env = (environment_factory or _default_environment)(episode_id, seed, config.env)
     try:
         env.reset(seed=seed, episode_id=episode_id)
         roles = tuple(int(role) for role in env.state.roles)
+        if seat is None:
+            seat = role_balanced_seat(index, roles)
         opponents = build_dummy_opponents(seat, seed, config.preset)
         for agent in opponents.values():
             agent.on_episode_start({"episode_id": episode_id, "seed": seed})
@@ -478,17 +487,19 @@ def evaluate_policy(
     *,
     games: int = MAIN_AI_EVAL_GAMES,
     base_seed: int = MAIN_AI_EVAL_BASE_SEED,
-    seats: Sequence[int] = PRIMARY_SEATS,
+    seats: Sequence[int] | None = None,
     environment_factory: EnvironmentFactory | None = None,
     should_stop: Callable[[], bool] | None = None,
     metrics_factory: Callable[[], InferenceMetrics] | None = None,
 ) -> dict[str, Any] | None:
     """Deterministic evaluation on the fixed deal set; None if stopped midway.
 
-    Game ``i`` uses seed ``base_seed + i`` and seat ``seats[i % len(seats)]``,
-    the deals the baselines play. Besides win rates it records role
-    classification, hidden-role accuracy and emotion MSE (privileged labels are
-    read for these metrics only) so inference drift is visible.
+    Game ``i`` uses seed ``base_seed + i`` and plays the role ``i`` calls for
+    (:func:`role_balanced_seat`, a quarter of the games per role), or seat
+    ``seats[i % len(seats)]`` if ``seats`` is given: the deals the baselines
+    play. Besides win rates it records role classification, hidden-role
+    accuracy and emotion MSE (privileged labels are read for these metrics
+    only) so inference drift is visible.
 
     ``metrics_factory`` may build an :class:`InferenceMetrics` subclass; when it
     has a ``detail()`` method its result is stored as ``inference_detail``.
@@ -497,11 +508,10 @@ def evaluate_policy(
     games = int(games)
     if games < 1:
         raise ValueError("evaluation games must be at least 1")
-    seats = tuple(int(seat) for seat in seats)
-    per_role = _role_table()
+    if seats is not None:
+        seats = tuple(int(seat) for seat in seats)
     metrics = (metrics_factory or InferenceMetrics)()
-    wins = normal = truncated = 0
-    steps: list[int] = []
+    rows: list[tuple[bool | None, str, int]] = []
     for index in range(games):
         if should_stop is not None and index % 10 == 0 and should_stop():
             return None
@@ -509,11 +519,28 @@ def evaluate_policy(
             policy,
             config,
             seed=int(base_seed) + index,
-            seat=seats[index % len(seats)],
+            seat=None if seats is None else seats[index % len(seats)],
             index=index,
             environment_factory=environment_factory,
             metrics=metrics,
         )
+        rows.append((won, role, length))
+    return evaluation_summary(rows, metrics, games=games, base_seed=base_seed)
+
+
+def evaluation_summary(
+    rows: Sequence[tuple[bool | None, str, int]],
+    metrics: InferenceMetrics,
+    *,
+    games: int,
+    base_seed: int,
+) -> dict[str, Any]:
+    """The evaluation result from per-game ``(won, role, steps)`` rows (``won`` None = truncated)."""
+
+    per_role = _role_table()
+    wins = normal = truncated = 0
+    steps: list[int] = []
+    for won, role, length in rows:
         steps.append(length)
         if won is None:
             truncated += 1
@@ -544,14 +571,16 @@ def evaluate_policy(
 # --- baselines and scores ----------------------------------------------------
 
 
-def baseline_cache_key(config: SystemConfig, *, games: int, base_seed: int, seats: Sequence[int]) -> str:
+def baseline_cache_key(
+    config: SystemConfig, *, games: int, base_seed: int, seats: Sequence[int] | None = None
+) -> str:
     """Key of the cached baselines: the deals, opponent preset and environment."""
 
     payload = {
         "cache_version": BASELINE_CACHE_VERSION,
         "games": int(games),
         "base_seed": int(base_seed),
-        "seats": [int(seat) for seat in seats],
+        "seats": None if seats is None else [int(seat) for seat in seats],
         "preset": config.preset.model_dump(mode="json"),
         "env": config.env.model_dump(mode="json"),
         "environment_version": _ENVIRONMENT_VERSION,
@@ -581,7 +610,7 @@ def load_or_compute_baselines(
     *,
     games: int = MAIN_AI_EVAL_GAMES,
     base_seed: int = MAIN_AI_EVAL_BASE_SEED,
-    seats: Sequence[int] = PRIMARY_SEATS,
+    seats: Sequence[int] | None = None,
     cache_dir: str | Path | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> tuple[dict[str, Any], bool] | None:
@@ -612,7 +641,11 @@ def load_or_compute_baselines(
         id=key,
         games=games,
         label="dummy+random",
-        conditions={"base_seed": int(base_seed), "seats": list(seats)},
+        conditions={
+            "base_seed": int(base_seed),
+            "seats": None if seats is None else list(seats),
+            "seat_assignment": "role_balanced_cyclic" if seats is None else "explicit_cyclic",
+        },
     )
     path = directory / f"{created.name}.json"
     baselines: dict[str, Any] = {}
@@ -690,6 +723,43 @@ class MainAiSource:
     origin: str
     description: dict[str, Any] = field(default_factory=dict)
     prior_training_games: int = 0
+    # Evaluation stored in the .bangmodel being continued (its best evaluation).
+    prior_evaluation: dict[str, Any] | None = None
+
+
+def prior_evaluation_row(metadata: Any) -> dict[str, Any] | None:
+    """The saved evaluation of a ``.bangmodel`` as an evaluation row, or None.
+
+    Main-AI training stores the evaluation of the model it saved (the best one)
+    under ``main_ai_training.evaluation``; other producers (refinement) put it
+    in the top-level ``evaluation``.
+    """
+
+    if not isinstance(metadata, Mapping):
+        return None
+    training = metadata.get("main_ai_training") if isinstance(metadata.get("main_ai_training"), Mapping) else {}
+    evaluation = training.get("evaluation") if isinstance(training.get("evaluation"), Mapping) else None
+    if evaluation is None and isinstance(metadata.get("evaluation"), Mapping):
+        evaluation = metadata["evaluation"]
+    if not evaluation:
+        return None
+    win_rate = evaluation.get("win_rate")
+    if isinstance(win_rate, bool) or not isinstance(win_rate, (int, float)):
+        return None
+    scores = training.get("normalized_scores") if isinstance(training.get("normalized_scores"), Mapping) else {}
+    return {
+        "win_rate": float(win_rate),
+        "normalized_score": scores.get("mean"),
+        "role_accuracy": evaluation.get("role_accuracy"),
+        "hidden_role_accuracy": evaluation.get("hidden_role_accuracy"),
+        "emotion_mse": evaluation.get("emotion_mse"),
+        "by_role": {
+            name: (values.get("win_rate") if isinstance(values, Mapping) else values)
+            for name, values in dict(evaluation.get("by_role") or {}).items()
+        },
+        "ppo_update": training.get("ppo_updates"),
+        "training_games": training.get("training_games"),
+    }
 
 
 def _freeze(module: torch.nn.Module) -> None:
@@ -773,6 +843,7 @@ def resolve_main_ai_source(run: Any, *, ppo_seed: int) -> MainAiSource:
             origin="bangmodel",
             description={"resume_artifact_path": getattr(run, "resume_artifact_path", None)},
             prior_training_games=prior,
+            prior_evaluation=prior_evaluation_row(metadata),
         )
     else:
         candidates = [
@@ -813,7 +884,7 @@ def resolve_main_ai_source(run: Any, *, ppo_seed: int) -> MainAiSource:
         validate_emotion_contract(emotion)
     _freeze(intent)
     _freeze(emotion)
-    ppo = PPOModule(emotion_dim=policy_emotion_dim(emotion), ppo_config=ppo_config, seed=ppo_seed)
+    ppo = PPOModule(**policy_ppo_dims(emotion), ppo_config=ppo_config, seed=ppo_seed)
     return MainAiSource(
         policy=PolicyModules(intent, emotion, RoleFusion(), ObservationPreprocessor(), ppo),
         origin=origin,
@@ -904,6 +975,11 @@ def train_main_ai(
 
     source = resolve_main_ai_source(run, ppo_seed=run_seed)
     policy = source.policy
+    if source.prior_evaluation is not None:
+        # A continued model starts from its saved evaluation, not from 0: the
+        # monitor draws it as the point at game 0 until this run evaluates.
+        with run.lock:
+            run.metrics["main_prior_eval"] = dict(source.prior_evaluation)
     _verify_frozen("intent", policy.intent)
     _verify_frozen("emotion", policy.emotion)
     _publish_module_stage(
@@ -926,7 +1002,6 @@ def train_main_ai(
     )
     reward_config = main_ai_reward_config()
     calculator = RewardCalculator(reward_config)
-    seats = PRIMARY_SEATS
 
     _publish_module_stage(
         run,
@@ -938,7 +1013,6 @@ def train_main_ai(
         system_config,
         games=eval_games,
         base_seed=eval_base_seed,
-        seats=seats,
         cache_dir=baseline_cache_dir,
         should_stop=controller.should_stop,
     )
@@ -1014,7 +1088,7 @@ def train_main_ai(
                     "source_origin": source.origin,
                     "prior_training_games": game_offset,
                     "evaluation_base_seed": int(eval_base_seed),
-                    "seats": [int(seat) for seat in seats],
+                    "seat_assignment": "role_balanced_cyclic",
                 },
                 notes=previous.notes if previous is not None else "",
             )
@@ -1063,6 +1137,51 @@ def train_main_ai(
             },
         )
 
+    # The "training ..." stage text, restored after each evaluation.
+    stage_message = {"training": ""}
+
+    def run_evaluation(should_stop: Callable[[], bool] | None) -> dict[str, Any] | None:
+        """Evaluate in the worker pool when there is one, else in this process."""
+
+        nonlocal pool
+        if pool is not None:
+            try:
+                played = pool.evaluate(
+                    policy.ppo, games=eval_games, base_seed=eval_base_seed, should_stop=should_stop
+                )
+            except BrokenProcessPool as exc:
+                drop_pool(exc)
+            else:
+                if played is None:
+                    return None
+                rows, totals = played
+                return evaluation_summary(
+                    [row[1:] for row in rows], InferenceMetrics(**totals), games=eval_games, base_seed=eval_base_seed
+                )
+        return evaluate_policy(
+            policy,
+            system_config,
+            games=eval_games,
+            base_seed=eval_base_seed,
+            environment_factory=environment_factory,
+            should_stop=should_stop,
+        )
+
+    def drop_pool(exc: BaseException) -> None:
+        """A worker died: continue in this process instead of failing the run."""
+
+        nonlocal pool
+        log = getattr(run.logger, "error", None) or run.logger.event
+        log("main_ai_parallel_failed", job_id=handle.job_id, error=f"{type(exc).__name__}: {exc}")
+        if pool is not None:
+            try:
+                pool.close()
+            except Exception:  # noqa: BLE001 - the pool is already broken
+                pass
+        pool = None
+        with run.lock:
+            run.metrics["main_parallel_workers"] = 1
+
     def evaluate(final: bool) -> None:
         nonlocal best, best_rank, last_eval_update
         if not baselines:
@@ -1073,15 +1192,11 @@ def train_main_ai(
             f"평가 중 (PPO 업데이트 {updates}회, {eval_games}판)",
             ppo_update=updates,
         )
-        evaluation = evaluate_policy(
-            policy,
-            system_config,
-            games=eval_games,
-            base_seed=eval_base_seed,
-            seats=seats,
-            environment_factory=environment_factory,
-            should_stop=None if final else controller.should_stop,
-        )
+        evaluation = run_evaluation(None if final else controller.should_stop)
+        if not final and stage_message["training"]:
+            # Back to training: the banner must not keep saying "evaluating".
+            with run.lock:
+                run.metrics["stage_message"] = stage_message["training"]
         if evaluation is None:
             return
         last_eval_update = updates
@@ -1139,34 +1254,35 @@ def train_main_ai(
             approx_kl=metrics.approx_kl,
         )
 
-    _publish_module_stage(
-        run,
-        "main_ai_training",
-        (
-            "시간 기준 학습: "
-            + (f"{budget / 60.0:g}분" if budget is not None else "무제한 (중지를 누를 때까지)")
-            if train_by_time
-            else f"{total_games}판 학습"
-        ),
-        train_by_time=train_by_time,
-        total_games=total_games,
-    )
     stopped_early = False
     discarded_transitions = 0
-    while True:
-        if controller.should_stop():
-            stopped_early = True
-            break
-        if not train_by_time and games_done >= total_games:
-            break
-        game = play_training_game(
-            game_offset + games_done,
-            run_seed=run_seed,
-            config=system_config,
-            policy=policy,
-            reward_calculator=calculator,
-            environment_factory=environment_factory,
-        )
+
+    def play_next() -> list[TrainingGameResult]:
+        """The next games: one in this process, or a batch of ``workers`` games in the pool."""
+
+        first = game_offset + games_done
+        if pool is not None:
+            count = pool.batch_games if train_by_time else min(pool.batch_games, total_games - games_done)
+            try:
+                return pool.play_training_games(range(first, first + count), policy.ppo)
+            except BrokenProcessPool as exc:
+                drop_pool(exc)
+        return [
+            play_training_game(
+                first,
+                run_seed=run_seed,
+                config=system_config,
+                policy=policy,
+                reward_calculator=calculator,
+                environment_factory=environment_factory,
+            )
+        ]
+
+    def record(game: TrainingGameResult) -> bool:
+        """Count one finished game and update/evaluate when a rollout is full; True = stop."""
+
+        nonlocal games_done, normal_games, truncated_games, wins_total, transitions_total
+        nonlocal environment_steps, last_truncation_warning, buffer
         summary = game.summary
         games_done += 1
         buffer.extend(game.transitions)
@@ -1208,20 +1324,75 @@ def train_main_ai(
             _append_point(run, "main_reward_points", sum(recent_rewards) / len(recent_rewards))
         if len(buffer) >= rollout_size:
             if controller.should_stop():
-                stopped_early = True
-                break
+                return True
             run_update(buffer)
             buffer = []
             if updates % eval_every_updates == 0:
                 evaluate(final=False)
-    if buffer and updates == 0:
-        # A short run that never reached a full rollout still trains once so it
-        # leaves a model; otherwise the partial rollout is dropped.
-        run_update(buffer)
-        buffer = []
-    discarded_transitions = len(buffer)
-    if updates > 0 and last_eval_update != updates:
-        evaluate(final=True)
+        return False
+
+    # Hardware "workers" > 1 plays games in that many processes. A custom
+    # environment factory (tests) cannot be sent to other processes.
+    requested_workers = getattr(getattr(system_config, "hardware", None), "workers", 1)
+    pool = None
+    if environment_factory is None and usable_workers(requested_workers) > 1:
+        _publish_module_stage(run, "main_ai_workers", f"게임 워커 준비 중 ({usable_workers(requested_workers)}개)")
+        pool = open_game_pool(
+            requested_workers,
+            system_config,
+            policy,
+            run_seed,
+            log=lambda message: run.logger.event("main_ai_parallel_unavailable", job_id=handle.job_id, reason=message),
+        )
+    with run.lock:
+        run.metrics["main_parallel_workers"] = pool.workers if pool is not None else 1
+    run.logger.event(
+        "main_ai_parallel_workers",
+        job_id=handle.job_id,
+        requested=requested_workers,
+        workers=pool.workers if pool is not None else 1,
+    )
+    stage_message["training"] = (
+        "학습 게임 진행 중 ("
+        + (
+            "시간 기준: "
+            + (f"{budget / 60.0:g}분" if budget is not None else "무제한, 중지를 누를 때까지")
+            if train_by_time
+            else f"{total_games}판"
+        )
+        + ")"
+    )
+    _publish_module_stage(
+        run,
+        "main_ai_training",
+        stage_message["training"],
+        train_by_time=train_by_time,
+        total_games=total_games,
+    )
+    try:
+        while True:
+            if controller.should_stop():
+                stopped_early = True
+                break
+            if not train_by_time and games_done >= total_games:
+                break
+            for game in play_next():
+                if record(game):
+                    stopped_early = True
+                    break
+            if stopped_early:
+                break
+        if buffer and updates == 0:
+            # A short run that never reached a full rollout still trains once so it
+            # leaves a model; otherwise the partial rollout is dropped.
+            run_update(buffer)
+            buffer = []
+        discarded_transitions = len(buffer)
+        if updates > 0 and last_eval_update != updates:
+            evaluate(final=True)
+    finally:
+        if pool is not None:
+            pool.close()
 
     truncated_rate = (truncated_games / games_done) if games_done else 0.0
     best_path = str(artifact_path) if (best is not None and artifact_path is not None) else None

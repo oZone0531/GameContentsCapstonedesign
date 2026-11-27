@@ -28,7 +28,6 @@ from bang_rl.agents.main_agent import policy_emotion_dim
 from bang_rl.config import SystemConfig
 from bang_rl.data.emotion_slots import emotion_value_mask
 from bang_rl.evaluation.protocol import (
-    PRIMARY_SEATS,
     SEMANTIC_ROLE_NAMES,
     SEMANTIC_ROLE_OF,
     InferenceMetrics,
@@ -147,7 +146,7 @@ def evaluate_inference(
     *,
     games: int = MAIN_AI_EVAL_GAMES,
     base_seed: int = MAIN_AI_EVAL_BASE_SEED,
-    seats: Sequence[int] = PRIMARY_SEATS,
+    seats: Sequence[int] | None = None,
     environment_factory: EnvironmentFactory | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, Any] | None:

@@ -64,6 +64,7 @@ from .policy_inputs import (
     PolicyInputs,
     build_policy_inputs,
     policy_emotion_dim,
+    policy_ppo_dims,
 )
 
 __all__ = [
@@ -71,6 +72,7 @@ __all__ = [
     "PolicyInputs",
     "build_policy_inputs",
     "policy_emotion_dim",
+    "policy_ppo_dims",
     "ACTION_SPACE_VERSION",
     "EMOTION_INFERENCE_ARCHITECTURE_VERSION",
     "EMOTION_INFERENCE_FORMAT_VERSION",
