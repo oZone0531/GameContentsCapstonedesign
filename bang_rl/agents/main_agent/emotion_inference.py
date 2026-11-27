@@ -468,6 +468,17 @@ class EmotionInferenceModule(nn.Module):
         assert logits is not None
         return torch.softmax(logits, dim=-1)
 
+    def predict_emotion_and_personality(
+        self, inputs: Any, valid_mask: Any | None = None, *, stateful: bool = False
+    ) -> tuple[Tensor, Tensor | None]:
+        """Return ``(emotion values, personality probabilities)`` from one encoder pass.
+
+        The personality probabilities are None when the module has no personality head.
+        """
+
+        emotions, logits = self.forward_with_personality(inputs, valid_mask, stateful=stateful)
+        return emotions, (None if logits is None else torch.softmax(logits, dim=-1))
+
     def predict_proba(
         self, inputs: Any, valid_mask: Any | None = None, *, stateful: bool = False
     ) -> Tensor:

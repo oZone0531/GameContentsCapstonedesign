@@ -39,7 +39,10 @@ class PolicyInputs:
 
     ``features`` holds the five float32 blocks in ``POLICY_FEATURE_KEYS`` order
     with the ``fused_intent`` and ``emotion_features`` blocks laid out per
-    absolute seat and flattened to ``(5 * 5,)`` and ``(5 * emotion_count,)``.
+    absolute seat and flattened to ``(5 * 5,)`` and ``(5 * emotion_width,)``,
+    where ``emotion_width`` is ``emotion_count`` plus the number of personality
+    presets when the emotion module has a personality head (see
+    :func:`policy_emotion_width`).
     The ``fused_intent`` and ``estimated_emotion`` attributes keep the
     four-opponent ``(4, ...)`` estimates that the metrics compare with the
     opponents' labels.
@@ -58,13 +61,27 @@ class PolicyInputs:
         return {**self.features, "action_mask": self.action_mask}
 
 
+def policy_personality_count(emotion_module: Any) -> int:
+    """Number of personality classes the emotion module predicts (0 = no personality head)."""
+
+    return len(tuple(getattr(emotion_module, "personality_names", ()) or ()))
+
+
+def policy_emotion_width(emotion_module: Any) -> int:
+    """Per-seat emotion row width: emotion values plus personality probabilities."""
+
+    return int(emotion_module.emotion_count) + policy_personality_count(emotion_module)
+
+
 def policy_emotion_dim(emotion_module: Any) -> int:
     """Flattened emotion block size the PPO module needs for this emotion module.
 
-    The block has one row per absolute seat (the viewer's own row is zero).
+    The block has one row per absolute seat (the viewer's own row is zero). Each
+    row holds the estimated emotions followed by the estimated personality
+    probabilities when the emotion module has a personality head.
     """
 
-    return int(PLAYER_COUNT * int(emotion_module.emotion_count))
+    return int(PLAYER_COUNT * policy_emotion_width(emotion_module))
 
 
 def policy_ppo_dims(emotion_module: Any) -> dict[str, int]:
@@ -126,7 +143,10 @@ def build_policy_inputs(
     processed = preprocessor.preprocess(observation)
     with torch.inference_mode():
         raw_intent = intent.predict_proba(processed)
-        estimated_emotion = emotion.predict_proba(processed)
+        if policy_personality_count(emotion):
+            estimated_emotion, estimated_personality = emotion.predict_emotion_and_personality(processed)
+        else:
+            estimated_emotion, estimated_personality = emotion.predict_proba(processed), None
     raw_intent_array = _to_numpy(raw_intent)
     estimated_emotion_array = _to_numpy(estimated_emotion)
     values = _observation_values(observation)
@@ -150,7 +170,14 @@ def build_policy_inputs(
         ]
     )
     intent_block = _seat_rows(fused_array, viewer).reshape(-1)
-    emotion_block = _seat_rows(estimated_emotion_array.astype(np.float32), viewer).reshape(-1)
+    emotion_rows = estimated_emotion_array.astype(np.float32)
+    if estimated_personality is not None:
+        # Personality probabilities ride along in each seat's emotion row.
+        emotion_rows = np.concatenate(
+            [emotion_rows, _to_numpy(estimated_personality).astype(np.float32).reshape(emotion_rows.shape[0], -1)],
+            axis=-1,
+        )
+    emotion_block = _seat_rows(emotion_rows, viewer).reshape(-1)
     features = {
         "self_state": self_state,
         "board_state": np.asarray(processed.player_state_matrix, dtype=np.float32),
@@ -174,5 +201,7 @@ __all__ = [
     "PolicyInputs",
     "build_policy_inputs",
     "policy_emotion_dim",
+    "policy_emotion_width",
+    "policy_personality_count",
     "policy_ppo_dims",
 ]
