@@ -390,6 +390,18 @@ _STRINGS: dict[str, dict[str, str]] = {
     # Data collection players, dataset selection, inference refinement setup
     "training.mode.inference_refinement": {"en": "Refine inference modules (PPO fixed)", "ko": "추론 모듈 개선 (PPO 고정)"},
     "training.collection_players": {"en": "Players", "ko": "수집할 게임"},
+    "training.personality": {"en": "Dummy AI personality", "ko": "더미 AI 성격 적용"},
+    "training.personality_check": {"en": "Apply personality", "ko": "성격 적용"},
+    "tooltip.training_personality": {
+        "en": "When checked, every dummy draws one personality preset per game (random, reproducible from the game seed) and the preset name is saved with the game. The emotion module can then also learn to infer the personality. Unchecked, dummies use only the per-role settings and no personality is recorded.",
+        "ko": "체크하면 더미 AI가 게임마다 성격 프리셋을 하나씩 무작위로(게임 시드로 재현 가능) 받고, 그 이름이 게임과 함께 저장됩니다. 이렇게 모은 데이터로 학습하면 감정 추론 모듈이 감정뿐 아니라 성격도 추론합니다. 체크하지 않으면 역할별 설정만 쓰고 성격은 기록하지 않습니다.",
+    },
+    "settings.role_heads": {"en": "Role one-hot heads", "ko": "역할 원핫시트 (role_heads)"},
+    "settings.role_heads_check": {"en": "Use role heads", "ko": "역할별 출력 헤드 사용"},
+    "tooltip.role_heads": {
+        "en": "When checked, the PPO policy and value outputs are split into one head per own role (sheriff, deputy, outlaw, traitor) selected by the own-role one-hot, so one role's play does not overwrite another's. It cannot be changed when continuing from a saved .bangmodel, because the saved weights fix the shape.",
+        "ko": "체크하면 PPO의 정책·가치 출력이 자신의 역할(보안관·부관·무법자·배신자) 원핫에 따라 역할별 헤드로 나뉘어, 한 역할을 학습해도 다른 역할의 행동이 덮어써지지 않습니다. 저장된 .bangmodel에서 이어서 학습할 때는 저장된 가중치 구조가 고정이므로 바꿀 수 없습니다.",
+    },
     "training.collection_players.dummy5": {"en": "Dummy AI x5", "ko": "더미 AI 5인"},
     "training.collection_players.main1_dummy4": {"en": "Main AI x1 + Dummy AI x4", "ko": "메인 AI 1 + 더미 AI 4"},
     "training.base_model": {"en": "Main AI model (.bangmodel)", "ko": "메인 AI 모델 (.bangmodel)"},

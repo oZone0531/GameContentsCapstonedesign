@@ -109,6 +109,9 @@ class TrainingMonitorSnapshot:
     win_rate_points: tuple[float, ...] = ()
     intent_accuracy_points: tuple[float, ...] = ()
     emotion_accuracy_points: tuple[float, ...] = ()
+    # Personality accuracy per sampled batch; empty unless the emotion module
+    # also learns the dummies' personality.
+    personality_accuracy_points: tuple[float, ...] = ()
     intent_accuracy_by_role_points: tuple[tuple[float, ...], ...] = ()
     emotion_accuracy_by_dimension_points: tuple[tuple[float, ...], ...] = ()
     intent_role_names: tuple[str, ...] = ()
@@ -262,6 +265,7 @@ class TrainingMonitorController:
         self._win_rates: list[float] = []
         self._intent_accuracy: list[float] = []
         self._emotion_accuracy: list[float] = []
+        self._personality_accuracy: list[float] = []
         self._intent_accuracy_by_role: list[tuple[float, ...]] = []
         self._emotion_accuracy_by_dimension: list[tuple[float, ...]] = []
         self._intent_role_names: tuple[str, ...] = ()
@@ -296,6 +300,12 @@ class TrainingMonitorController:
             if isinstance(emotion_points, (list, tuple)):
                 self._emotion_accuracy = [
                     float(value) for value in emotion_points
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                ]
+            personality_points = raw_metrics.get("personality_accuracy_points", ())
+            if isinstance(personality_points, (list, tuple)):
+                self._personality_accuracy = [
+                    float(value) for value in personality_points
                     if isinstance(value, (int, float)) and not isinstance(value, bool)
                 ]
             role_points = raw_metrics.get("intent_accuracy_by_role_points", ())
@@ -355,6 +365,7 @@ class TrainingMonitorController:
             win_rate_points=tuple(self._win_rates),
             intent_accuracy_points=tuple(self._intent_accuracy),
             emotion_accuracy_points=tuple(self._emotion_accuracy),
+            personality_accuracy_points=tuple(self._personality_accuracy),
             intent_accuracy_by_role_points=tuple(self._intent_accuracy_by_role),
             emotion_accuracy_by_dimension_points=tuple(self._emotion_accuracy_by_dimension),
             intent_role_names=self._intent_role_names,
@@ -385,6 +396,7 @@ class TrainingMonitorController:
             self._win_rates.clear()
             self._intent_accuracy.clear()
             self._emotion_accuracy.clear()
+            self._personality_accuracy.clear()
             self._intent_accuracy_by_role.clear()
             self._emotion_accuracy_by_dimension.clear()
             self._intent_role_names = ()
